@@ -40,13 +40,44 @@ const TERRAIN = {
 // jeszcze nie ma; na razie stała niewywoływana nigdzie w kodzie
 const WATER_DAMAGE_PER_SECOND = 0;
 
-const UNIT_TYPES = {
-  ARCHER:         { speed: 1.2, color: '#d4af37', radius: 8, collisionRadius: 7 },
-  CANNON:         { speed: 0.6, color: '#555555', radius: 9, collisionRadius: 8 },
-  LIGHT_INFANTRY: { speed: 1.5, color: '#4caf50', radius: 7, collisionRadius: 6 },
-  HEAVY_INFANTRY: { speed: 0.9, color: '#795548', radius: 8, collisionRadius: 7 },
-  CAVALRY:        { speed: 2.0, color: '#e91e63', radius: 8, collisionRadius: 7 },
+// Kolor jednostki = gracz (nie typ) — typ rozróżniany promieniem (drawRadius)
+const PLAYERS = {
+  P1: { color: '#2f6fed' },
+  P2: { color: '#e63946' },
 };
+const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
+
+// cost na razie nigdzie nieużywany (brak ekonomii) — zaślepka pod przyszły balans
+const UNIT_TYPES = {
+  ARCHER:         { maxHp: 80,  damagePerSecond: 12, attackRange: 90,  speed: 1.2, cost: 50, collisionRadius: 7, drawRadius: 8 },
+  CANNON:         { maxHp: 100, damagePerSecond: 25, attackRange: 150, speed: 0.6, cost: 90, collisionRadius: 8, drawRadius: 9 },
+  LIGHT_INFANTRY: { maxHp: 100, damagePerSecond: 10, attackRange: 20,  speed: 1.5, cost: 40, collisionRadius: 6, drawRadius: 7 },
+  HEAVY_INFANTRY: { maxHp: 200, damagePerSecond: 15, attackRange: 20,  speed: 0.9, cost: 70, collisionRadius: 7, drawRadius: 8 },
+  CAVALRY:        { maxHp: 120, damagePerSecond: 14, attackRange: 20,  speed: 2.0, cost: 80, collisionRadius: 7, drawRadius: 8 },
+};
+
+// Mnożniki prędkości i obrażeń per (typ jednostki × teren) — główna oś
+// przyszłego balansu. speedMultiplier na razie wszędzie 1.0 (żadna wartość
+// nie została jeszcze zlecona), ale jest realnie wpięty w ruch (sekcja
+// RUCH JEDNOSTEK), więc zmiana liczby tutaj od razu zadziała.
+function makeAllOneModifiers() {
+  return {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 1 },
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 1 },
+  };
+}
+const TERRAIN_MODIFIERS = {
+  ARCHER:         makeAllOneModifiers(),
+  CANNON:         makeAllOneModifiers(),
+  LIGHT_INFANTRY: makeAllOneModifiers(),
+  HEAVY_INFANTRY: makeAllOneModifiers(),
+  CAVALRY:        makeAllOneModifiers(),
+};
+// Jednostki dystansowe: las utrudnia ostrzał (dotyczy terenu ATAKUJĄCEGO)
+TERRAIN_MODIFIERS.ARCHER.FOREST.damageMultiplier = 0.5;
+TERRAIN_MODIFIERS.CANNON.FOREST.damageMultiplier = 0.5;
 
 const BASE_SPEED_PX_PER_S = 60; // mnożone przez unit.speed i terrain.speedMultiplier
 
@@ -102,30 +133,44 @@ window.addEventListener('resize', resizeCanvas);
 let units = [];
 let nextUnitId = 1;
 
-function spawnUnit(type, col, row) {
+function spawnUnit(type, col, row, owner) {
   const center = tileToWorld(col, row);
   units.push({
     id: nextUnitId++,
     type,
+    owner,
     x: center.x,
     y: center.y,
     path: [],
     selected: false,
+    hp: UNIT_TYPES[type].maxHp,
   });
 }
 
-// Kilka jednostek każdego typu, rozstawione na starcie na przechodnim
-// terenie w pobliżu środka mapy (nie w rogu)
-spawnUnit('ARCHER', 7, 7);
-spawnUnit('ARCHER', 8, 7);
-spawnUnit('CANNON', 9, 7);
-spawnUnit('CANNON', 10, 7);
-spawnUnit('LIGHT_INFANTRY', 7, 8);
-spawnUnit('LIGHT_INFANTRY', 8, 8);
-spawnUnit('HEAVY_INFANTRY', 9, 8);
-spawnUnit('HEAVY_INFANTRY', 10, 8);
-spawnUnit('CAVALRY', 7, 9);
-spawnUnit('CAVALRY', 8, 9);
+// Dwie armie po przeciwnych krańcach mapy, na sprawdzonym przechodnim
+// terenie (pole). P1 (niebieski, sterowany) po lewej, P2 (czerwony,
+// statyczny — bez AI) po prawej.
+spawnUnit('ARCHER', 1, 8, 'P1');
+spawnUnit('ARCHER', 2, 8, 'P1');
+spawnUnit('CANNON', 1, 9, 'P1');
+spawnUnit('CANNON', 2, 9, 'P1');
+spawnUnit('LIGHT_INFANTRY', 1, 10, 'P1');
+spawnUnit('LIGHT_INFANTRY', 2, 10, 'P1');
+spawnUnit('HEAVY_INFANTRY', 1, 11, 'P1');
+spawnUnit('HEAVY_INFANTRY', 2, 11, 'P1');
+spawnUnit('CAVALRY', 1, 12, 'P1');
+spawnUnit('CAVALRY', 2, 12, 'P1');
+
+spawnUnit('ARCHER', 22, 8, 'P2');
+spawnUnit('ARCHER', 23, 8, 'P2');
+spawnUnit('CANNON', 22, 9, 'P2');
+spawnUnit('CANNON', 23, 9, 'P2');
+spawnUnit('LIGHT_INFANTRY', 22, 10, 'P2');
+spawnUnit('LIGHT_INFANTRY', 23, 10, 'P2');
+spawnUnit('HEAVY_INFANTRY', 22, 11, 'P2');
+spawnUnit('HEAVY_INFANTRY', 23, 11, 'P2');
+spawnUnit('CAVALRY', 22, 12, 'P2');
+spawnUnit('CAVALRY', 23, 12, 'P2');
 
 // Gest myszy
 let dragMode = null; // 'SELECT' | 'ROUTE' | 'FRONT' | null
@@ -407,13 +452,16 @@ function formationOffsets(n, spacing) {
 function findUnitAt(x, y) {
   for (let i = units.length - 1; i >= 0; i--) {
     const u = units[i];
-    const r = UNIT_TYPES[u.type].radius + 3; // margines ułatwiający trafienie
+    const r = UNIT_TYPES[u.type].drawRadius + 3; // margines ułatwiający trafienie
     if (Math.hypot(u.x - x, u.y - y) <= r) return u;
   }
   return null;
 }
 function getSelectedUnits() {
   return units.filter(u => u.selected);
+}
+function isOwnUnit(u) {
+  return !!u && u.owner === OWNED_PLAYER;
 }
 
 // ============================================================
@@ -484,10 +532,11 @@ window.addEventListener('mouseup', (e) => {
       const x1 = Math.min(dragStart.x, pos.x), x2 = Math.max(dragStart.x, pos.x);
       const y1 = Math.min(dragStart.y, pos.y), y2 = Math.max(dragStart.y, pos.y);
       for (const u of units) {
-        u.selected = (u.x >= x1 && u.x <= x2 && u.y >= y1 && u.y <= y2);
+        u.selected = isOwnUnit(u) && (u.x >= x1 && u.x <= x2 && u.y >= y1 && u.y <= y2);
       }
     } else {
-      const hit = findUnitAt(pos.x, pos.y);
+      const hitAny = findUnitAt(pos.x, pos.y);
+      const hit = isOwnUnit(hitAny) ? hitAny : null; // jednostek wroga nie da się zaznaczyć
       if (e.shiftKey) {
         if (hit) hit.selected = !hit.selected;
       } else {
@@ -539,7 +588,8 @@ function updateUnit(unit, dt) {
   // Zabezpieczenie: jeśli jednostka mimo wszystko stoi na nieprzechodnim
   // kaflu, speedMultiplier=0 zablokowałby ją tam na stałe — pozwól jej
   // poruszać się z normalną prędkością, żeby mogła zejść na właściwy teren
-  const effectiveSpeedMultiplier = terrain.passable ? terrain.speedMultiplier : 1.0;
+  const perTypeSpeedMultiplier = TERRAIN_MODIFIERS[unit.type][terrain.name].speedMultiplier;
+  const effectiveSpeedMultiplier = terrain.passable ? terrain.speedMultiplier * perTypeSpeedMultiplier : 1.0;
   const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier;
 
   let remaining = speed * dt;
@@ -621,6 +671,66 @@ function resolveCollisions(allUnits) {
 }
 
 // ============================================================
+// WALKA
+// ============================================================
+const DEATH_EFFECT_DURATION_MS = 400;
+let deathEffects = []; // {x, y, color, startTime}
+let currentAttacks = []; // {attacker, target} — tylko do rysowania linii ataku w tej klatce
+
+function findNearestEnemyInRange(unit, allUnits) {
+  const range = UNIT_TYPES[unit.type].attackRange;
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const other of allUnits) {
+    if (other.owner === unit.owner || other.hp <= 0) continue;
+    const dist = Math.hypot(other.x - unit.x, other.y - unit.y);
+    if (dist <= range && dist < nearestDist) {
+      nearest = other;
+      nearestDist = dist;
+    }
+  }
+  return nearest;
+}
+
+// KRYTYCZNE: obrażenia liczone jednocześnie dla wszystkich uczestników.
+// Faza 1 tylko zbiera obrażenia do pendingDamage (bez dotykania hp!),
+// faza 2 dopiero je stosuje — sekwencyjne odejmowanie w pętli po
+// atakujących dawałoby przewagę temu, kto atakuje jako drugi.
+function resolveCombat(allUnits, dt) {
+  const pendingDamage = new Map(); // unit -> suma obrażeń w tej klatce
+  const attacks = [];
+
+  for (const attacker of allUnits) {
+    if (attacker.hp <= 0) continue;
+    const target = findNearestEnemyInRange(attacker, allUnits);
+    if (!target) continue;
+    attacks.push({ attacker, target });
+
+    const tile = worldToTile(attacker.x, attacker.y);
+    const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
+    const dmgMultiplier = TERRAIN_MODIFIERS[attacker.type][terrain.name].damageMultiplier;
+    const damage = UNIT_TYPES[attacker.type].damagePerSecond * dt * dmgMultiplier;
+    pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
+  }
+
+  for (const [unit, damage] of pendingDamage) {
+    unit.hp -= damage;
+  }
+
+  const survivors = [];
+  for (const u of allUnits) {
+    if (u.hp <= 0) {
+      deathEffects.push({ x: u.x, y: u.y, color: PLAYERS[u.owner].color, startTime: performance.now() });
+    } else {
+      survivors.push(u);
+    }
+  }
+
+  currentAttacks = attacks;
+  return survivors;
+}
+
+// ============================================================
 // RYSOWANIE
 // ============================================================
 function drawMap() {
@@ -639,6 +749,23 @@ function drawMap() {
   }
 }
 
+function hpBarColor(ratio) {
+  if (ratio > 0.6) return '#4caf50';
+  if (ratio > 0.3) return '#f4c430';
+  return '#e53935';
+}
+
+function drawHpBar(u, cfg) {
+  const ratio = Math.max(0, u.hp / cfg.maxHp);
+  if (ratio >= 1) return; // pokazuj tylko przy utraconym HP
+  const w = 18, h = 3;
+  const x = u.x - w / 2, y = u.y - cfg.drawRadius - 8;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = hpBarColor(ratio);
+  ctx.fillRect(x, y, w * ratio, h);
+}
+
 function drawUnits() {
   for (const u of units) {
     const cfg = UNIT_TYPES[u.type];
@@ -651,16 +778,43 @@ function drawUnits() {
       ctx.stroke();
     }
     ctx.beginPath();
-    ctx.arc(u.x, u.y, cfg.radius, 0, Math.PI * 2);
-    ctx.fillStyle = cfg.color;
+    ctx.arc(u.x, u.y, cfg.drawRadius, 0, Math.PI * 2);
+    ctx.fillStyle = PLAYERS[u.owner].color;
     ctx.fill();
     if (u.selected) {
       ctx.beginPath();
-      ctx.arc(u.x, u.y, cfg.radius + 4, 0, Math.PI * 2);
+      ctx.arc(u.x, u.y, cfg.drawRadius + 4, 0, Math.PI * 2);
       ctx.strokeStyle = '#00eaff';
       ctx.lineWidth = 3;
       ctx.stroke();
     }
+    drawHpBar(u, cfg);
+  }
+}
+
+function drawAttackLines() {
+  for (const { attacker, target } of currentAttacks) {
+    ctx.strokeStyle = PLAYERS[attacker.owner].color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(attacker.x, attacker.y);
+    ctx.lineTo(target.x, target.y);
+    ctx.stroke();
+  }
+}
+
+function drawDeathEffects(now) {
+  deathEffects = deathEffects.filter(effect => now - effect.startTime < DEATH_EFFECT_DURATION_MS);
+  for (const effect of deathEffects) {
+    const age = now - effect.startTime;
+    const t = age / DEATH_EFFECT_DURATION_MS;
+    ctx.beginPath();
+    ctx.arc(effect.x, effect.y, 6 + t * 14, 0, Math.PI * 2);
+    ctx.strokeStyle = effect.color;
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -758,6 +912,7 @@ function gameLoop(now) {
 
   for (const u of units) updateUnit(u, dt);
   resolveCollisions(units);
+  units = resolveCombat(units, dt);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
@@ -765,6 +920,8 @@ function gameLoop(now) {
   ctx.scale(viewScale, viewScale);
   drawMap();
   drawUnits();
+  drawAttackLines();
+  drawDeathEffects(now);
   drawGestureFeedback();
   ctx.restore();
 
