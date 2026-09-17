@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>WarConvoy — prototyp ruchu</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #111; }
+  canvas { display: block; background: #222; cursor: crosshair; }
+  #hint {
+    position: fixed; top: 8px; left: 8px; color: #eee; font: 12px monospace;
+    background: rgba(0,0,0,0.5); padding: 6px 10px; border-radius: 4px;
+    pointer-events: none; line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div id="hint">
+  Przeciągnij po pustym terenie = zaznaczenie (prostokąt)<br>
+  Przeciągnij START na zaznaczonej jednostce = <span style="color:#ffd400">TRASA (żółta)</span><br>
+  Przeciągnij START na pustym terenie (mając zaznaczenie) = <span style="color:#ff5533">FRONT (czerwona)</span>
+</div>
+<canvas id="game"></canvas>
+<script>
+'use strict';
+
+// ============================================================
+// CONFIG — wszystkie statystyki jednostek i terenu w jednym miejscu
+// ============================================================
+const TILE_SIZE = 32;
+
+const TERRAIN = {
+  0: { name: 'FIELD',    passable: true,  speedMultiplier: 1.0, color: '#a8c766' },
+  1: { name: 'FOREST',   passable: true,  speedMultiplier: 0.5, color: '#3f6b35' },
+  2: { name: 'MOUNTAIN', passable: false, speedMultiplier: 0,   color: '#8a8a8a' },
+  3: { name: 'WATER',    passable: false, speedMultiplier: 0,   color: '#3a7bd5' },
+};
+
+const UNIT_TYPES = {
+  ARCHER:         { speed: 1.2, color: '#d4af37', radius: 8 },
+  CANNON:         { speed: 0.6, color: '#555555', radius: 9 },
+  LIGHT_INFANTRY: { speed: 1.5, color: '#4caf50', radius: 7 },
+  HEAVY_INFANTRY: { speed: 0.9, color: '#795548', radius: 8 },
+  CAVALRY:        { speed: 2.0, color: '#e91e63', radius: 8 },
+};
+
+const BASE_SPEED_PX_PER_S = 60; // mnożone przez unit.speed i terrain.speedMultiplier
+
+// Zahardkodowana mapa terenu — edytuj ręcznie (0 pole, 1 las, 2 gory, 3 woda)
+const MAP_DATA = [
+  [0,0,0,0,0,1,1,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,1,1,0,1,1,1,0,0,0,2,2,2,2,0,0,3,3,3,0,0,0,0,0],
+  [0,0,1,1,1,1,0,0,0,0,2,2,2,2,2,2,0,3,3,3,3,3,0,0,0],
+  [0,0,0,1,1,0,0,0,0,0,2,2,2,2,2,0,0,0,3,3,3,3,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,3,3,0,0,0,0],
+  [0,1,1,0,0,0,1,1,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0],
+  [0,1,1,0,0,0,1,1,1,0,0,0,0,0,0,0,1,1,1,0,0,2,2,0,0],
+  [0,0,0,0,0,0,0,1,1,0,0,0,3,3,0,0,0,1,0,0,0,2,2,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,2,2,0,0,0,0,0,0,3,3,3,3,0,0,0,0,1,1,0,0,0,0],
+  [0,0,0,2,2,2,0,0,0,0,0,0,3,3,0,0,0,0,1,1,1,1,0,0,0],
+  [0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+];
+const MAP_COLS = MAP_DATA[0].length;
+const MAP_ROWS = MAP_DATA.length;
+
+// ============================================================
+// STAN GRY
+// ============================================================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+canvas.width = MAP_COLS * TILE_SIZE;
+canvas.height = MAP_ROWS * TILE_SIZE;
+
+let units = [];
+let nextUnitId = 1;
+
+function spawnUnit(type, col, row) {
+  const center = tileToWorld(col, row);
+  units.push({
+    id: nextUnitId++,
+    type,
+    x: center.x,
+    y: center.y,
+    path: [],
+    selected: false,
+  });
+}
+
+// Kilka jednostek każdego typu, rozstawione na starcie na przechodnim terenie
+spawnUnit('ARCHER', 1, 1);
+spawnUnit('ARCHER', 1, 2);
+spawnUnit('CANNON', 2, 1);
+spawnUnit('CANNON', 2, 2);
+spawnUnit('LIGHT_INFANTRY', 1, 3);
+spawnUnit('LIGHT_INFANTRY', 2, 3);
+spawnUnit('HEAVY_INFANTRY', 1, 4);
+spawnUnit('HEAVY_INFANTRY', 2, 4);
+spawnUnit('CAVALRY', 1, 5);
+spawnUnit('CAVALRY', 2, 5);
+
+// Gest myszy
+let dragMode = null; // 'SELECT' | 'ROUTE' | 'FRONT' | null
+let dragStart = null; // {x,y}
+let dragCurrent = null; // {x,y}
+let rawStrokePoints = []; // dla ROUTE/FRONT
+
+// ============================================================
+// GEOMETRIA SIATKI
+// ============================================================
+function worldToTile(x, y) {
+  return { col: Math.floor(x / TILE_SIZE), row: Math.floor(y / TILE_SIZE) };
+}
+function tileToWorld(col, row) {
+  return { x: col * TILE_SIZE + TILE_SIZE / 2, y: row * TILE_SIZE + TILE_SIZE / 2 };
+}
+function inBounds(col, row) {
+  return col >= 0 && col < MAP_COLS && row >= 0 && row < MAP_ROWS;
+}
+function terrainAt(col, row) {
+  if (!inBounds(col, row)) return null;
+  return TERRAIN[MAP_DATA[row][col]];
+}
+function isPassable(col, row) {
+  const t = terrainAt(col, row);
+  return !!t && t.passable;
+}
+function nearestPassableTile(col, row) {
+  if (isPassable(col, row)) return { col, row };
+  for (let radius = 1; radius < Math.max(MAP_COLS, MAP_ROWS); radius++) {
+    for (let dr = -radius; dr <= radius; dr++) {
+      for (let dc = -radius; dc <= radius; dc++) {
+        if (Math.max(Math.abs(dr), Math.abs(dc)) !== radius) continue;
+        const c = col + dc, r = row + dr;
+        if (inBounds(c, r) && isPassable(c, r)) return { col: c, row: r };
+      }
+    }
+  }
+  return { col, row };
+}
+
+// ============================================================
+// PATHFINDING (A*)
+// ============================================================
+function findPath(startTile, endTile) {
+  let end = endTile;
+  if (!isPassable(end.col, end.row)) end = nearestPassableTile(end.col, end.row);
+  if (!isPassable(startTile.col, startTile.row) || (startTile.col === end.col && startTile.row === end.row)) {
+    return [];
+  }
+
+  const key = (c, r) => r * MAP_COLS + c;
+  const open = new Map(); // key -> node
+  const closed = new Set();
+  const startNode = { col: startTile.col, row: startTile.row, g: 0, h: heuristic(startTile, end), parent: null };
+  startNode.f = startNode.g + startNode.h;
+  open.set(key(startNode.col, startNode.row), startNode);
+
+  const dirs = [
+    [1,0],[-1,0],[0,1],[0,-1],
+    [1,1],[1,-1],[-1,1],[-1,-1],
+  ];
+
+  let iterations = 0;
+  const maxIterations = MAP_COLS * MAP_ROWS * 4;
+
+  while (open.size > 0 && iterations++ < maxIterations) {
+    let currentKey = null, current = null;
+    for (const [k, node] of open) {
+      if (!current || node.f < current.f) { current = node; currentKey = k; }
+    }
+    if (current.col === end.col && current.row === end.row) {
+      const path = [];
+      let n = current;
+      while (n) { path.unshift(tileToWorld(n.col, n.row)); n = n.parent; }
+      path.shift(); // usuń pozycję startową
+      return path;
+    }
+    open.delete(currentKey);
+    closed.add(currentKey);
+
+    for (const [dc, dr] of dirs) {
+      const nc = current.col + dc, nr = current.row + dr;
+      if (!inBounds(nc, nr) || !isPassable(nc, nr)) continue;
+      if (dc !== 0 && dr !== 0) {
+        // zakaz "ścinania rogów" przy przekątnej obok nieprzechodniego terenu
+        if (!isPassable(current.col + dc, current.row) || !isPassable(current.col, current.row + dr)) continue;
+      }
+      const nk = key(nc, nr);
+      if (closed.has(nk)) continue;
+      const stepCost = (dc !== 0 && dr !== 0) ? Math.SQRT2 : 1;
+      const g = current.g + stepCost;
+      const existing = open.get(nk);
+      if (!existing || g < existing.g) {
+        const node = { col: nc, row: nr, g, h: heuristic({col:nc,row:nr}, end), parent: current };
+        node.f = node.g + node.h;
+        open.set(nk, node);
+      }
+    }
+  }
+  return []; // brak trasy
+}
+function heuristic(a, b) {
+  const dx = a.col - b.col, dy = a.row - b.row;
+  return Math.sqrt(dx*dx + dy*dy);
+}
+
+// ============================================================
+// KRZYWA GESTU — uproszczenie i próbkowanie po długości
+// ============================================================
+function simplifyCurve(points, tolerance) {
+  if (points.length <= 2) return points.slice();
+  return rdp(points, tolerance);
+}
+function rdp(points, tolerance) {
+  let maxDist = 0, index = 0;
+  const [first, last] = [points[0], points[points.length - 1]];
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = perpendicularDistance(points[i], first, last);
+    if (d > maxDist) { maxDist = d; index = i; }
+  }
+  if (maxDist > tolerance) {
+    const left = rdp(points.slice(0, index + 1), tolerance);
+    const right = rdp(points.slice(index), tolerance);
+    return left.slice(0, -1).concat(right);
+  }
+  return [first, last];
+}
+function perpendicularDistance(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  return Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / len;
+}
+function curveLength(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += Math.hypot(points[i].x - points[i-1].x, points[i].y - points[i-1].y);
+  return total;
+}
+function pointAtArcLength(points, dist) {
+  if (points.length === 1) return points[0];
+  let remaining = dist;
+  for (let i = 1; i < points.length; i++) {
+    const segLen = Math.hypot(points[i].x - points[i-1].x, points[i].y - points[i-1].y);
+    if (remaining <= segLen || i === points.length - 1) {
+      const t = segLen === 0 ? 0 : Math.max(0, Math.min(1, remaining / segLen));
+      return { x: points[i-1].x + (points[i].x - points[i-1].x) * t, y: points[i-1].y + (points[i].y - points[i-1].y) * t };
+    }
+    remaining -= segLen;
+  }
+  return points[points.length - 1];
+}
+
+// ============================================================
+// ROZKAZY RUCHU — TRYB A (trasa) / TRYB B (front)
+// ============================================================
+function buildRoutePath(unit, curvePoints) {
+  const fullPath = [];
+  let prevWorld = { x: unit.x, y: unit.y };
+  for (const cp of curvePoints) {
+    const startTile = worldToTile(prevWorld.x, prevWorld.y);
+    const endTile = worldToTile(cp.x, cp.y);
+    const segment = findPath(startTile, endTile);
+    fullPath.push(...segment);
+    prevWorld = cp;
+  }
+  return fullPath;
+}
+
+function assignFrontTargets(selectedUnits, curvePoints) {
+  const n = selectedUnits.length;
+  const targets = [];
+  if (n === 1) {
+    targets.push(pointAtArcLength(curvePoints, curveLength(curvePoints) / 2));
+  } else {
+    const total = curveLength(curvePoints);
+    for (let i = 0; i < n; i++) {
+      targets.push(pointAtArcLength(curvePoints, total * (i / (n - 1))));
+    }
+  }
+  // sortuj jednostki i cele wzdłuż kierunku krzywej, żeby trasy się nie krzyżowały
+  const dirStart = curvePoints[0], dirEnd = curvePoints[curvePoints.length - 1];
+  const dx = dirEnd.x - dirStart.x, dy = dirEnd.y - dirStart.y;
+  const proj = (p) => (p.x - dirStart.x) * dx + (p.y - dirStart.y) * dy;
+
+  const unitsSorted = selectedUnits.slice().sort((a, b) => proj(a) - proj(b));
+  const targetsSorted = targets.slice().sort((a, b) => proj(a) - proj(b));
+
+  return unitsSorted.map((u, i) => ({ unit: u, target: targetsSorted[i] }));
+}
+
+// ============================================================
+// KLASYFIKACJA GESTU
+// ============================================================
+function findUnitAt(x, y) {
+  for (let i = units.length - 1; i >= 0; i--) {
+    const u = units[i];
+    const r = UNIT_TYPES[u.type].radius + 3; // margines ułatwiający trafienie
+    if (Math.hypot(u.x - x, u.y - y) <= r) return u;
+  }
+  return null;
+}
+function getSelectedUnits() {
+  return units.filter(u => u.selected);
+}
+function classifyGesture(x, y) {
+  const selected = getSelectedUnits();
+  if (selected.length === 0) return 'SELECT';
+  const hit = findUnitAt(x, y);
+  if (hit && hit.selected) return 'ROUTE';
+  return 'FRONT';
+}
+
+// ============================================================
+// OBSŁUGA MYSZY
+// ============================================================
+function getMousePos(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  const pos = getMousePos(e);
+  dragStart = pos;
+  dragCurrent = pos;
+  dragMode = classifyGesture(pos.x, pos.y);
+  rawStrokePoints = [pos];
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!dragMode) return;
+  const pos = getMousePos(e);
+  dragCurrent = pos;
+  if (dragMode === 'ROUTE' || dragMode === 'FRONT') {
+    const last = rawStrokePoints[rawStrokePoints.length - 1];
+    if (Math.hypot(pos.x - last.x, pos.y - last.y) > 6) rawStrokePoints.push(pos);
+  }
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (!dragMode) return;
+  const pos = getMousePos(e);
+
+  if (dragMode === 'SELECT') {
+    const x1 = Math.min(dragStart.x, pos.x), x2 = Math.max(dragStart.x, pos.x);
+    const y1 = Math.min(dragStart.y, pos.y), y2 = Math.max(dragStart.y, pos.y);
+    for (const u of units) {
+      u.selected = (u.x >= x1 && u.x <= x2 && u.y >= y1 && u.y <= y2);
+    }
+  } else if (dragMode === 'ROUTE') {
+    if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+    const curve = simplifyCurve(rawStrokePoints, 6);
+    const selected = getSelectedUnits();
+    for (const u of selected) {
+      u.path = buildRoutePath(u, curve);
+    }
+  } else if (dragMode === 'FRONT') {
+    if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+    const curve = simplifyCurve(rawStrokePoints, 6);
+    const selected = getSelectedUnits();
+    const assignments = assignFrontTargets(selected, curve);
+    for (const { unit, target } of assignments) {
+      unit.path = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y));
+    }
+  }
+
+  dragMode = null;
+  dragStart = null;
+  dragCurrent = null;
+  rawStrokePoints = [];
+});
+
+// ============================================================
+// RUCH JEDNOSTEK
+// ============================================================
+function updateUnit(unit, dt) {
+  if (unit.path.length === 0) return;
+  const target = unit.path[0];
+  const tile = worldToTile(unit.x, unit.y);
+  const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
+  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * terrain.speedMultiplier;
+
+  let remaining = speed * dt;
+  while (remaining > 0 && unit.path.length > 0) {
+    const dx = unit.path[0].x - unit.x, dy = unit.path[0].y - unit.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= remaining) {
+      unit.x = unit.path[0].x;
+      unit.y = unit.path[0].y;
+      unit.path.shift();
+      remaining -= dist;
+    } else {
+      unit.x += (dx / dist) * remaining;
+      unit.y += (dy / dist) * remaining;
+      remaining = 0;
+    }
+  }
+}
+
+// ============================================================
+// RYSOWANIE
+// ============================================================
+function drawMap() {
+  for (let row = 0; row < MAP_ROWS; row++) {
+    for (let col = 0; col < MAP_COLS; col++) {
+      ctx.fillStyle = TERRAIN[MAP_DATA[row][col]].color;
+      ctx.fillRect(col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+    }
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+  for (let col = 0; col <= MAP_COLS; col++) {
+    ctx.beginPath(); ctx.moveTo(col * TILE_SIZE, 0); ctx.lineTo(col * TILE_SIZE, canvas.height); ctx.stroke();
+  }
+  for (let row = 0; row <= MAP_ROWS; row++) {
+    ctx.beginPath(); ctx.moveTo(0, row * TILE_SIZE); ctx.lineTo(canvas.width, row * TILE_SIZE); ctx.stroke();
+  }
+}
+
+function drawUnits() {
+  for (const u of units) {
+    const cfg = UNIT_TYPES[u.type];
+    if (u.path.length > 0) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(u.x, u.y);
+      for (const p of u.path) ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(u.x, u.y, cfg.radius, 0, Math.PI * 2);
+    ctx.fillStyle = cfg.color;
+    ctx.fill();
+    if (u.selected) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+    }
+  }
+}
+
+function drawGestureFeedback() {
+  if (!dragMode) return;
+
+  if (dragMode === 'SELECT') {
+    const x1 = Math.min(dragStart.x, dragCurrent.x), x2 = Math.max(dragStart.x, dragCurrent.x);
+    const y1 = Math.min(dragStart.y, dragCurrent.y), y2 = Math.max(dragStart.y, dragCurrent.y);
+    ctx.fillStyle = 'rgba(80,160,255,0.15)';
+    ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.strokeStyle = 'rgba(80,160,255,0.9)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.setLineDash([]);
+    return;
+  }
+
+  const pts = rawStrokePoints;
+  if (pts.length < 2) return;
+
+  if (dragMode === 'ROUTE') {
+    ctx.strokeStyle = '#ffd400';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    drawDirectionArrows(pts, '#ffd400');
+  } else if (dragMode === 'FRONT') {
+    ctx.strokeStyle = '#ff5533';
+    ctx.lineWidth = 4;
+    ctx.setLineDash([10, 6]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    drawFrontTicks(pts, '#ff5533');
+  }
+}
+
+function drawDirectionArrows(pts, color) {
+  const spacing = 40;
+  let acc = 0;
+  ctx.fillStyle = color;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i-1], b = pts[i];
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+    acc += segLen;
+    if (acc >= spacing) {
+      acc = 0;
+      const angle = Math.atan2(b.y - a.y, b.x - a.x);
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(angle);
+      ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.lineTo(-8, -4); ctx.lineTo(-8, 4); ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+function drawFrontTicks(pts, color) {
+  const spacing = 30;
+  let acc = 0;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i-1], b = pts[i];
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+    acc += segLen;
+    if (acc >= spacing) {
+      acc = 0;
+      const angle = Math.atan2(b.y - a.y, b.x - a.x) + Math.PI / 2;
+      const tickLen = 10;
+      ctx.beginPath();
+      ctx.moveTo(b.x - Math.cos(angle) * tickLen, b.y - Math.sin(angle) * tickLen);
+      ctx.lineTo(b.x + Math.cos(angle) * tickLen, b.y + Math.sin(angle) * tickLen);
+      ctx.stroke();
+    }
+  }
+}
+
+// ============================================================
+// PĘTLA GRY
+// ============================================================
+let lastTime = performance.now();
+function gameLoop(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+
+  for (const u of units) updateUnit(u, dt);
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawMap();
+  drawUnits();
+  drawGestureFeedback();
+
+  requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
