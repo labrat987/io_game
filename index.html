@@ -47,13 +47,15 @@ const PLAYERS = {
 };
 const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
 
-// cost na razie nigdzie nieużywany (brak ekonomii) — zaślepka pod przyszły balans
+// cost na razie nigdzie nieużywany (brak ekonomii) — zaślepka pod przyszły balans.
+// ranged:true = model salw (damagePerShot/reloadTime/projectileSpeed/minRange/
+// meleeDamage, patrz sekcja WALKA), ranged:false = ciągłe obrażenia (damagePerSecond).
 const UNIT_TYPES = {
-  ARCHER:         { maxHp: 80,  damagePerSecond: 12, attackRange: 90,  speed: 1.2, cost: 50, collisionRadius: 7, drawRadius: 8 },
-  CANNON:         { maxHp: 100, damagePerSecond: 25, attackRange: 150, speed: 0.6, cost: 90, collisionRadius: 8, drawRadius: 9 },
-  LIGHT_INFANTRY: { maxHp: 100, damagePerSecond: 10, attackRange: 20,  speed: 1.5, cost: 40, collisionRadius: 6, drawRadius: 7 },
-  HEAVY_INFANTRY: { maxHp: 200, damagePerSecond: 15, attackRange: 20,  speed: 0.9, cost: 70, collisionRadius: 7, drawRadius: 8 },
-  CAVALRY:        { maxHp: 120, damagePerSecond: 14, attackRange: 20,  speed: 2.0, cost: 80, collisionRadius: 7, drawRadius: 8 },
+  ARCHER:         { ranged: true,  maxHp: 80,  damagePerShot: 15, reloadTime: 1.2, projectileSpeed: 300, minRange: 30, meleeDamage: 3,  attackRange: 90,  speed: 1.2, cost: 50, collisionRadius: 7, drawRadius: 8 },
+  CANNON:         { ranged: true,  maxHp: 100, damagePerShot: 60, reloadTime: 4.0, projectileSpeed: 150, minRange: 60, meleeDamage: 12, attackRange: 150, speed: 0.6, cost: 90, collisionRadius: 8, drawRadius: 9 },
+  LIGHT_INFANTRY: { ranged: false, maxHp: 100, damagePerSecond: 10, attackRange: 20,  speed: 1.5, cost: 40, collisionRadius: 6, drawRadius: 7 },
+  HEAVY_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 15, attackRange: 20,  speed: 0.9, cost: 70, collisionRadius: 7, drawRadius: 8 },
+  CAVALRY:        { ranged: false, maxHp: 120, damagePerSecond: 14, attackRange: 20,  speed: 2.0, cost: 80, collisionRadius: 7, drawRadius: 8 },
 };
 
 // Mnożniki prędkości i obrażeń per (typ jednostki × teren) — główna oś
@@ -144,6 +146,7 @@ function spawnUnit(type, col, row, owner) {
     path: [],
     selected: false,
     hp: UNIT_TYPES[type].maxHp,
+    reloadRemaining: 0, // tylko dla ranged, ale ustawiane zawsze
   });
 }
 
@@ -675,7 +678,8 @@ function resolveCollisions(allUnits) {
 // ============================================================
 const DEATH_EFFECT_DURATION_MS = 400;
 let deathEffects = []; // {x, y, color, startTime}
-let currentAttacks = []; // {attacker, target} — tylko do rysowania linii ataku w tej klatce
+let currentAttacks = []; // {attacker, target} — tylko starcia melee, do rysowania linii w tej klatce
+let projectiles = []; // {x, y, vx, vy, impactX, impactY, distanceLeft, damage, owner, targetUnit}
 
 function findNearestEnemyInRange(unit, allUnits) {
   const range = UNIT_TYPES[unit.type].attackRange;
@@ -692,25 +696,88 @@ function findNearestEnemyInRange(unit, allUnits) {
   return nearest;
 }
 
+function attackerDamageMultiplier(attacker) {
+  const tile = worldToTile(attacker.x, attacker.y);
+  const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
+  return TERRAIN_MODIFIERS[attacker.type][terrain.name].damageMultiplier;
+}
+
+// Porusza lecące pociski i zbiera obrażenia trafień do pendingDamage
+// (BEZ dotykania hp — patrz komentarz KRYTYCZNE niżej). Pocisk celuje w
+// punkt, gdzie cel był w chwili strzału, i się nie naprowadza — jeśli cel
+// zdążył odejść dalej niż jego collisionRadius od tego punktu, to pudło.
+function updateProjectiles(dt, pendingDamage) {
+  const stillFlying = [];
+  for (const p of projectiles) {
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.distanceLeft -= Math.hypot(p.vx, p.vy) * dt;
+    if (p.distanceLeft > 0) {
+      stillFlying.push(p);
+      continue;
+    }
+    if (p.targetUnit.hp > 0) {
+      const missDist = Math.hypot(p.targetUnit.x - p.impactX, p.targetUnit.y - p.impactY);
+      if (missDist <= UNIT_TYPES[p.targetUnit.type].collisionRadius) {
+        pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + p.damage);
+      }
+    }
+    // pocisk znika po dotarciu do punktu uderzenia niezależnie od trafienia
+  }
+  projectiles = stillFlying;
+}
+
 // KRYTYCZNE: obrażenia liczone jednocześnie dla wszystkich uczestników.
-// Faza 1 tylko zbiera obrażenia do pendingDamage (bez dotykania hp!),
-// faza 2 dopiero je stosuje — sekwencyjne odejmowanie w pętli po
+// Fazy zbierania (trafienia pocisków + nowe starcia w tej klatce) tylko
+// gromadzą obrażenia w pendingDamage (bez dotykania hp!), dopiero na
+// końcu wszystko stosowane naraz — sekwencyjne odejmowanie w pętli po
 // atakujących dawałoby przewagę temu, kto atakuje jako drugi.
 function resolveCombat(allUnits, dt) {
   const pendingDamage = new Map(); // unit -> suma obrażeń w tej klatce
-  const attacks = [];
+  const attacks = []; // tylko starcia melee (linia), nie strzały dystansowe
+
+  for (const u of allUnits) {
+    u.reloadRemaining = Math.max(0, u.reloadRemaining - dt);
+  }
+
+  updateProjectiles(dt, pendingDamage);
 
   for (const attacker of allUnits) {
     if (attacker.hp <= 0) continue;
     const target = findNearestEnemyInRange(attacker, allUnits);
     if (!target) continue;
-    attacks.push({ attacker, target });
+    const cfg = UNIT_TYPES[attacker.type];
+    const dmgMultiplier = attackerDamageMultiplier(attacker);
 
-    const tile = worldToTile(attacker.x, attacker.y);
-    const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
-    const dmgMultiplier = TERRAIN_MODIFIERS[attacker.type][terrain.name].damageMultiplier;
-    const damage = UNIT_TYPES[attacker.type].damagePerSecond * dt * dmgMultiplier;
-    pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
+    if (!cfg.ranged) {
+      // walka wręcz — jak dotąd, obrażenia ciągłe
+      attacks.push({ attacker, target });
+      const damage = cfg.damagePerSecond * dt * dmgMultiplier;
+      pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
+      continue;
+    }
+
+    const dist = Math.hypot(target.x - attacker.x, target.y - attacker.y);
+    if (dist < cfg.minRange) {
+      // dystansowy zmuszony do zwarcia — bezbronny, tylko śladowy atak wręcz
+      attacks.push({ attacker, target });
+      const damage = cfg.meleeDamage * dt * dmgMultiplier;
+      pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
+    } else if (attacker.reloadRemaining <= 0) {
+      // normalny strzał — obrażenia dopiero przy trafieniu pocisku, nie teraz
+      const speed = cfg.projectileSpeed;
+      const vx = (target.x - attacker.x) / dist * speed;
+      const vy = (target.y - attacker.y) / dist * speed;
+      projectiles.push({
+        x: attacker.x, y: attacker.y, vx, vy,
+        impactX: target.x, impactY: target.y,
+        distanceLeft: dist,
+        damage: cfg.damagePerShot * dmgMultiplier,
+        owner: attacker.owner,
+        targetUnit: target,
+      });
+      attacker.reloadRemaining = cfg.reloadTime;
+    }
   }
 
   for (const [unit, damage] of pendingDamage) {
@@ -766,6 +833,67 @@ function drawHpBar(u, cfg) {
   ctx.fillRect(x, y, w * ratio, h);
 }
 
+// Prosty biały symbol per typ, rysowany kodem (bez grafik/emoji), żeby
+// odróżnić typy niezależnie od koloru gracza. Rozmiar względny do
+// drawRadius, więc skaluje się razem z jednostką.
+function drawUnitIcon(u, cfg) {
+  const r = cfg.drawRadius;
+  ctx.save();
+  ctx.translate(u.x, u.y);
+  ctx.strokeStyle = '#ffffff';
+  ctx.fillStyle = '#ffffff';
+  ctx.lineWidth = Math.max(1, r * 0.18);
+  ctx.lineCap = 'round';
+
+  if (u.type === 'ARCHER') {
+    const bowR = r * 0.7;
+    const a1 = -Math.PI * 0.35, a2 = Math.PI * 0.35;
+    ctx.beginPath();
+    ctx.arc(0, 0, bowR, a1, a2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a1) * bowR, Math.sin(a1) * bowR);
+    ctx.lineTo(Math.cos(a2) * bowR, Math.sin(a2) * bowR);
+    ctx.stroke();
+  } else if (u.type === 'CANNON') {
+    ctx.save();
+    ctx.rotate(-Math.PI / 4);
+    ctx.fillRect(-r * 0.15, -r * 0.9, r * 0.3, r * 0.9);
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(0, r * 0.35, r * 0.28, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (u.type === 'LIGHT_INFANTRY') {
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 0.75); ctx.lineTo(0, r * 0.6);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.35, -r * 0.15); ctx.lineTo(r * 0.35, -r * 0.15);
+    ctx.stroke();
+  } else if (u.type === 'HEAVY_INFANTRY') {
+    ctx.save();
+    ctx.translate(-r * 0.3, 0);
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 0.7); ctx.lineTo(0, r * 0.55);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.3, -r * 0.1); ctx.lineTo(r * 0.3, -r * 0.1);
+    ctx.stroke();
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(r * 0.35, 0, r * 0.4, -Math.PI * 0.6, Math.PI * 0.6);
+    ctx.stroke();
+  } else if (u.type === 'CAVALRY') {
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.6, -r * 0.5);
+    ctx.lineTo(0, r * 0.6);
+    ctx.lineTo(r * 0.6, -r * 0.5);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 function drawUnits() {
   for (const u of units) {
     const cfg = UNIT_TYPES[u.type];
@@ -781,6 +909,7 @@ function drawUnits() {
     ctx.arc(u.x, u.y, cfg.drawRadius, 0, Math.PI * 2);
     ctx.fillStyle = PLAYERS[u.owner].color;
     ctx.fill();
+    drawUnitIcon(u, cfg);
     if (u.selected) {
       ctx.beginPath();
       ctx.arc(u.x, u.y, cfg.drawRadius + 4, 0, Math.PI * 2);
@@ -799,6 +928,20 @@ function drawAttackLines() {
     ctx.beginPath();
     ctx.moveTo(attacker.x, attacker.y);
     ctx.lineTo(target.x, target.y);
+    ctx.stroke();
+  }
+}
+
+function drawProjectiles() {
+  for (const p of projectiles) {
+    const speed = Math.hypot(p.vx, p.vy) || 1;
+    const trail = 6;
+    const dx = (p.vx / speed) * trail, dy = (p.vy / speed) * trail;
+    ctx.strokeStyle = PLAYERS[p.owner].color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x - dx, p.y - dy);
+    ctx.lineTo(p.x, p.y);
     ctx.stroke();
   }
 }
@@ -921,6 +1064,7 @@ function gameLoop(now) {
   drawMap();
   drawUnits();
   drawAttackLines();
+  drawProjectiles();
   drawDeathEffects(now);
   drawGestureFeedback();
   ctx.restore();
