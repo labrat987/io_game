@@ -1,5 +1,36 @@
 # Projekt: gra .io typu RTS (roboczo: WarConvoy)
 
+## Filar projektowy: realizm dowodzenia, nie mikrozarządzanie
+Gra ma oddawać doświadczenie DOWODZENIA armią na poziomie operacyjnym, nie
+kierowania pojedynczymi żołnierzami. Gracz jest sztabem, nie dowódcą
+plutonu.
+
+Kryterium rozstrzygające przy każdej nowej mechanice: czy realny dowódca
+podjąłby taką decyzję? Jeśli mechanika wymaga klikania w pojedyncze
+jednostki w czasie rzeczywistym — prawdopodobnie jest sprzeczna z filarem.
+
+**Konsekwencje:**
+- Walka automatyczna, gracz nie kieruje pojedynczymi starciami
+- Rozkazy dla artylerii: ostrzał rejonu, nie wskazywanie pojedynczego celu
+  (odrzucono model Total War jako sprzeczny z filarem)
+- Rozkazy w formie rysowanych linii — analogia mapy sztabowej
+
+**Kandydaci na mechaniki wzmacniające filar** (do rozważenia po grywalnym
+rdzeniu):
+- Opóźnienie rozkazów — jednostka reaguje z opóźnieniem 1-2s (rozkaz musi
+  dotrzeć). Wymusza planowanie zamiast reagowania.
+- Morale — jednostki pod ostrzałem, okrążone lub przetrzebione wycofują
+  się same, zamiast walczyć do 0 HP
+- Ograniczona widoczność (mgła wojny) — decyzje przy niepełnej informacji;
+  nadaje sens zwiadowi i kawalerii
+
+**Konflikt do zarządzania: realizm vs dostępność.** Format .io wymaga
+zrozumienia gry w pierwsze 3 minuty. Realistyczne mechaniki (opóźnienie,
+mgła, morale) mogą wyglądać dla nowego gracza jak "gra mnie nie słucha".
+Zasada: każda taka mechanika musi mieć wyraźną wizualizację (opóźniony
+rozkaz rysowany na szaro do momentu aktywacji, widoczny wskaźnik morale).
+Realizm, którego gracz nie rozumie, to frustracja, nie głębia.
+
 ## Czym jest ta gra
 Przeglądarkowa gra .io łącząca mechaniki War Dots (ruch jednostek rysowany
 liniami, teren wpływa na przemieszczanie) z OpenFront.io (ekonomia oparta
