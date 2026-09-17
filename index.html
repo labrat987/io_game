@@ -16,9 +16,9 @@
 </head>
 <body>
 <div id="hint">
-  Przeciągnij po pustym terenie = zaznaczenie (prostokąt)<br>
-  Przeciągnij START na zaznaczonej jednostce = <span style="color:#ffd400">TRASA (żółta)</span><br>
-  Przeciągnij START na pustym terenie (mając zaznaczenie) = <span style="color:#ff5533">FRONT (czerwona)</span>
+  LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = prostokąt selekcji<br>
+  PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
+  przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span>
 </div>
 <canvas id="game"></canvas>
 <script>
@@ -194,11 +194,11 @@ function findPath(startTile, endTile) {
       if (!current || node.f < current.f) { current = node; currentKey = k; }
     }
     if (current.col === end.col && current.row === end.row) {
-      const path = [];
+      const tilePath = [];
       let n = current;
-      while (n) { path.unshift(tileToWorld(n.col, n.row)); n = n.parent; }
-      path.shift(); // usuń pozycję startową
-      return path;
+      while (n) { tilePath.unshift({ col: n.col, row: n.row }); n = n.parent; }
+      const smoothed = smoothTilePath(tilePath);
+      return smoothed.slice(1).map(t => tileToWorld(t.col, t.row));
     }
     open.delete(currentKey);
     closed.add(currentKey);
@@ -227,6 +227,48 @@ function findPath(startTile, endTile) {
 function heuristic(a, b) {
   const dx = a.col - b.col, dy = a.row - b.row;
   return Math.sqrt(dx*dx + dy*dy);
+}
+
+// Bresenham po kaflach — sprawdza, czy między a i b jest prosta,
+// nieprzerywana przez nieprzechodni teren linia (z zakazem ścinania rogów,
+// tak jak w A*)
+function hasLineOfSight(a, b) {
+  let x = a.col, y = a.row;
+  const x1 = b.col, y1 = b.row;
+  const dx = Math.abs(x1 - x), dy = Math.abs(y1 - y);
+  const sx = x < x1 ? 1 : -1;
+  const sy = y < y1 ? 1 : -1;
+  let err = dx - dy;
+
+  while (true) {
+    if (!isPassable(x, y)) return false;
+    if (x === x1 && y === y1) return true;
+    const e2 = 2 * err;
+    let steppedX = false, steppedY = false;
+    if (e2 > -dy) { err -= dy; x += sx; steppedX = true; }
+    if (e2 < dx) { err += dx; y += sy; steppedY = true; }
+    if (steppedX && steppedY) {
+      if (!isPassable(x - sx, y) || !isPassable(x, y - sy)) return false;
+    }
+  }
+}
+
+// "String pulling": z listy kafli ścieżki A* usuwa punkty pośrednie tam,
+// gdzie da się przejść prostą linią — zamienia schodkowy ruch po siatce
+// na naturalne, proste odcinki
+function smoothTilePath(tiles) {
+  if (tiles.length <= 2) return tiles;
+  const result = [tiles[0]];
+  let current = 0;
+  while (current < tiles.length - 1) {
+    let next = current + 1;
+    for (let i = tiles.length - 1; i > current; i--) {
+      if (hasLineOfSight(tiles[current], tiles[i])) { next = i; break; }
+    }
+    result.push(tiles[next]);
+    current = next;
+  }
+  return result;
 }
 
 // ============================================================
@@ -327,13 +369,6 @@ function findUnitAt(x, y) {
 function getSelectedUnits() {
   return units.filter(u => u.selected);
 }
-function classifyGesture(x, y) {
-  const selected = getSelectedUnits();
-  if (selected.length === 0) return 'SELECT';
-  const hit = findUnitAt(x, y);
-  if (hit && hit.selected) return 'ROUTE';
-  return 'FRONT';
-}
 
 // ============================================================
 // OBSŁUGA MYSZY
@@ -347,51 +382,98 @@ function getMousePos(e) {
   return { x: (screenX - viewOffsetX) / viewScale, y: (screenY - viewOffsetY) / viewScale };
 }
 
+let dragButton = null; // 'LEFT' | 'RIGHT' | null
+let dragStartHitSelectedUnit = false; // dla PPM, liczone przy mousedown
+const CLICK_DRAG_THRESHOLD = 5; // px — poniżej tego to klik, nie przeciągnięcie
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
 canvas.addEventListener('mousedown', (e) => {
   const pos = getMousePos(e);
   dragStart = pos;
   dragCurrent = pos;
-  dragMode = classifyGesture(pos.x, pos.y);
-  rawStrokePoints = [pos];
+  dragMode = null;
+
+  if (e.button === 0) {
+    dragButton = 'LEFT';
+  } else if (e.button === 2) {
+    dragButton = 'RIGHT';
+    const hit = findUnitAt(pos.x, pos.y);
+    dragStartHitSelectedUnit = !!(hit && hit.selected);
+    rawStrokePoints = [pos];
+  } else {
+    dragButton = null;
+  }
 });
 
-canvas.addEventListener('mousemove', (e) => {
-  if (!dragMode) return;
+window.addEventListener('mousemove', (e) => {
+  if (!dragButton) return;
   const pos = getMousePos(e);
   dragCurrent = pos;
-  if (dragMode === 'ROUTE' || dragMode === 'FRONT') {
+
+  if (!dragMode) {
+    const moved = Math.hypot(pos.x - dragStart.x, pos.y - dragStart.y);
+    if (moved <= CLICK_DRAG_THRESHOLD) return;
+    // próg przeciągnięcia przekroczony — dopiero teraz ustalamy tryb gestu
+    if (dragButton === 'LEFT') {
+      dragMode = 'SELECT';
+    } else if (dragButton === 'RIGHT') {
+      dragMode = dragStartHitSelectedUnit ? 'ROUTE' : 'FRONT';
+    }
+  }
+
+  if (dragButton === 'RIGHT' && (dragMode === 'ROUTE' || dragMode === 'FRONT')) {
     const last = rawStrokePoints[rawStrokePoints.length - 1];
     if (Math.hypot(pos.x - last.x, pos.y - last.y) > 6) rawStrokePoints.push(pos);
   }
 });
 
 window.addEventListener('mouseup', (e) => {
-  if (!dragMode) return;
+  if (!dragButton) return;
   const pos = getMousePos(e);
+  const wasDrag = Math.hypot(pos.x - dragStart.x, pos.y - dragStart.y) > CLICK_DRAG_THRESHOLD;
 
-  if (dragMode === 'SELECT') {
-    const x1 = Math.min(dragStart.x, pos.x), x2 = Math.max(dragStart.x, pos.x);
-    const y1 = Math.min(dragStart.y, pos.y), y2 = Math.max(dragStart.y, pos.y);
-    for (const u of units) {
-      u.selected = (u.x >= x1 && u.x <= x2 && u.y >= y1 && u.y <= y2);
+  if (dragButton === 'LEFT') {
+    if (wasDrag) {
+      const x1 = Math.min(dragStart.x, pos.x), x2 = Math.max(dragStart.x, pos.x);
+      const y1 = Math.min(dragStart.y, pos.y), y2 = Math.max(dragStart.y, pos.y);
+      for (const u of units) {
+        u.selected = (u.x >= x1 && u.x <= x2 && u.y >= y1 && u.y <= y2);
+      }
+    } else {
+      const hit = findUnitAt(pos.x, pos.y);
+      if (e.shiftKey) {
+        if (hit) hit.selected = !hit.selected;
+      } else {
+        for (const u of units) u.selected = false;
+        if (hit) hit.selected = true;
+      }
     }
-  } else if (dragMode === 'ROUTE') {
-    if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-    const curve = simplifyCurve(rawStrokePoints, 6);
+  } else if (dragButton === 'RIGHT') {
     const selected = getSelectedUnits();
-    for (const u of selected) {
-      u.path = buildRoutePath(u, curve);
-    }
-  } else if (dragMode === 'FRONT') {
-    if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-    const curve = simplifyCurve(rawStrokePoints, 6);
-    const selected = getSelectedUnits();
-    const assignments = assignFrontTargets(selected, curve);
-    for (const { unit, target } of assignments) {
-      unit.path = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y));
+    if (selected.length > 0) {
+      if (!wasDrag) {
+        for (const u of selected) {
+          u.path = findPath(worldToTile(u.x, u.y), worldToTile(pos.x, pos.y));
+        }
+      } else if (dragMode === 'ROUTE') {
+        if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+        const curve = simplifyCurve(rawStrokePoints, 6);
+        for (const u of selected) {
+          u.path = buildRoutePath(u, curve);
+        }
+      } else if (dragMode === 'FRONT') {
+        if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+        const curve = simplifyCurve(rawStrokePoints, 6);
+        const assignments = assignFrontTargets(selected, curve);
+        for (const { unit, target } of assignments) {
+          unit.path = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y));
+        }
+      }
     }
   }
 
+  dragButton = null;
   dragMode = null;
   dragStart = null;
   dragCurrent = null;
@@ -460,8 +542,10 @@ function drawUnits() {
     ctx.fillStyle = cfg.color;
     ctx.fill();
     if (u.selected) {
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, cfg.radius + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = '#00eaff';
+      ctx.lineWidth = 3;
       ctx.stroke();
     }
   }
