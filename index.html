@@ -16,7 +16,7 @@
 </head>
 <body>
 <div id="hint">
-  LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = prostokąt selekcji<br>
+  LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
   PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
   przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span>
 </div>
@@ -196,6 +196,7 @@ let dragMode = null; // 'SELECT' | 'ROUTE' | 'FRONT' | null
 let dragStart = null; // {x,y}
 let dragCurrent = null; // {x,y}
 let rawStrokePoints = []; // dla ROUTE/FRONT
+let lassoPoints = []; // dla SELECT (lasso)
 
 // ============================================================
 // GEOMETRIA SIATKI
@@ -229,6 +230,62 @@ function nearestPassableTile(col, row) {
     }
   }
   return { col, row };
+}
+
+const PATH_CORNER_MARGIN = 8; // px — margines od narożnika przeszkody, mniej niż pół kafla (16px)
+
+// Odsuwa punkt załamania od sąsiednich nieprzechodnich kafli o PATH_CORNER_MARGIN,
+// żeby trasa wyglądała jak omijanie przeszkody, a nie chodzenie po siatce.
+// Bez sąsiadów-przeszkód to no-op (punkt zwrócony bez zmian).
+function offsetFromObstacles(point, marginPx) {
+  const tile = worldToTile(point.x, point.y);
+  let pushX = 0, pushY = 0;
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      if (isPassable(tile.col + dc, tile.row + dr)) continue;
+      const obstacleCenter = tileToWorld(tile.col + dc, tile.row + dr);
+      const dx = point.x - obstacleCenter.x, dy = point.y - obstacleCenter.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      pushX += dx / dist;
+      pushY += dy / dist;
+    }
+  }
+  const mag = Math.hypot(pushX, pushY);
+  if (mag < 1e-6) return point;
+  return { x: point.x + (pushX / mag) * marginPx, y: point.y + (pushY / mag) * marginPx };
+}
+
+// "Cięcie rogów" (Chaikin): zamienia każdy odcinek na dwa punkty w ratio/
+// (1-ratio) jego długości, zachowując pierwszy i ostatni punkt listy bez
+// zmian (pozycja jednostki i dokładny cel gracza nigdy nie są ruszane).
+// Nigdy nie usuwa ani nie pomija punktu — bezpieczne nawet dla ręcznie
+// narysowanej TRASY, tylko zaokrągla zakręty, nie skraca kształtu.
+function chaikinSmooth(points, ratio, iterations) {
+  let pts = points;
+  for (let iter = 0; iter < iterations; iter++) {
+    if (pts.length < 3) break;
+    const next = [pts[0]];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i], p1 = pts[i + 1];
+      next.push({ x: p0.x + (p1.x - p0.x) * ratio, y: p0.y + (p1.y - p0.y) * ratio });
+      next.push({ x: p0.x + (p1.x - p0.x) * (1 - ratio), y: p0.y + (p1.y - p0.y) * (1 - ratio) });
+    }
+    next.push(pts[pts.length - 1]);
+    pts = next;
+  }
+  return pts;
+}
+
+// Ostateczne wygładzenie ścieżki jednostki: dokleja jej bieżącą pozycję,
+// zaokrągla zakręty łukiem (szerszym dla szybkich jednostek, ciaśniejszym
+// dla wolnych), zwraca wynik bez doklejonego punktu startowego.
+function finalizePath(unit, rawPath) {
+  if (rawPath.length === 0) return rawPath;
+  const ratio = Math.max(0.12, Math.min(0.4, 0.1 + UNIT_TYPES[unit.type].speed * 0.2));
+  const withStart = [{ x: unit.x, y: unit.y }, ...rawPath];
+  const rounded = chaikinSmooth(withStart, ratio, 2);
+  return rounded.slice(1);
 }
 
 // ============================================================
@@ -275,8 +332,15 @@ function findPath(startTile, endTile, exactEndPoint) {
       while (n) { tilePath.unshift({ col: n.col, row: n.row }); n = n.parent; }
       const smoothed = smoothTilePath(tilePath);
       const worldPoints = smoothed.slice(1).map(t => tileToWorld(t.col, t.row));
+      // margines od narożników przeszkód na punktach pośrednich (nie na
+      // ostatnim, który zaraz i tak może zostać nadpisany dokładnym celem)
+      for (let i = 0; i < worldPoints.length - 1; i++) {
+        worldPoints[i] = offsetFromObstacles(worldPoints[i], PATH_CORNER_MARGIN);
+      }
       if (exactEndPoint && !endWasSnapped && worldPoints.length > 0) {
         worldPoints[worldPoints.length - 1] = { x: exactEndPoint.x, y: exactEndPoint.y };
+      } else if (worldPoints.length > 0) {
+        worldPoints[worldPoints.length - 1] = offsetFromObstacles(worldPoints[worldPoints.length - 1], PATH_CORNER_MARGIN);
       }
       return worldPoints;
     }
@@ -483,6 +547,20 @@ function isOwnUnit(u) {
   return !!u && u.owner === OWNED_PLAYER;
 }
 
+// Klasyczny ray casting — działa na dowolnym (niedomkniętym) wielokącie,
+// bo pętla zaczyna od pary (ostatni, pierwszy) i tak domyka kształt
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    const intersect = ((yi > point.y) !== (yj > point.y)) &&
+      (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
 // ============================================================
 // OBSŁUGA MYSZY
 // ============================================================
@@ -530,9 +608,15 @@ window.addEventListener('mousemove', (e) => {
     // próg przeciągnięcia przekroczony — dopiero teraz ustalamy tryb gestu
     if (dragButton === 'LEFT') {
       dragMode = 'SELECT';
+      lassoPoints = [dragStart];
     } else if (dragButton === 'RIGHT') {
       dragMode = dragStartHitSelectedUnit ? 'ROUTE' : 'FRONT';
     }
+  }
+
+  if (dragButton === 'LEFT' && dragMode === 'SELECT') {
+    const last = lassoPoints[lassoPoints.length - 1];
+    if (Math.hypot(pos.x - last.x, pos.y - last.y) > 5) lassoPoints.push(pos);
   }
 
   if (dragButton === 'RIGHT' && (dragMode === 'ROUTE' || dragMode === 'FRONT')) {
@@ -544,14 +628,17 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('mouseup', (e) => {
   if (!dragButton) return;
   const pos = getMousePos(e);
-  const wasDrag = Math.hypot(pos.x - dragStart.x, pos.y - dragStart.y) > CLICK_DRAG_THRESHOLD;
+  // dragMode zostaje ustawiony raz, gdy przeciągnięcie przekroczy próg
+  // (patrz mousemove), i już nie wraca do null — bezpieczniejszy test niż
+  // odległość start↔koniec, którą myliłby np. lasso domknięte blisko
+  // punktu startowego (odległość końcowa mała, mimo że to był drag)
+  const wasDrag = dragMode !== null;
 
   if (dragButton === 'LEFT') {
     if (wasDrag) {
-      const x1 = Math.min(dragStart.x, pos.x), x2 = Math.max(dragStart.x, pos.x);
-      const y1 = Math.min(dragStart.y, pos.y), y2 = Math.max(dragStart.y, pos.y);
       for (const u of units) {
-        u.selected = isOwnUnit(u) && (u.x >= x1 && u.x <= x2 && u.y >= y1 && u.y <= y2);
+        const inLasso = isOwnUnit(u) && pointInPolygon(u, lassoPoints);
+        u.selected = e.shiftKey ? (u.selected || inLasso) : inLasso;
       }
     } else {
       const hitAny = findUnitAt(pos.x, pos.y);
@@ -570,20 +657,20 @@ window.addEventListener('mouseup', (e) => {
         const offsets = formationOffsets(selected.length, FORMATION_SPACING);
         selected.forEach((u, i) => {
           const target = { x: pos.x + offsets[i].dx, y: pos.y + offsets[i].dy };
-          u.path = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
+          u.path = finalizePath(u, findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target));
         });
       } else if (dragMode === 'ROUTE') {
         if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
         const curve = simplifyCurve(rawStrokePoints, 6);
         for (const u of selected) {
-          u.path = buildRoutePath(u, curve);
+          u.path = finalizePath(u, buildRoutePath(u, curve));
         }
       } else if (dragMode === 'FRONT') {
         if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
         const curve = simplifyCurve(rawStrokePoints, 6);
         const assignments = assignFrontTargets(selected, curve);
         for (const { unit, target } of assignments) {
-          unit.path = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
+          unit.path = finalizePath(unit, findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target));
         }
       }
     }
@@ -594,6 +681,7 @@ window.addEventListener('mouseup', (e) => {
   dragStart = null;
   dragCurrent = null;
   rawStrokePoints = [];
+  lassoPoints = [];
 });
 
 // ============================================================
@@ -1116,14 +1204,32 @@ function drawGestureFeedback() {
   if (!dragMode) return;
 
   if (dragMode === 'SELECT') {
-    const x1 = Math.min(dragStart.x, dragCurrent.x), x2 = Math.max(dragStart.x, dragCurrent.x);
-    const y1 = Math.min(dragStart.y, dragCurrent.y), y2 = Math.max(dragStart.y, dragCurrent.y);
+    if (lassoPoints.length < 2) return;
+    const first = lassoPoints[0], last = lassoPoints[lassoPoints.length - 1];
+
+    // wypełnienie już domkniętego kształtu, żeby było widać objęty obszar
+    ctx.beginPath();
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < lassoPoints.length; i++) ctx.lineTo(lassoPoints[i].x, lassoPoints[i].y);
+    ctx.closePath();
     ctx.fillStyle = 'rgba(80,160,255,0.15)';
-    ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.fill();
+
+    // narysowana dotąd trasa — ciągła
     ctx.strokeStyle = 'rgba(80,160,255,0.9)';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < lassoPoints.length; i++) ctx.lineTo(lassoPoints[i].x, lassoPoints[i].y);
+    ctx.stroke();
+
+    // domknięcie do punktu startowego — przerywane, pokazuje resztę obszaru
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(first.x, first.y);
     ctx.setLineDash([4, 3]);
-    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.stroke();
     ctx.setLineDash([]);
     return;
   }
