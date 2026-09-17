@@ -40,6 +40,15 @@ const TERRAIN = {
 // jeszcze nie ma; na razie stała niewywoływana nigdzie w kodzie
 const WATER_DAMAGE_PER_SECOND = 0;
 
+// Regeneracja poza walką — patrz resolveCombat. Docelowo szybsza przy
+// własnych miastach i wolniejsza blisko frontu (patrz CLAUDE.md, sekcja
+// Ekonomia) — to modyfikator tej bazy, jeszcze niezaimplementowany.
+const OUT_OF_COMBAT_DELAY = 8; // s bez zadania/otrzymania obrażeń, zanim ruszy regeneracja
+const REGEN_PER_SECOND = 0.03; // ułamek maxHp na sekundę
+
+// Napieranie w walce wręcz — patrz resolveCombat/resolveCollisions
+const PUSH_ADVANCE_SPEED_PER_STRENGTH = 6; // px/s na punkt pushStrength
+
 // Kolor jednostki = gracz (nie typ) — typ rozróżniany promieniem (drawRadius)
 const PLAYERS = {
   P1: { color: '#2f6fed' },
@@ -50,12 +59,16 @@ const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
 // cost na razie nigdzie nieużywany (brak ekonomii) — zaślepka pod przyszły balans.
 // ranged:true = model salw (damagePerShot/reloadTime/projectileSpeed/minRange/
 // meleeDamage, patrz sekcja WALKA), ranged:false = ciągłe obrażenia (damagePerSecond).
+// speed ×0.5 i maxHp ×2 względem poprzedniej wersji (spowolnienie gry +
+// wydłużenie starć do ~15-25s, jedna dźwignia zamiast dublowania z
+// obrażeniami — patrz CLAUDE.md/podsumowanie tury). pushStrength: 0 =
+// jednostka nie napiera w walce wręcz (dotyczy obu dystansowych).
 const UNIT_TYPES = {
-  ARCHER:         { ranged: true,  maxHp: 80,  damagePerShot: 15, reloadTime: 1.2, projectileSpeed: 300, minRange: 30, meleeDamage: 3,  attackRange: 90,  speed: 1.2, cost: 50, collisionRadius: 7, drawRadius: 8 },
-  CANNON:         { ranged: true,  maxHp: 100, damagePerShot: 60, reloadTime: 4.0, projectileSpeed: 150, minRange: 60, meleeDamage: 12, attackRange: 150, speed: 0.6, cost: 90, collisionRadius: 8, drawRadius: 9 },
-  LIGHT_INFANTRY: { ranged: false, maxHp: 100, damagePerSecond: 10, attackRange: 20,  speed: 1.5, cost: 40, collisionRadius: 6, drawRadius: 7 },
-  HEAVY_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 15, attackRange: 20,  speed: 0.9, cost: 70, collisionRadius: 7, drawRadius: 8 },
-  CAVALRY:        { ranged: false, maxHp: 120, damagePerSecond: 14, attackRange: 20,  speed: 2.0, cost: 80, collisionRadius: 7, drawRadius: 8 },
+  ARCHER:         { ranged: true,  maxHp: 160, damagePerShot: 15, reloadTime: 1.2, projectileSpeed: 300, minRange: 30, meleeDamage: 3,  attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0 },
+  CANNON:         { ranged: true,  maxHp: 200, damagePerShot: 60, reloadTime: 4.0, projectileSpeed: 150, minRange: 60, meleeDamage: 12, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0 },
+  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 1 },
+  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 3 },
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 2 },
 };
 
 // Mnożniki prędkości i obrażeń per (typ jednostki × teren) — główna oś
@@ -147,6 +160,9 @@ function spawnUnit(type, col, row, owner) {
     selected: false,
     hp: UNIT_TYPES[type].maxHp,
     reloadRemaining: 0, // tylko dla ranged, ale ustawiane zawsze
+    timeSinceCombat: 0, // s od ostatniego zadania/otrzymania obrażeń — reguluje regenerację
+    hitFlashUntil: 0, // performance.now() do kiedy rysować błysk trafienia
+    shakeUntil: 0, // performance.now() do kiedy rysować drganie (trafienie z działa)
   });
 }
 
@@ -647,7 +663,11 @@ function tryMove(unit, dx, dy) {
 }
 
 // Rozsuwa nakładające się jednostki (promień kolizji), z ograniczeniem do
-// przechodniego terenu i tłumieniem, żeby ciasna grupa nie drgała
+// przechodniego terenu i tłumieniem, żeby ciasna grupa nie drgała.
+// Dla wrogich par o różnym pushStrength odsunięcie jest ważone — silniejszy
+// (wyższy pushStrength) dostaje mniejszą wagę, więc to słabszy jest
+// systematycznie spychany. Sojusznicy i pary bez pushStrength (np. dwóch
+// dystansowych) dzielą odsunięcie po równo jak dotąd.
 function resolveCollisions(allUnits) {
   for (let i = 0; i < allUnits.length; i++) {
     for (let j = i + 1; j < allUnits.length; j++) {
@@ -665,9 +685,19 @@ function resolveCollisions(allUnits) {
       if (dist < minDist) {
         const overlap = (minDist - dist) * COLLISION_DAMPING;
         const nx = dx / dist, ny = dy / dist;
-        const push = overlap / 2;
-        tryMove(a, -nx * push, -ny * push);
-        tryMove(b, nx * push, ny * push);
+
+        let weightA = 0.5, weightB = 0.5;
+        if (a.owner !== b.owner) {
+          const pA = UNIT_TYPES[a.type].pushStrength, pB = UNIT_TYPES[b.type].pushStrength;
+          const totalPush = pA + pB;
+          if (totalPush > 0) {
+            weightA = pB / totalPush; // silniejszy (wyższe pA) => mniejsza waga => mniej się cofa
+            weightB = pA / totalPush;
+          }
+        }
+
+        tryMove(a, -nx * overlap * weightA, -ny * overlap * weightA);
+        tryMove(b, nx * overlap * weightB, ny * overlap * weightB);
       }
     }
   }
@@ -677,9 +707,18 @@ function resolveCollisions(allUnits) {
 // WALKA
 // ============================================================
 const DEATH_EFFECT_DURATION_MS = 400;
-let deathEffects = []; // {x, y, color, startTime}
+const DEATH_FADE_DURATION_MS = 500;
+const IMPACT_EFFECT_DURATION_MS = 180;
+const HIT_FLASH_DURATION_MS = 100;
+const CANNON_SHAKE_DURATION_MS = 150;
+const CANNON_SHAKE_MAGNITUDE = 2.5;
+const KNOCKBACK_DIST = 3; // px — subtelny odrzut przy trafieniu pociskiem
+
+let deathEffects = []; // {x, y, color, startTime} — zanikający pierścień w miejscu śmierci
+let dyingUnits = []; // {type, owner, x, y, startTime} — znikająca sylwetka jednostki
+let impactEffects = []; // {x, y, startTime} — iskra w miejscu uderzenia pocisku (trafienie lub pudło)
 let currentAttacks = []; // {attacker, target} — tylko starcia melee, do rysowania linii w tej klatce
-let projectiles = []; // {x, y, vx, vy, impactX, impactY, distanceLeft, damage, owner, targetUnit}
+let projectiles = []; // {x, y, vx, vy, impactX, impactY, distanceLeft, damage, owner, attackerType, targetUnit}
 
 function findNearestEnemyInRange(unit, allUnits) {
   const range = UNIT_TYPES[unit.type].attackRange;
@@ -706,7 +745,9 @@ function attackerDamageMultiplier(attacker) {
 // (BEZ dotykania hp — patrz komentarz KRYTYCZNE niżej). Pocisk celuje w
 // punkt, gdzie cel był w chwili strzału, i się nie naprowadza — jeśli cel
 // zdążył odejść dalej niż jego collisionRadius od tego punktu, to pudło.
-function updateProjectiles(dt, pendingDamage) {
+// Trafienie dodaje subtelną reakcję (odrzut w kierunku lotu, błysk, przy
+// działach drganie) i zawsze zostawia iskrę w miejscu uderzenia.
+function updateProjectiles(dt, now, pendingDamage) {
   const stillFlying = [];
   for (const p of projectiles) {
     p.x += p.vx * dt;
@@ -716,10 +757,20 @@ function updateProjectiles(dt, pendingDamage) {
       stillFlying.push(p);
       continue;
     }
+
+    impactEffects.push({ x: p.impactX, y: p.impactY, startTime: now });
+
     if (p.targetUnit.hp > 0) {
       const missDist = Math.hypot(p.targetUnit.x - p.impactX, p.targetUnit.y - p.impactY);
       if (missDist <= UNIT_TYPES[p.targetUnit.type].collisionRadius) {
         pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + p.damage);
+
+        const speed = Math.hypot(p.vx, p.vy) || 1;
+        tryMove(p.targetUnit, (p.vx / speed) * KNOCKBACK_DIST, (p.vy / speed) * KNOCKBACK_DIST);
+        p.targetUnit.hitFlashUntil = now + HIT_FLASH_DURATION_MS;
+        if (p.attackerType === 'CANNON') {
+          p.targetUnit.shakeUntil = now + CANNON_SHAKE_DURATION_MS;
+        }
       }
     }
     // pocisk znika po dotarciu do punktu uderzenia niezależnie od trafienia
@@ -733,14 +784,16 @@ function updateProjectiles(dt, pendingDamage) {
 // końcu wszystko stosowane naraz — sekwencyjne odejmowanie w pętli po
 // atakujących dawałoby przewagę temu, kto atakuje jako drugi.
 function resolveCombat(allUnits, dt) {
+  const now = performance.now();
   const pendingDamage = new Map(); // unit -> suma obrażeń w tej klatce
   const attacks = []; // tylko starcia melee (linia), nie strzały dystansowe
+  const attackersThisFrame = new Set(); // do liczenia timeSinceCombat — kto zadał albo wystrzelił
 
   for (const u of allUnits) {
     u.reloadRemaining = Math.max(0, u.reloadRemaining - dt);
   }
 
-  updateProjectiles(dt, pendingDamage);
+  updateProjectiles(dt, now, pendingDamage);
 
   for (const attacker of allUnits) {
     if (attacker.hp <= 0) continue;
@@ -752,6 +805,7 @@ function resolveCombat(allUnits, dt) {
     if (!cfg.ranged) {
       // walka wręcz — jak dotąd, obrażenia ciągłe
       attacks.push({ attacker, target });
+      attackersThisFrame.add(attacker);
       const damage = cfg.damagePerSecond * dt * dmgMultiplier;
       pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
       continue;
@@ -761,10 +815,13 @@ function resolveCombat(allUnits, dt) {
     if (dist < cfg.minRange) {
       // dystansowy zmuszony do zwarcia — bezbronny, tylko śladowy atak wręcz
       attacks.push({ attacker, target });
+      attackersThisFrame.add(attacker);
       const damage = cfg.meleeDamage * dt * dmgMultiplier;
       pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
     } else if (attacker.reloadRemaining <= 0) {
-      // normalny strzał — obrażenia dopiero przy trafieniu pocisku, nie teraz
+      // normalny strzał — obrażenia dopiero przy trafieniu pocisku, nie teraz.
+      // Samo wystrzelenie już liczy się jako "w walce" dla regeneracji.
+      attackersThisFrame.add(attacker);
       const speed = cfg.projectileSpeed;
       const vx = (target.x - attacker.x) / dist * speed;
       const vy = (target.y - attacker.y) / dist * speed;
@@ -774,23 +831,55 @@ function resolveCombat(allUnits, dt) {
         distanceLeft: dist,
         damage: cfg.damagePerShot * dmgMultiplier,
         owner: attacker.owner,
+        attackerType: attacker.type,
         targetUnit: target,
       });
       attacker.reloadRemaining = cfg.reloadTime;
     }
   }
 
+  // Napieranie: jednostki wręcz (pushStrength>0) powoli suną w stronę
+  // celu zamiast stać nieruchomo w zasięgu ataku — o tym, kto faktycznie
+  // zyskuje grunt, rozstrzyga ważone resolveCollisions (patrz wyżej).
+  for (const { attacker, target } of attacks) {
+    const pushStrength = UNIT_TYPES[attacker.type].pushStrength;
+    if (pushStrength <= 0) continue;
+    const dx = target.x - attacker.x, dy = target.y - attacker.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const step = pushStrength * PUSH_ADVANCE_SPEED_PER_STRENGTH * dt;
+    tryMove(attacker, (dx / dist) * step, (dy / dist) * step);
+  }
+
   for (const [unit, damage] of pendingDamage) {
     unit.hp -= damage;
+  }
+
+  // Zegar "poza walką": zresetuj tym, którzy w tej klatce zadali/wystrzelili
+  // albo otrzymali obrażenia; resztę przesuń o dt bliżej progu regeneracji
+  for (const u of allUnits) {
+    if (attackersThisFrame.has(u) || pendingDamage.has(u)) {
+      u.timeSinceCombat = 0;
+    } else {
+      u.timeSinceCombat += dt;
+    }
   }
 
   const survivors = [];
   for (const u of allUnits) {
     if (u.hp <= 0) {
-      deathEffects.push({ x: u.x, y: u.y, color: PLAYERS[u.owner].color, startTime: performance.now() });
-    } else {
-      survivors.push(u);
+      deathEffects.push({ x: u.x, y: u.y, color: PLAYERS[u.owner].color, startTime: now });
+      dyingUnits.push({ type: u.type, owner: u.owner, x: u.x, y: u.y, startTime: now });
+      continue;
     }
+    if (u.hp < UNIT_TYPES[u.type].maxHp && u.timeSinceCombat >= OUT_OF_COMBAT_DELAY) {
+      const tile = worldToTile(u.x, u.y);
+      const terrain = terrainAt(tile.col, tile.row);
+      if (!terrain || terrain.name !== 'WATER') {
+        const maxHp = UNIT_TYPES[u.type].maxHp;
+        u.hp = Math.min(maxHp, u.hp + maxHp * REGEN_PER_SECOND * dt);
+      }
+    }
+    survivors.push(u);
   }
 
   currentAttacks = attacks;
@@ -822,7 +911,7 @@ function hpBarColor(ratio) {
   return '#e53935';
 }
 
-function drawHpBar(u, cfg) {
+function drawHpBar(u, cfg, now) {
   const ratio = Math.max(0, u.hp / cfg.maxHp);
   if (ratio >= 1) return; // pokazuj tylko przy utraconym HP
   const w = 18, h = 3;
@@ -831,6 +920,19 @@ function drawHpBar(u, cfg) {
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = hpBarColor(ratio);
   ctx.fillRect(x, y, w * ratio, h);
+
+  // regeneruje się? delikatnie pulsująca jasna obwódka, żeby było widać,
+  // które oddziały odzyskują siły (woda wyklucza regenerację — bez pulsu)
+  if (u.timeSinceCombat >= OUT_OF_COMBAT_DELAY) {
+    const tile = worldToTile(u.x, u.y);
+    const terrain = terrainAt(tile.col, tile.row);
+    if (!terrain || terrain.name !== 'WATER') {
+      const pulse = 0.35 + 0.35 * Math.sin(now / 300);
+      ctx.strokeStyle = `rgba(255,255,255,${pulse.toFixed(2)})`;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - 1, y - 1, w + 2, h + 2);
+    }
+  }
 }
 
 // Prosty biały symbol per typ, rysowany kodem (bez grafik/emoji), żeby
@@ -894,7 +996,7 @@ function drawUnitIcon(u, cfg) {
   ctx.restore();
 }
 
-function drawUnits() {
+function drawUnits(now) {
   for (const u of units) {
     const cfg = UNIT_TYPES[u.type];
     if (u.path.length > 0) {
@@ -905,10 +1007,23 @@ function drawUnits() {
       for (const p of u.path) ctx.lineTo(p.x, p.y);
       ctx.stroke();
     }
+
+    const shaking = now < u.shakeUntil;
+    if (shaking) {
+      ctx.save();
+      ctx.translate((Math.random() - 0.5) * CANNON_SHAKE_MAGNITUDE * 2, (Math.random() - 0.5) * CANNON_SHAKE_MAGNITUDE * 2);
+    }
+
     ctx.beginPath();
     ctx.arc(u.x, u.y, cfg.drawRadius, 0, Math.PI * 2);
     ctx.fillStyle = PLAYERS[u.owner].color;
     ctx.fill();
+    if (now < u.hitFlashUntil) {
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
     drawUnitIcon(u, cfg);
     if (u.selected) {
       ctx.beginPath();
@@ -917,7 +1032,43 @@ function drawUnits() {
       ctx.lineWidth = 3;
       ctx.stroke();
     }
-    drawHpBar(u, cfg);
+
+    if (shaking) ctx.restore();
+
+    drawHpBar(u, cfg, now);
+  }
+}
+
+function drawDyingUnits(now) {
+  dyingUnits = dyingUnits.filter(u => now - u.startTime < DEATH_FADE_DURATION_MS);
+  for (const u of dyingUnits) {
+    const t = (now - u.startTime) / DEATH_FADE_DURATION_MS;
+    const cfg = UNIT_TYPES[u.type];
+    ctx.beginPath();
+    ctx.arc(u.x, u.y, cfg.drawRadius * (1 - t * 0.4), 0, Math.PI * 2);
+    ctx.fillStyle = PLAYERS[u.owner].color;
+    ctx.globalAlpha = 1 - t;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawImpactEffects(now) {
+  impactEffects = impactEffects.filter(e => now - e.startTime < IMPACT_EFFECT_DURATION_MS);
+  for (const e of impactEffects) {
+    const t = (now - e.startTime) / IMPACT_EFFECT_DURATION_MS;
+    const len = 3 + t * 5;
+    ctx.strokeStyle = '#ffffff';
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 4; i++) {
+      const angle = (i / 4) * Math.PI * 2 + Math.PI / 8;
+      ctx.beginPath();
+      ctx.moveTo(e.x + Math.cos(angle) * 2, e.y + Math.sin(angle) * 2);
+      ctx.lineTo(e.x + Math.cos(angle) * len, e.y + Math.sin(angle) * len);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -1062,9 +1213,11 @@ function gameLoop(now) {
   ctx.translate(viewOffsetX, viewOffsetY);
   ctx.scale(viewScale, viewScale);
   drawMap();
-  drawUnits();
+  drawUnits(now);
+  drawDyingUnits(now);
   drawAttackLines();
   drawProjectiles();
+  drawImpactEffects(now);
   drawDeathEffects(now);
   drawGestureFeedback();
   ctx.restore();

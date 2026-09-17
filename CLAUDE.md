@@ -139,7 +139,11 @@ atakująca jako druga nie otrzymuje obrażeń (znany błąd w War of Dots).
 - Limit zaopatrzenia: miasto utrzymuje określoną liczbę jednostek,
   nadmiarowe tracą życie. Ogranicza snowball i liczbę encji na serwerze.
 - Leczenie z dala od frontu, szybsze na miastach — wymusza rotację
-  oddziałów
+  oddziałów. Modyfikator pozycyjny bazowego systemu regeneracji
+  (`outOfCombatDelay`/`regenPerSecond` w prototypie ruchu — jednostka
+  regeneruje się jednakowo wszędzie poza wodą po `outOfCombatDelay`
+  sekund bez walki); szybciej-przy-miastach/wolniej-przy-froncie jeszcze
+  niezaimplementowane
 - Produkcja przez suwaki (tempo + proporcja typów), nie klikanie
   pojedynczych jednostek
 
