@@ -23,6 +23,10 @@ rdzeniu):
   się same, zamiast walczyć do 0 HP
 - Ograniczona widoczność (mgła wojny) — decyzje przy niepełnej informacji;
   nadaje sens zwiadowi i kawalerii
+- Rozkaz ostrzału rejonu — wskazanie obszaru na mapie, artyleria
+  ostrzeliwuje wszystko, co tam wejdzie (na razie priorytety celu
+  łucznik/działo przełączane Tab-em w prototypie ruchu są tymczasowym
+  substytutem tego rozkazu)
 
 **Konflikt do zarządzania: realizm vs dostępność.** Format .io wymaga
 zrozumienia gry w pierwsze 3 minuty. Realistyczne mechaniki (opóźnienie,

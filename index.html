@@ -18,7 +18,8 @@
 <div id="hint">
   LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
   PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
-  przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span>
+  przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span><br>
+  Tab: zmień priorytet celu zaznaczonych jednostek dystansowych (najbliższy / artyleria / ciężkie / najsłabszy)
 </div>
 <canvas id="game"></canvas>
 <script>
@@ -47,7 +48,12 @@ const OUT_OF_COMBAT_DELAY = 8; // s bez zadania/otrzymania obrażeń, zanim rusz
 const REGEN_PER_SECOND = 0.03; // ułamek maxHp na sekundę
 
 // Napieranie w walce wręcz — patrz resolveCombat/resolveCollisions
-const PUSH_ADVANCE_SPEED_PER_STRENGTH = 6; // px/s na punkt pushStrength
+const PUSH_ADVANCE_SPEED_PER_STRENGTH = 3; // px/s na punkt pushStrength (obniżone o połowę — miało być powolne i stopniowe)
+
+// Obrażenia w zwarciu skalowane tym, kto napiera (patrz pushDamageMultiplier)
+const PUSH_WINNING_DAMAGE_MULTIPLIER = 1.0;
+const PUSH_STALEMATE_DAMAGE_MULTIPLIER = 0.5;
+const PUSH_LOSING_DAMAGE_MULTIPLIER = 0.25;
 
 // Kolor jednostki = gracz (nie typ) — typ rozróżniany promieniem (drawRadius)
 const PLAYERS = {
@@ -64,8 +70,8 @@ const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
 // obrażeniami — patrz CLAUDE.md/podsumowanie tury). pushStrength: 0 =
 // jednostka nie napiera w walce wręcz (dotyczy obu dystansowych).
 const UNIT_TYPES = {
-  ARCHER:         { ranged: true,  maxHp: 160, damagePerShot: 15, reloadTime: 1.2, projectileSpeed: 300, minRange: 30, meleeDamage: 3,  attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0 },
-  CANNON:         { ranged: true,  maxHp: 200, damagePerShot: 60, reloadTime: 4.0, projectileSpeed: 150, minRange: 60, meleeDamage: 12, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0 },
+  ARCHER:         { ranged: true,  maxHp: 160, damagePerShot: 15, reloadTime: 1.2, projectileSpeed: 300, minRange: 30, meleeDamage: 3,  attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5 },
+  CANNON:         { ranged: true,  maxHp: 200, damagePerShot: 60, reloadTime: 4.0, projectileSpeed: 150, minRange: 60, meleeDamage: 12, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0 },
   LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 1 },
   HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 3 },
   CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 2 },
@@ -160,9 +166,11 @@ function spawnUnit(type, col, row, owner) {
     selected: false,
     hp: UNIT_TYPES[type].maxHp,
     reloadRemaining: 0, // tylko dla ranged, ale ustawiane zawsze
+    setupRemaining: 0, // tylko dla ranged — czas do końca rozstawienia po zatrzymaniu
     timeSinceCombat: 0, // s od ostatniego zadania/otrzymania obrażeń — reguluje regenerację
     hitFlashUntil: 0, // performance.now() do kiedy rysować błysk trafienia
     shakeUntil: 0, // performance.now() do kiedy rysować drganie (trafienie z działa)
+    targetPriority: 'NEAREST', // tylko dla ranged — patrz findTargetForUnit, przełączane klawiszem Tab
   });
 }
 
@@ -579,6 +587,18 @@ const CLICK_DRAG_THRESHOLD = 5; // px — poniżej tego to klik, nie przeciągni
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
+// Tab cyklicznie zmienia priorytet celu zaznaczonych jednostek dystansowych
+// (jednostki wręcz ignorują — nie mają pojęcia priorytetu celu)
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab') return;
+  e.preventDefault();
+  for (const u of getSelectedUnits()) {
+    if (!UNIT_TYPES[u.type].ranged) continue;
+    const i = TARGET_PRIORITIES.indexOf(u.targetPriority);
+    u.targetPriority = TARGET_PRIORITIES[(i + 1) % TARGET_PRIORITIES.length];
+  }
+});
+
 canvas.addEventListener('mousedown', (e) => {
   const pos = getMousePos(e);
   dragStart = pos;
@@ -800,7 +820,6 @@ const IMPACT_EFFECT_DURATION_MS = 180;
 const HIT_FLASH_DURATION_MS = 100;
 const CANNON_SHAKE_DURATION_MS = 150;
 const CANNON_SHAKE_MAGNITUDE = 2.5;
-const KNOCKBACK_DIST = 3; // px — subtelny odrzut przy trafieniu pociskiem
 
 let deathEffects = []; // {x, y, color, startTime} — zanikający pierścień w miejscu śmierci
 let dyingUnits = []; // {type, owner, x, y, startTime} — znikająca sylwetka jednostki
@@ -823,6 +842,43 @@ function findNearestEnemyInRange(unit, allUnits) {
   return nearest;
 }
 
+// Priorytety celów dla jednostek dystansowych — przełączane klawiszem Tab
+// (patrz listener na końcu pliku). Jednostki wręcz zawsze biją najbliższego
+// (findNearestEnemyInRange), to dotyczy wyłącznie ranged:true.
+const TARGET_PRIORITIES = ['NEAREST', 'ENEMY_ARTILLERY', 'HEAVY_UNITS', 'WEAKEST'];
+
+function findTargetForUnit(unit, allUnits) {
+  const range = UNIT_TYPES[unit.type].attackRange;
+  const inRange = allUnits.filter(o => o.owner !== unit.owner && o.hp > 0
+    && Math.hypot(o.x - unit.x, o.y - unit.y) <= range);
+  if (inRange.length === 0) return null;
+  const nearest = (list) => list.reduce((best, o) => {
+    const d = Math.hypot(o.x - unit.x, o.y - unit.y);
+    return (!best || d < best.d) ? { o, d } : best;
+  }, null).o;
+
+  if (unit.targetPriority === 'ENEMY_ARTILLERY') {
+    const found = inRange.filter(o => UNIT_TYPES[o.type].ranged);
+    if (found.length) return nearest(found);
+  } else if (unit.targetPriority === 'HEAVY_UNITS') {
+    const found = inRange.filter(o => o.type === 'HEAVY_INFANTRY');
+    if (found.length) return nearest(found);
+  } else if (unit.targetPriority === 'WEAKEST') {
+    return inRange.reduce((best, o) => (!best || o.hp < best.hp) ? o : best, null);
+  }
+  return nearest(inRange); // NEAREST i fallback, gdy brak celu pasującego do priorytetu
+}
+
+// Kto napiera, ten trafia mocniej — obrażenia w zwarciu skalowane relacją
+// pushStrength atakującego względem celu (patrz resolveCollisions: to samo
+// pushStrength rozstrzyga, kto fizycznie ustępuje pola)
+function pushDamageMultiplier(attacker, target) {
+  const a = UNIT_TYPES[attacker.type].pushStrength, t = UNIT_TYPES[target.type].pushStrength;
+  if (a > t) return PUSH_WINNING_DAMAGE_MULTIPLIER;
+  if (a < t) return PUSH_LOSING_DAMAGE_MULTIPLIER;
+  return PUSH_STALEMATE_DAMAGE_MULTIPLIER;
+}
+
 function attackerDamageMultiplier(attacker) {
   const tile = worldToTile(attacker.x, attacker.y);
   const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
@@ -833,8 +889,9 @@ function attackerDamageMultiplier(attacker) {
 // (BEZ dotykania hp — patrz komentarz KRYTYCZNE niżej). Pocisk celuje w
 // punkt, gdzie cel był w chwili strzału, i się nie naprowadza — jeśli cel
 // zdążył odejść dalej niż jego collisionRadius od tego punktu, to pudło.
-// Trafienie dodaje subtelną reakcję (odrzut w kierunku lotu, błysk, przy
-// działach drganie) i zawsze zostawia iskrę w miejscu uderzenia.
+// Trafienie to WYŁĄCZNIE efekt wizualny (błysk, przy działach drganie) i
+// iskra w miejscu uderzenia — bez fizycznego odrzutu. Wypychanie jednostek
+// ma być skutkiem tylko napierania w zwarciu (pushStrength), nigdy ostrzału.
 function updateProjectiles(dt, now, pendingDamage) {
   const stillFlying = [];
   for (const p of projectiles) {
@@ -853,8 +910,6 @@ function updateProjectiles(dt, now, pendingDamage) {
       if (missDist <= UNIT_TYPES[p.targetUnit.type].collisionRadius) {
         pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + p.damage);
 
-        const speed = Math.hypot(p.vx, p.vy) || 1;
-        tryMove(p.targetUnit, (p.vx / speed) * KNOCKBACK_DIST, (p.vy / speed) * KNOCKBACK_DIST);
         p.targetUnit.hitFlashUntil = now + HIT_FLASH_DURATION_MS;
         if (p.attackerType === 'CANNON') {
           p.targetUnit.shakeUntil = now + CANNON_SHAKE_DURATION_MS;
@@ -878,35 +933,46 @@ function resolveCombat(allUnits, dt) {
   const attackersThisFrame = new Set(); // do liczenia timeSinceCombat — kto zadał albo wystrzelił
 
   for (const u of allUnits) {
-    u.reloadRemaining = Math.max(0, u.reloadRemaining - dt);
+    const cfg = UNIT_TYPES[u.type];
+    if (cfg.ranged && u.path.length > 0) {
+      // w ruchu: przerwij rozstawienie i wyczyść przeładowanie — po
+      // ponownym rozstawieniu jednostka jest od razu gotowa do strzału,
+      // bez dodatkowego czekania na stary cykl przeładowania
+      u.setupRemaining = cfg.setupTime;
+      u.reloadRemaining = 0;
+    } else {
+      u.reloadRemaining = Math.max(0, u.reloadRemaining - dt);
+      if (cfg.ranged) u.setupRemaining = Math.max(0, u.setupRemaining - dt);
+    }
   }
 
   updateProjectiles(dt, now, pendingDamage);
 
   for (const attacker of allUnits) {
     if (attacker.hp <= 0) continue;
-    const target = findNearestEnemyInRange(attacker, allUnits);
-    if (!target) continue;
     const cfg = UNIT_TYPES[attacker.type];
+    const target = cfg.ranged ? findTargetForUnit(attacker, allUnits) : findNearestEnemyInRange(attacker, allUnits);
+    if (!target) continue;
     const dmgMultiplier = attackerDamageMultiplier(attacker);
 
     if (!cfg.ranged) {
-      // walka wręcz — jak dotąd, obrażenia ciągłe
+      // walka wręcz — obrażenia ciągłe, skalowane tym, kto napiera
       attacks.push({ attacker, target });
       attackersThisFrame.add(attacker);
-      const damage = cfg.damagePerSecond * dt * dmgMultiplier;
+      const damage = cfg.damagePerSecond * dt * dmgMultiplier * pushDamageMultiplier(attacker, target);
       pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
       continue;
     }
 
     const dist = Math.hypot(target.x - attacker.x, target.y - attacker.y);
     if (dist < cfg.minRange) {
-      // dystansowy zmuszony do zwarcia — bezbronny, tylko śladowy atak wręcz
+      // dystansowy zmuszony do zwarcia — bezbronny (pushStrength=0 zawsze
+      // przegrywa porównanie), tylko śladowy atak wręcz
       attacks.push({ attacker, target });
       attackersThisFrame.add(attacker);
-      const damage = cfg.meleeDamage * dt * dmgMultiplier;
+      const damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, target);
       pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
-    } else if (attacker.reloadRemaining <= 0) {
+    } else if (attacker.reloadRemaining <= 0 && attacker.setupRemaining <= 0) {
       // normalny strzał — obrażenia dopiero przy trafieniu pocisku, nie teraz.
       // Samo wystrzelenie już liczy się jako "w walce" dla regeneracji.
       attackersThisFrame.add(attacker);
@@ -1120,10 +1186,36 @@ function drawUnits(now) {
       ctx.lineWidth = 3;
       ctx.stroke();
     }
+    if (cfg.ranged && u.setupRemaining > 0) {
+      // jeszcze się rozstawia — nie może strzelić, wyraźny (szybszy niż
+      // regeneracja) puls, żeby gracz rozumiał, dlaczego jednostka milczy
+      const pulse = 0.4 + 0.4 * Math.sin(now / 200);
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, cfg.drawRadius + 2, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,165,0,${pulse.toFixed(2)})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
 
     if (shaking) ctx.restore();
 
     drawHpBar(u, cfg, now);
+    if (cfg.ranged && u.targetPriority && u.targetPriority !== 'NEAREST') {
+      const letter = { ENEMY_ARTILLERY: 'A', HEAVY_UNITS: 'H', WEAKEST: 'W' }[u.targetPriority];
+      const bx = u.x + cfg.drawRadius * 0.7, by = u.y - cfg.drawRadius * 0.7;
+      ctx.beginPath();
+      ctx.arc(bx, by, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#222';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 8px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(letter, bx, by + 0.5);
+    }
   }
 }
 
