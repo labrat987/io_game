@@ -30,18 +30,22 @@
 const TILE_SIZE = 32;
 
 const TERRAIN = {
-  0: { name: 'FIELD',    passable: true,  speedMultiplier: 1.0, color: '#a8c766' },
-  1: { name: 'FOREST',   passable: true,  speedMultiplier: 0.5, color: '#3f6b35' },
-  2: { name: 'MOUNTAIN', passable: false, speedMultiplier: 0,   color: '#8a8a8a' },
-  3: { name: 'WATER',    passable: false, speedMultiplier: 0,   color: '#3a7bd5' },
+  0: { name: 'FIELD',    passable: true,  speedMultiplier: 1.0,  color: '#a8c766' },
+  1: { name: 'FOREST',   passable: true,  speedMultiplier: 0.5,  color: '#3f6b35' },
+  2: { name: 'MOUNTAIN', passable: false, speedMultiplier: 0,    color: '#8a8a8a' },
+  3: { name: 'WATER',    passable: true,  speedMultiplier: 0.15, color: '#3a7bd5', pathCost: 20 },
 };
 
+// Obrażenia za sekundę stania na wodzie — wymaga systemu HP, którego
+// jeszcze nie ma; na razie stała niewywoływana nigdzie w kodzie
+const WATER_DAMAGE_PER_SECOND = 0;
+
 const UNIT_TYPES = {
-  ARCHER:         { speed: 1.2, color: '#d4af37', radius: 8 },
-  CANNON:         { speed: 0.6, color: '#555555', radius: 9 },
-  LIGHT_INFANTRY: { speed: 1.5, color: '#4caf50', radius: 7 },
-  HEAVY_INFANTRY: { speed: 0.9, color: '#795548', radius: 8 },
-  CAVALRY:        { speed: 2.0, color: '#e91e63', radius: 8 },
+  ARCHER:         { speed: 1.2, color: '#d4af37', radius: 8, collisionRadius: 7 },
+  CANNON:         { speed: 0.6, color: '#555555', radius: 9, collisionRadius: 8 },
+  LIGHT_INFANTRY: { speed: 1.5, color: '#4caf50', radius: 7, collisionRadius: 6 },
+  HEAVY_INFANTRY: { speed: 0.9, color: '#795548', radius: 8, collisionRadius: 7 },
+  CAVALRY:        { speed: 2.0, color: '#e91e63', radius: 8, collisionRadius: 7 },
 };
 
 const BASE_SPEED_PX_PER_S = 60; // mnożone przez unit.speed i terrain.speedMultiplier
@@ -166,10 +170,18 @@ function nearestPassableTile(col, row) {
 // ============================================================
 // PATHFINDING (A*)
 // ============================================================
-function findPath(startTile, endTile) {
+function findPath(startTile, endTile, exactEndPoint) {
   let end = endTile;
-  if (!isPassable(end.col, end.row)) end = nearestPassableTile(end.col, end.row);
-  if (!isPassable(startTile.col, startTile.row) || (startTile.col === end.col && startTile.row === end.row)) {
+  let endWasSnapped = false;
+  if (!isPassable(end.col, end.row)) {
+    end = nearestPassableTile(end.col, end.row);
+    endWasSnapped = true;
+  }
+  // Kafel startowy zawsze traktowany jako dostępny — jeśli jednostka mimo
+  // wszystko stoi na nieprzechodnim terenie, ma mieć jak stamtąd wyjść
+  // (sąsiedzi nadal filtrowani normalnie przez isPassable niżej).
+  if (startTile.col === end.col && startTile.row === end.row) {
+    if (exactEndPoint && !endWasSnapped) return [{ x: exactEndPoint.x, y: exactEndPoint.y }];
     return [];
   }
 
@@ -198,7 +210,11 @@ function findPath(startTile, endTile) {
       let n = current;
       while (n) { tilePath.unshift({ col: n.col, row: n.row }); n = n.parent; }
       const smoothed = smoothTilePath(tilePath);
-      return smoothed.slice(1).map(t => tileToWorld(t.col, t.row));
+      const worldPoints = smoothed.slice(1).map(t => tileToWorld(t.col, t.row));
+      if (exactEndPoint && !endWasSnapped && worldPoints.length > 0) {
+        worldPoints[worldPoints.length - 1] = { x: exactEndPoint.x, y: exactEndPoint.y };
+      }
+      return worldPoints;
     }
     open.delete(currentKey);
     closed.add(currentKey);
@@ -212,7 +228,8 @@ function findPath(startTile, endTile) {
       }
       const nk = key(nc, nr);
       if (closed.has(nk)) continue;
-      const stepCost = (dc !== 0 && dr !== 0) ? Math.SQRT2 : 1;
+      const destTerrain = terrainAt(nc, nr);
+      const stepCost = ((dc !== 0 && dr !== 0) ? Math.SQRT2 : 1) * (destTerrain.pathCost || 1);
       const g = current.g + stepCost;
       const existing = open.get(nk);
       if (!existing || g < existing.g) {
@@ -229,9 +246,17 @@ function heuristic(a, b) {
   return Math.sqrt(dx*dx + dy*dy);
 }
 
+// Kafel blokuje "skrót" przy wygładzaniu, jeśli jest nieprzechodni ALBO
+// bardzo kosztowny (woda) — inaczej wygładzanie wycięłoby prostą linię
+// przez wodę, ignorując wysoki koszt, który A* świadomie omijał
+function blocksLineOfSight(col, row) {
+  const t = terrainAt(col, row);
+  if (!t || !t.passable) return true;
+  return (t.pathCost || 1) > 1;
+}
+
 // Bresenham po kaflach — sprawdza, czy między a i b jest prosta,
-// nieprzerywana przez nieprzechodni teren linia (z zakazem ścinania rogów,
-// tak jak w A*)
+// nieprzerywana linia (z zakazem ścinania rogów, tak jak w A*)
 function hasLineOfSight(a, b) {
   let x = a.col, y = a.row;
   const x1 = b.col, y1 = b.row;
@@ -241,14 +266,14 @@ function hasLineOfSight(a, b) {
   let err = dx - dy;
 
   while (true) {
-    if (!isPassable(x, y)) return false;
+    if (blocksLineOfSight(x, y)) return false;
     if (x === x1 && y === y1) return true;
     const e2 = 2 * err;
     let steppedX = false, steppedY = false;
     if (e2 > -dy) { err -= dy; x += sx; steppedX = true; }
     if (e2 < dx) { err += dx; y += sy; steppedY = true; }
     if (steppedX && steppedY) {
-      if (!isPassable(x - sx, y) || !isPassable(x, y - sy)) return false;
+      if (blocksLineOfSight(x - sx, y) || blocksLineOfSight(x, y - sy)) return false;
     }
   }
 }
@@ -323,10 +348,12 @@ function pointAtArcLength(points, dist) {
 function buildRoutePath(unit, curvePoints) {
   const fullPath = [];
   let prevWorld = { x: unit.x, y: unit.y };
-  for (const cp of curvePoints) {
+  for (let i = 0; i < curvePoints.length; i++) {
+    const cp = curvePoints[i];
+    const isLast = i === curvePoints.length - 1;
     const startTile = worldToTile(prevWorld.x, prevWorld.y);
     const endTile = worldToTile(cp.x, cp.y);
-    const segment = findPath(startTile, endTile);
+    const segment = findPath(startTile, endTile, isLast ? cp : undefined);
     fullPath.push(...segment);
     prevWorld = cp;
   }
@@ -358,6 +385,25 @@ function assignFrontTargets(selectedUnits, curvePoints) {
 // ============================================================
 // KLASYFIKACJA GESTU
 // ============================================================
+const FORMATION_SPACING = 18; // px — odstęp między jednostkami w rozstawieniu grupy
+
+// Zwraca N przesunięć (dx,dy) wokół (0,0): środek + kolejne pierścienie,
+// żeby grupowy rozkaz "idź w punkt" nie kierował wszystkich w ten sam piksel
+function formationOffsets(n, spacing) {
+  const offsets = [{ dx: 0, dy: 0 }];
+  let ring = 1;
+  while (offsets.length < n) {
+    const count = Math.min(n - offsets.length, 6 * ring);
+    const radius = spacing * ring;
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2;
+      offsets.push({ dx: Math.cos(angle) * radius, dy: Math.sin(angle) * radius });
+    }
+    ring++;
+  }
+  return offsets;
+}
+
 function findUnitAt(x, y) {
   for (let i = units.length - 1; i >= 0; i--) {
     const u = units[i];
@@ -453,9 +499,11 @@ window.addEventListener('mouseup', (e) => {
     const selected = getSelectedUnits();
     if (selected.length > 0) {
       if (!wasDrag) {
-        for (const u of selected) {
-          u.path = findPath(worldToTile(u.x, u.y), worldToTile(pos.x, pos.y));
-        }
+        const offsets = formationOffsets(selected.length, FORMATION_SPACING);
+        selected.forEach((u, i) => {
+          const target = { x: pos.x + offsets[i].dx, y: pos.y + offsets[i].dy };
+          u.path = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
+        });
       } else if (dragMode === 'ROUTE') {
         if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
         const curve = simplifyCurve(rawStrokePoints, 6);
@@ -467,7 +515,7 @@ window.addEventListener('mouseup', (e) => {
         const curve = simplifyCurve(rawStrokePoints, 6);
         const assignments = assignFrontTargets(selected, curve);
         for (const { unit, target } of assignments) {
-          unit.path = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y));
+          unit.path = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
         }
       }
     }
@@ -488,12 +536,25 @@ function updateUnit(unit, dt) {
   const target = unit.path[0];
   const tile = worldToTile(unit.x, unit.y);
   const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
-  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * terrain.speedMultiplier;
+  // Zabezpieczenie: jeśli jednostka mimo wszystko stoi na nieprzechodnim
+  // kaflu, speedMultiplier=0 zablokowałby ją tam na stałe — pozwól jej
+  // poruszać się z normalną prędkością, żeby mogła zejść na właściwy teren
+  const effectiveSpeedMultiplier = terrain.passable ? terrain.speedMultiplier : 1.0;
+  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier;
 
   let remaining = speed * dt;
   while (remaining > 0 && unit.path.length > 0) {
     const dx = unit.path[0].x - unit.x, dy = unit.path[0].y - unit.y;
     const dist = Math.hypot(dx, dy);
+    // Punkt ścieżki (pośredni albo ostatni) bywa zajęty przez inną
+    // jednostkę (kolizje) — zamiast wiecznie napierać o dokładny piksel
+    // (co przy kilku jednostkach na wspólnym punkcie przelotowym tworzy
+    // trwały zator), uznajemy "wystarczająco blisko" za dotarcie
+    if (dist <= UNIT_TYPES[unit.type].collisionRadius) {
+      unit.path.shift();
+      if (unit.path.length === 0) break;
+      continue;
+    }
     if (dist <= remaining) {
       unit.x = unit.path[0].x;
       unit.y = unit.path[0].y;
@@ -503,6 +564,58 @@ function updateUnit(unit, dt) {
       unit.x += (dx / dist) * remaining;
       unit.y += (dy / dist) * remaining;
       remaining = 0;
+    }
+  }
+}
+
+const COLLISION_DAMPING = 0.5; // tłumienie rozsuwania — zapobiega drganiu w ciasnej grupie
+
+function tryMove(unit, dx, dy) {
+  const candidate = { x: unit.x + dx, y: unit.y + dy };
+  let tile = worldToTile(candidate.x, candidate.y);
+  if (isPassable(tile.col, tile.row)) {
+    unit.x = candidate.x;
+    unit.y = candidate.y;
+    return;
+  }
+  const onlyX = { x: unit.x + dx, y: unit.y };
+  tile = worldToTile(onlyX.x, onlyX.y);
+  if (isPassable(tile.col, tile.row)) {
+    unit.x = onlyX.x;
+    return;
+  }
+  const onlyY = { x: unit.x, y: unit.y + dy };
+  tile = worldToTile(onlyY.x, onlyY.y);
+  if (isPassable(tile.col, tile.row)) {
+    unit.y = onlyY.y;
+    return;
+  }
+  // żaden kierunek nie prowadzi na przechodni teren — zostaw jednostkę na miejscu
+}
+
+// Rozsuwa nakładające się jednostki (promień kolizji), z ograniczeniem do
+// przechodniego terenu i tłumieniem, żeby ciasna grupa nie drgała
+function resolveCollisions(allUnits) {
+  for (let i = 0; i < allUnits.length; i++) {
+    for (let j = i + 1; j < allUnits.length; j++) {
+      const a = allUnits[i], b = allUnits[j];
+      const minDist = UNIT_TYPES[a.type].collisionRadius + UNIT_TYPES[b.type].collisionRadius;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist === 0) {
+        const angle = Math.random() * Math.PI * 2;
+        tryMove(a, Math.cos(angle) * -0.5, Math.sin(angle) * -0.5);
+        tryMove(b, Math.cos(angle) * 0.5, Math.sin(angle) * 0.5);
+        continue;
+      }
+      if (dist < minDist) {
+        const overlap = (minDist - dist) * COLLISION_DAMPING;
+        const nx = dx / dist, ny = dy / dist;
+        const push = overlap / 2;
+        tryMove(a, -nx * push, -ny * push);
+        tryMove(b, nx * push, ny * push);
+      }
     }
   }
 }
@@ -644,6 +757,7 @@ function gameLoop(now) {
   lastTime = now;
 
   for (const u of units) updateUnit(u, dt);
+  resolveCollisions(units);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
