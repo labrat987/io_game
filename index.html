@@ -216,6 +216,11 @@ const MAP_ROWS = MAP_DATA.length;
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
+// Tryb bez renderowania i bez domyślnej armii — do narzędzia testowania
+// balansu (patrz window.BalanceSim na końcu pliku). Zwykłe wczytanie
+// pliku (bez ?headless) działa dokładnie jak dotąd.
+const HEADLESS = new URLSearchParams(location.search).has('headless');
+
 const MAP_WIDTH_PX = MAP_COLS * TILE_SIZE;
 const MAP_HEIGHT_PX = MAP_ROWS * TILE_SIZE;
 
@@ -269,28 +274,31 @@ function spawnUnit(type, col, row, owner) {
 
 // Dwie armie po przeciwnych krańcach mapy, na sprawdzonym przechodnim
 // terenie (pole). P1 (niebieski, sterowany) po lewej, P2 (czerwony,
-// statyczny — bez AI) po prawej.
-spawnUnit('ARCHER', 1, 8, 'P1');
-spawnUnit('ARCHER', 2, 8, 'P1');
-spawnUnit('CANNON', 1, 9, 'P1');
-spawnUnit('CANNON', 2, 9, 'P1');
-spawnUnit('LIGHT_INFANTRY', 1, 10, 'P1');
-spawnUnit('LIGHT_INFANTRY', 2, 10, 'P1');
-spawnUnit('HEAVY_INFANTRY', 1, 11, 'P1');
-spawnUnit('HEAVY_INFANTRY', 2, 11, 'P1');
-spawnUnit('CAVALRY', 1, 12, 'P1');
-spawnUnit('CAVALRY', 2, 12, 'P1');
+// statyczny — bez AI) po prawej. Pomijane w trybie headless — narzędzie
+// balansu (window.BalanceSim) spawnuje własne, zdefiniowane scenariuszem armie.
+if (!HEADLESS) {
+  spawnUnit('ARCHER', 1, 8, 'P1');
+  spawnUnit('ARCHER', 2, 8, 'P1');
+  spawnUnit('CANNON', 1, 9, 'P1');
+  spawnUnit('CANNON', 2, 9, 'P1');
+  spawnUnit('LIGHT_INFANTRY', 1, 10, 'P1');
+  spawnUnit('LIGHT_INFANTRY', 2, 10, 'P1');
+  spawnUnit('HEAVY_INFANTRY', 1, 11, 'P1');
+  spawnUnit('HEAVY_INFANTRY', 2, 11, 'P1');
+  spawnUnit('CAVALRY', 1, 12, 'P1');
+  spawnUnit('CAVALRY', 2, 12, 'P1');
 
-spawnUnit('ARCHER', 22, 8, 'P2');
-spawnUnit('ARCHER', 23, 8, 'P2');
-spawnUnit('CANNON', 22, 9, 'P2');
-spawnUnit('CANNON', 23, 9, 'P2');
-spawnUnit('LIGHT_INFANTRY', 22, 10, 'P2');
-spawnUnit('LIGHT_INFANTRY', 23, 10, 'P2');
-spawnUnit('HEAVY_INFANTRY', 22, 11, 'P2');
-spawnUnit('HEAVY_INFANTRY', 23, 11, 'P2');
-spawnUnit('CAVALRY', 22, 12, 'P2');
-spawnUnit('CAVALRY', 23, 12, 'P2');
+  spawnUnit('ARCHER', 22, 8, 'P2');
+  spawnUnit('ARCHER', 23, 8, 'P2');
+  spawnUnit('CANNON', 22, 9, 'P2');
+  spawnUnit('CANNON', 23, 9, 'P2');
+  spawnUnit('LIGHT_INFANTRY', 22, 10, 'P2');
+  spawnUnit('LIGHT_INFANTRY', 23, 10, 'P2');
+  spawnUnit('HEAVY_INFANTRY', 22, 11, 'P2');
+  spawnUnit('HEAVY_INFANTRY', 23, 11, 'P2');
+  spawnUnit('CAVALRY', 22, 12, 'P2');
+  spawnUnit('CAVALRY', 23, 12, 'P2');
+}
 
 // Gest myszy
 let dragMode = null; // 'SELECT' | 'ROUTE' | 'FRONT' | null
@@ -1985,7 +1993,135 @@ function gameLoop(now) {
 
   requestAnimationFrame(gameLoop);
 }
-requestAnimationFrame(gameLoop);
+if (!HEADLESS) requestAnimationFrame(gameLoop);
+
+// ============================================================
+// NARZĘDZIE BALANSU (window.BalanceSim) — wyłącznie do testowania,
+// używane przez balance-sim.js. Woła TYLKO istniejące funkcje gry
+// (spawnUnit/updateUnit/resolveCollisions/resolveCombat/findPath/
+// finalizePath) — żadnej osobnej/zduplikowanej logiki walki, żeby wyniki
+// były miarodajne. Nieaktywne podczas zwykłej rozgrywki (nic go nie woła
+// automatycznie).
+// ============================================================
+window.BalanceSim = {
+  resetWorld() {
+    units = [];
+    projectiles = [];
+    deathEffects = [];
+    dyingUnits = [];
+    impactEffects = [];
+    orderFailEffects = [];
+    currentAttacks = [];
+  },
+
+  // Nadpisuje CAŁĄ mapę jednym terenem — do porównania tego samego
+  // starcia na różnych terenach (patrz balance-sim.js, scenariusz "teren").
+  setUniformTerrain(code) {
+    for (let r = 0; r < MAP_ROWS; r++) {
+      for (let c = 0; c < MAP_COLS; c++) MAP_DATA[r][c] = code;
+    }
+  },
+
+  spawnArmy(composition, owner, col, row) {
+    let placed = 0;
+    for (const { type, count } of composition) {
+      for (let i = 0; i < count; i++) {
+        spawnUnit(type, col + (placed % 5), row + Math.floor(placed / 5), owner);
+        placed++;
+      }
+    }
+  },
+
+  armyCentroid(owner) {
+    const list = units.filter(u => u.owner === owner);
+    if (!list.length) return null;
+    return {
+      x: list.reduce((s, u) => s + u.x, 0) / list.length,
+      y: list.reduce((s, u) => s + u.y, 0) / list.length,
+    };
+  },
+
+  // Jeden rozkaz marszu na dany punkt dla całej armii — dokładnie to,
+  // co zrobiłby gracz rysując FRONT/klik na środek wroga. Dalej wszystko
+  // przejmują te same mechaniki co w normalnej grze.
+  issueAdvanceOrders(owner, target) {
+    if (!target) return;
+    for (const u of units) {
+      if (u.owner !== owner) continue;
+      const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
+      if (rawPath) u.path = finalizePath(u, rawPath);
+    }
+  },
+
+  // Rozgrywa jedno starcie do końca (albo do maxSeconds) i zwraca metryki.
+  // armyA/armyB: [{type, count}]. terrain: 'FIELD'|'FOREST'|'WATER'|null.
+  runBattle({ armyA, armyB, terrain, maxSeconds = 240 }) {
+    this.resetWorld();
+    if (terrain) this.setUniformTerrain({ FIELD: 0, FOREST: 1, WATER: 3 }[terrain]);
+    this.spawnArmy(armyA, 'P1', 2, 6);
+    this.spawnArmy(armyB, 'P2', 18, 6);
+    this.issueAdvanceOrders('P1', this.armyCentroid('P2'));
+    this.issueAdvanceOrders('P2', this.armyCentroid('P1'));
+
+    const startHpA = units.filter(u => u.owner === 'P1').reduce((s, u) => s + u.hp, 0);
+    const startHpB = units.filter(u => u.owner === 'P2').reduce((s, u) => s + u.hp, 0);
+    const startCountA = units.filter(u => u.owner === 'P1').length;
+    const startCountB = units.filter(u => u.owner === 'P2').length;
+    const everRoutedA = new Set(), everRoutedB = new Set();
+
+    const dt = 0.05;
+    const maxTicks = Math.ceil(maxSeconds / dt);
+    let tick = 0;
+    for (; tick < maxTicks; tick++) {
+      for (const u of units) updateUnit(u, dt);
+      resolveCollisions(units);
+      units = resolveCombat(units, dt);
+
+      for (const u of units) {
+        if (!u.routed) continue;
+        (u.owner === 'P1' ? everRoutedA : everRoutedB).add(u.id);
+      }
+
+      // co ~10s symulowanego czasu ponów rozkaz marszu na AKTUALNY środek
+      // wroga — bez tego niedobitki daleko od reszty potrafią "zgubić"
+      // cel i sztucznie przeciągać starcie (patrz pole timedOut w wyniku)
+      if (tick > 0 && tick % 200 === 0) {
+        const centroidB = this.armyCentroid('P2');
+        const centroidA = this.armyCentroid('P1');
+        if (centroidB) this.issueAdvanceOrders('P1', centroidB);
+        if (centroidA) this.issueAdvanceOrders('P2', centroidA);
+      }
+
+      const aliveA = units.some(u => u.owner === 'P1');
+      const aliveB = units.some(u => u.owner === 'P2');
+      if (!aliveA || !aliveB) break;
+    }
+
+    const survivorsA = units.filter(u => u.owner === 'P1');
+    const survivorsB = units.filter(u => u.owner === 'P2');
+    const endHpA = survivorsA.reduce((s, u) => s + u.hp, 0);
+    const endHpB = survivorsB.reduce((s, u) => s + u.hp, 0);
+    const winner = survivorsA.length > 0 && survivorsB.length === 0 ? 'A'
+      : survivorsB.length > 0 && survivorsA.length === 0 ? 'B'
+      : 'DRAW';
+
+    return {
+      winner,
+      durationSeconds: tick * dt,
+      timedOut: tick >= maxTicks,
+      survivorsA: survivorsA.length,
+      survivorsB: survivorsB.length,
+      startCountA,
+      startCountB,
+      damageDealtByA: startHpB - endHpB,
+      damageDealtByB: startHpA - endHpA,
+      avgDamagePerUnitA: (startHpB - endHpB) / startCountA,
+      avgDamagePerUnitB: (startHpA - endHpA) / startCountB,
+      routedA: everRoutedA.size,
+      routedB: everRoutedB.size,
+    };
+  },
+};
 </script>
 </body>
 </html>
