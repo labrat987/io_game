@@ -55,6 +55,10 @@ const PUSH_WINNING_DAMAGE_MULTIPLIER = 1.0;
 const PUSH_STALEMATE_DAMAGE_MULTIPLIER = 0.5;
 const PUSH_LOSING_DAMAGE_MULTIPLIER = 0.25;
 
+// Bonus "dobijania" dla ostrzału dystansowego — patrz updateProjectiles
+const LOW_HP_THRESHOLD = 0.3; // poniżej tego ułamka maxHp celu
+const LOW_HP_DAMAGE_BONUS = 1.5; // mnożnik obrażeń trafienia pociskiem
+
 // Kolor jednostki = gracz (nie typ) — typ rozróżniany promieniem (drawRadius)
 const PLAYERS = {
   P1: { color: '#2f6fed' },
@@ -70,8 +74,12 @@ const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
 // obrażeniami — patrz CLAUDE.md/podsumowanie tury). pushStrength: 0 =
 // jednostka nie napiera w walce wręcz (dotyczy obu dystansowych).
 const UNIT_TYPES = {
-  ARCHER:         { ranged: true,  maxHp: 160, damagePerShot: 15, reloadTime: 1.2, projectileSpeed: 300, minRange: 30, meleeDamage: 3,  attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5 },
-  CANNON:         { ranged: true,  maxHp: 200, damagePerShot: 60, reloadTime: 4.0, projectileSpeed: 150, minRange: 60, meleeDamage: 12, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0 },
+  // Dystansowi to wsparcie piechoty, nie samodzielna siła: osłabiona siła
+  // ognia, wolniejsze przeładowanie, kruche HP, bezbronni z bliska,
+  // accuracy = promień rozrzutu (px) na pełnym attackRange (patrz
+  // resolveCombat — rośnie kwadratowo z dystansem, nie liniowo)
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 9,  reloadTime: 1.8, projectileSpeed: 300, minRange: 50, meleeDamage: 0.9, accuracy: 25, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5 },
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 36, reloadTime: 6.0, projectileSpeed: 150, minRange: 90, meleeDamage: 3.6, accuracy: 45, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0 },
   LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 1 },
   HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 3 },
   CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 2 },
@@ -908,7 +916,13 @@ function updateProjectiles(dt, now, pendingDamage) {
     if (p.targetUnit.hp > 0) {
       const missDist = Math.hypot(p.targetUnit.x - p.impactX, p.targetUnit.y - p.impactY);
       if (missDist <= UNIT_TYPES[p.targetUnit.type].collisionRadius) {
-        pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + p.damage);
+        // bonus za dobijanie: sprawdzany na aktualnym hp z tej klatki,
+        // przed jakimkolwiek odjęciem — zgodne z zasadą KRYTYCZNE
+        let dmg = p.damage;
+        if (p.targetUnit.hp < UNIT_TYPES[p.targetUnit.type].maxHp * LOW_HP_THRESHOLD) {
+          dmg *= LOW_HP_DAMAGE_BONUS;
+        }
+        pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + dmg);
 
         p.targetUnit.hitFlashUntil = now + HIT_FLASH_DURATION_MS;
         if (p.attackerType === 'CANNON') {
@@ -979,9 +993,17 @@ function resolveCombat(allUnits, dt) {
       const speed = cfg.projectileSpeed;
       const vx = (target.x - attacker.x) / dist * speed;
       const vy = (target.y - attacker.y) / dist * speed;
+      // rozrzut rośnie kwadratowo z dystansem: blisko minRange niemal
+      // pewne trafienie, na pełnym attackRange wyraźnie gorsza celność
+      const distFraction = dist / cfg.attackRange;
+      const spreadRadius = cfg.accuracy * distFraction * distFraction;
+      const missAngle = Math.random() * Math.PI * 2;
+      const missOffset = Math.sqrt(Math.random()) * spreadRadius;
+      const impactX = target.x + Math.cos(missAngle) * missOffset;
+      const impactY = target.y + Math.sin(missAngle) * missOffset;
       projectiles.push({
         x: attacker.x, y: attacker.y, vx, vy,
-        impactX: target.x, impactY: target.y,
+        impactX, impactY,
         distanceLeft: dist,
         damage: cfg.damagePerShot * dmgMultiplier,
         owner: attacker.owner,
