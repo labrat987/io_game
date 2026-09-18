@@ -46,6 +46,7 @@
   <div id="cityPanelTitle"></div>
   <div id="cityQueueList"></div>
   <div id="cityBuildButtons"></div>
+  <div id="cityMessage" style="color:#ff8844; min-height: 1.6em;"></div>
   <button id="sendConvoyBtn">Wyślij konwój</button>
   <button id="closeCityPanelBtn">Zamknij</button>
 </div>
@@ -272,9 +273,9 @@ const MAP_ROWS = MAP_DATA.length;
 // utrzymanie. Bez bandytów, handlu, przejmowania miast, terytorium i
 // limitów zaopatrzenia (patrz CLAUDE.md, sekcja Kolejność budowy).
 // ============================================================
-const CITY_SIZE_TILES = 2; // miasto zajmuje 2x2 kafle, zweryfikowane ręcznie jako czyste pole
-// Zahardkodowane pozycje (jak MAP_DATA) — (col,row) to lewy-górny róg
-// kwadratu 2x2. Własność stała na tym etapie, bez przejmowania.
+const CITY_SIZE_TILES = 1; // miasto zajmuje dokładnie jeden kafel
+// Zahardkodowane pozycje (jak MAP_DATA) — (col,row) to kafel miasta.
+// Własność stała na tym etapie, bez przejmowania.
 const CITIES = [
   { id: 'p1_a', col: 0,  row: 14, owner: 'P1' },
   { id: 'p1_b', col: 5,  row: 14, owner: 'P1' },
@@ -285,10 +286,10 @@ const CITIES = [
 ];
 for (const city of CITIES) city.queue = []; // {type, remainingTime}
 
-const STARTING_GOLD = 200;
-const UPKEEP_RATE_PER_COST = 0.01; // złota/s na punkt kosztu jednostki (1%/s) — jedna dźwignia zamiast osobnej stałej na typ
-const UNPAID_UPKEEP_MORALE_LOSS_PER_SECOND = 5; // gdy gracza nie stać na żołd — patrz updateMorale
-const CONVOY_GOLD_PER_100PX = 8; // zysk konwoju za każde 100px dystansu między miastami
+const STARTING_GOLD = 300; // starcza na utrzymanie armii startowej + pierwsze konwoje przez kilkadziesiąt sekund
+const UPKEEP_RATE_PER_COST = 0.003; // złota/s na punkt kosztu jednostki (0.3%/s) — jedna dźwignia zamiast osobnej stałej na typ
+const CITY_BASE_INCOME_PER_SECOND = 0.5; // mały, stały dochód z posiadanego miasta — siatka bezpieczeństwa, NIE zastępuje konwojów jako głównego źródła zysku
+const CONVOY_GOLD_PER_100PX = 50; // zysk konwoju za każde 100px dystansu między miastami — musi przebić CONVOY.cost, inaczej każdy konwój to gwarantowana strata
 
 function cityCenter(city) {
   return { x: (city.col + CITY_SIZE_TILES / 2) * TILE_SIZE, y: (city.row + CITY_SIZE_TILES / 2) * TILE_SIZE };
@@ -333,9 +334,10 @@ let nextUnitId = 1;
 // Ekonomia — pomijana w trybie headless (BalanceSim nie spawnuje miast)
 let gold = { P1: STARTING_GOLD, P2: STARTING_GOLD };
 let goldRate = { P1: 0, P2: 0 }; // wygładzony (EMA) wskaźnik do UI — jedyne realne źródło (konwoje) jest skokowe, nie ciągłe
-let unpaidUpkeep = { P1: false, P2: false }; // ustawiane w updateEconomy, czytane w updateMorale
 let selectedCity = null;
 let pendingConvoySource = null; // miasto źródłowe, gdy gracz czeka na wybór celu konwoju
+let cityMessage = null; // krótki komunikat w panelu miasta (np. powód nieudanej wysyłki konwoju)
+let cityMessageUntil = 0; // performance.now() do kiedy wyświetlać cityMessage
 
 function spawnUnit(type, col, row, owner) {
   const center = tileToWorld(col, row);
@@ -855,6 +857,14 @@ const cityQueueListEl = document.getElementById('cityQueueList');
 const cityBuildButtonsEl = document.getElementById('cityBuildButtons');
 const sendConvoyBtnEl = document.getElementById('sendConvoyBtn');
 const closeCityPanelBtnEl = document.getElementById('closeCityPanelBtn');
+const cityMessageEl = document.getElementById('cityMessage');
+
+// Krótki, ginący komunikat w panelu miasta — np. powód, dla którego nie
+// da się wysłać konwoju. Czytelny zamiast ciszy po nieudanej akcji.
+function showCityMessage(text) {
+  cityMessage = text;
+  cityMessageUntil = performance.now() + 2500;
+}
 
 function updateGoldPanel() {
   goldAmountEl.textContent = Math.floor(gold[OWNED_PLAYER]);
@@ -883,6 +893,24 @@ function refreshCityPanel() {
     };
     cityBuildButtonsEl.appendChild(btn);
   }
+
+  // przycisk konwoju: wyłączony z jawnym powodem, zamiast cichej porażki
+  // przy kliknięciu miasta docelowego (patrz sendConvoy)
+  const canAffordConvoy = gold[city.owner] >= UNIT_TYPES.CONVOY.cost;
+  const hasOtherCity = CITIES.some(c => c.owner === city.owner && c !== city);
+  if (pendingConvoySource === city) {
+    sendConvoyBtnEl.textContent = 'Kliknij miasto docelowe…';
+    sendConvoyBtnEl.disabled = false;
+    sendConvoyBtnEl.title = 'Kliknij własne miasto na mapie, albo ten przycisk ponownie, by anulować';
+  } else {
+    sendConvoyBtnEl.textContent = 'Wyślij konwój';
+    sendConvoyBtnEl.disabled = !canAffordConvoy || !hasOtherCity;
+    sendConvoyBtnEl.title = !hasOtherCity ? 'Brak drugiego miasta do wysłania konwoju'
+      : !canAffordConvoy ? `Za mało złota (potrzeba ${UNIT_TYPES.CONVOY.cost}, masz ${Math.floor(gold[city.owner])})`
+      : 'Kliknij, potem wybierz miasto docelowe na mapie';
+  }
+
+  cityMessageEl.textContent = performance.now() < cityMessageUntil ? cityMessage : '';
 }
 
 function showCityPanel(city) {
@@ -898,7 +926,10 @@ function hideCityPanel() {
 }
 
 sendConvoyBtnEl.addEventListener('click', () => {
-  if (selectedCity) pendingConvoySource = selectedCity;
+  if (!selectedCity) return;
+  // drugie kliknięcie w trakcie oczekiwania na cel = anuluj
+  pendingConvoySource = pendingConvoySource === selectedCity ? null : selectedCity;
+  refreshCityPanel();
 });
 closeCityPanelBtnEl.addEventListener('click', hideCityPanel);
 
@@ -1002,10 +1033,15 @@ window.addEventListener('mouseup', (e) => {
       // gracz kliknął "Wyślij konwój" i czeka na miasto docelowe — ten
       // klik rozstrzyga wysyłkę albo anuluje tryb, nigdy nie zaznacza jednostek
       const cityHit = findCityAt(pos.x, pos.y);
-      if (cityHit && cityHit.owner === OWNED_PLAYER && cityHit !== pendingConvoySource) {
-        sendConvoy(pendingConvoySource, cityHit);
+      if (cityHit === pendingConvoySource) {
+        showCityMessage('Wybierz inne miasto niż źródłowe');
+      } else if (cityHit && cityHit.owner === OWNED_PLAYER) {
+        if (!sendConvoy(pendingConvoySource, cityHit)) {
+          showCityMessage(`Za mało złota (potrzeba ${UNIT_TYPES.CONVOY.cost})`);
+        }
       }
       pendingConvoySource = null;
+      if (selectedCity) refreshCityPanel();
     } else {
       const cityHit = findCityAt(pos.x, pos.y);
       if (cityHit) {
@@ -1468,11 +1504,6 @@ function updateMorale(allUnits, attacks, pendingDamage, dt) {
         addTo(otherDelta, u, MORALE_REGEN_PER_SECOND * dt);
       }
     }
-    // brak żołdu (ekonomia niewypłacalna) obniża morale zamiast natychmiastowej
-    // śmierci — patrz updateEconomy; osobna mechanika ekonomiczna, bez tłumienia sojusznikami
-    if (unpaidUpkeep[u.owner]) {
-      addTo(otherDelta, u, -UNPAID_UPKEEP_MORALE_LOSS_PER_SECOND * dt / UNIT_TYPES[u.type].moraleResistance);
-    }
   }
 
   for (const u of allUnits) {
@@ -1761,10 +1792,11 @@ function updateConvoys(now) {
 // Pomijana w trybie headless (BalanceSim nie spawnuje miast/gold).
 function updateEconomy(dt) {
   for (const owner of ['P1', 'P2']) {
-    const upkeepDue = units.filter(u => u.owner === owner).reduce((s, u) => s + UNIT_TYPES[u.type].cost * UPKEEP_RATE_PER_COST * dt, 0);
     const before = gold[owner];
-    unpaidUpkeep[owner] = upkeepDue > gold[owner];
-    gold[owner] = Math.max(0, gold[owner] - upkeepDue);
+    // dochód bazowy z posiadanych miast — siatka bezpieczeństwa, konwoje nadal głównym źródłem zysku
+    const income = CITIES.filter(c => c.owner === owner).length * CITY_BASE_INCOME_PER_SECOND * dt;
+    const upkeepDue = units.filter(u => u.owner === owner).reduce((s, u) => s + UNIT_TYPES[u.type].cost * UPKEEP_RATE_PER_COST * dt, 0);
+    gold[owner] = Math.max(0, gold[owner] + income - upkeepDue);
     const rate = (gold[owner] - before) / dt;
     goldRate[owner] = goldRate[owner] * 0.95 + rate * 0.05;
   }
