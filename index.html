@@ -31,23 +31,31 @@
   }
   #cityPanel button:disabled { color: #777; cursor: not-allowed; }
   #cityPanel button:hover:not(:disabled) { background: #444; }
+  #cityRoutesList button { width: auto; display: inline-block; margin-left: 6px; }
+  #alertBanner {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    color: #ffcc66; font: bold 13px monospace;
+    background: rgba(0,0,0,0.8); padding: 6px 16px; border-radius: 4px;
+    pointer-events: none;
+  }
 </style>
 </head>
 <body>
 <div id="hint">
   LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
   PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
-  przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span><br>
+  przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span>,
+  przeciągnięcie z własnego miasta do innego = <span style="color:#2f6fed">SZLAK HANDLOWY</span><br>
   Tab: zmień priorytet celu zaznaczonych jednostek dystansowych (najbliższy / artyleria / ciężkie / najsłabszy) —
-  LPM w miasto: zaznacz/panel produkcji i konwojów
+  LPM w miasto: zaznacz/panel produkcji i szlaków — Delete: usuń zaznaczony szlak
 </div>
 <div id="goldPanel">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)</div>
+<div id="alertBanner" style="display:none;"></div>
 <div id="cityPanel" style="display:none;">
   <div id="cityPanelTitle"></div>
   <div id="cityQueueList"></div>
   <div id="cityBuildButtons"></div>
-  <div id="cityMessage" style="color:#ff8844; min-height: 1.6em;"></div>
-  <button id="sendConvoyBtn">Wyślij konwój</button>
+  <div id="cityRoutesList"></div>
   <button id="closeCityPanelBtn">Zamknij</button>
 </div>
 <canvas id="game"></canvas>
@@ -213,11 +221,13 @@ const UNIT_TYPES = {
   HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 5, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4 },
   CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15 },
   // Bezbronny nosiciel złota (attackRange:0 -> nigdy nie znajdzie celu do
-  // ataku), jedyne źródło dochodu w ekonomii — patrz sendConvoy/updateConvoys.
-  // cost to jednocześnie koszt wysłania (ta sama konwencja co produkcja
-  // innych typów, bez osobnej duplikującej stałej). Nigdy nie walczy, więc
-  // lastStandChance: 0 (nie dotyczy, ale pole zawsze obecne dla spójności).
-  CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, cost: 60, collisionRadius: 5, drawRadius: 6, pushStrength: 0, moraleResistance: 1.0, lastStandChance: 0 },
+  // ataku; wykluczony z namierzania przez innych — patrz findTargetForUnit/
+  // findNearestEnemyInRange — więc nigdy nie ginie w walce, tylko może
+  // zostać przejęty, patrz updateConvoyCaptures). Wysyłany automatycznie
+  // przez szlaki handlowe (spawnRouteConvoy), bez kosztu — brak pola
+  // `cost`. Nigdy nie walczy, więc lastStandChance: 0 (nie dotyczy, ale
+  // pole zawsze obecne dla spójności).
+  CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, collisionRadius: 5, drawRadius: 6, pushStrength: 0, moraleResistance: 1.0, lastStandChance: 0 },
 };
 
 // Mnożniki prędkości i obrażeń per (typ jednostki × teren) — główna oś
@@ -269,9 +279,11 @@ const MAP_COLS = MAP_DATA[0].length;
 const MAP_ROWS = MAP_DATA.length;
 
 // ============================================================
-// EKONOMIA — zakres celowo wąski: miasta, konwoje, złoto, produkcja,
-// utrzymanie. Bez bandytów, handlu, przejmowania miast, terytorium i
-// limitów zaopatrzenia (patrz CLAUDE.md, sekcja Kolejność budowy).
+// EKONOMIA — zakres celowo wąski: miasta, szlaki handlowe, złoto,
+// produkcja. Bez bandytów, przejmowania miast, terytorium i limitów
+// zaopatrzenia (patrz CLAUDE.md, sekcja Kolejność budowy). Gospodarka
+// jest wyłącznie przychodowa — jednostki nie kosztują nic na sekundę,
+// jedyny wydatek to jednorazowy koszt produkcji.
 // ============================================================
 const CITY_SIZE_TILES = 1; // miasto zajmuje dokładnie jeden kafel
 // Zahardkodowane pozycje (jak MAP_DATA) — (col,row) to kafel miasta.
@@ -286,10 +298,23 @@ const CITIES = [
 ];
 for (const city of CITIES) city.queue = []; // {type, remainingTime}
 
-const STARTING_GOLD = 300; // starcza na utrzymanie armii startowej + pierwsze konwoje przez kilkadziesiąt sekund
-const UPKEEP_RATE_PER_COST = 0.003; // złota/s na punkt kosztu jednostki (0.3%/s) — jedna dźwignia zamiast osobnej stałej na typ
-const CITY_BASE_INCOME_PER_SECOND = 0.5; // mały, stały dochód z posiadanego miasta — siatka bezpieczeństwa, NIE zastępuje konwojów jako głównego źródła zysku
-const CONVOY_GOLD_PER_100PX = 50; // zysk konwoju za każde 100px dystansu między miastami — musi przebić CONVOY.cost, inaczej każdy konwój to gwarantowana strata
+const STARTING_GOLD = 250; // starcza na kilka jednostek na start
+const CITY_BASE_INCOME_PER_SECOND = 0.15; // mały, stały dochód z posiadanego miasta — trickle, szlaki handlowe są głównym źródłem zysku
+
+// Szlaki handlowe — trwałe trasy rysowane przez gracza (patrz gest
+// TRADE_ROUTE w mousedown/mousemove/mouseup), po których automatycznie i
+// cyklicznie kursują konwoje w obie strony (patrz updateTradeRoutes).
+const TRADE_ROUTE_GOLD_PER_100PX = 15; // zysk za dostarczony konwój, na 100px długości narysowanego szlaku
+const TRADE_ROUTE_SPAWN_INTERVAL = 60; // s między kolejnymi konwojami, liczone OSOBNO dla każdego kierunku
+
+// Przechwytywanie konwojów — zamiast ginąć w walce (konwoje są całkowicie
+// wykluczone z namierzania, patrz findTargetForUnit/findNearestEnemyInRange),
+// konwój zostaje przejęty przez wroga, który spędzi przy nim wystarczająco
+// dużo czasu bez przeszkód ze strony właściciela (patrz updateConvoyCaptures).
+const CONVOY_CAPTURE_RANGE = 40; // px — wróg (i obrońca) musi być w tym promieniu
+const CONVOY_CAPTURE_TIME = 3; // s nieprzerwanej obecności wroga do przejęcia
+const CONVOY_CAPTURE_VALUE_LOSS = 0.25; // ułamek wartości tracony przy KAŻDYM przejęciu, także przy odbiciu — zniechęca do przerzucania się konwojem w nieskończoność
+const CONVOY_CAPTURE_REWARD_RATIO = 0.55; // ułamek wartości, jaki przy dostawie dostaje przejmujący (reszta przepada) — łupienie ma być gorszym interesem niż własny handel
 
 function cityCenter(city) {
   return { x: (city.col + CITY_SIZE_TILES / 2) * TILE_SIZE, y: (city.row + CITY_SIZE_TILES / 2) * TILE_SIZE };
@@ -335,9 +360,19 @@ let nextUnitId = 1;
 let gold = { P1: STARTING_GOLD, P2: STARTING_GOLD };
 let goldRate = { P1: 0, P2: 0 }; // wygładzony (EMA) wskaźnik do UI — jedyne realne źródło (konwoje) jest skokowe, nie ciągłe
 let selectedCity = null;
-let pendingConvoySource = null; // miasto źródłowe, gdy gracz czeka na wybór celu konwoju
-let cityMessage = null; // krótki komunikat w panelu miasta (np. powód nieudanej wysyłki konwoju)
-let cityMessageUntil = 0; // performance.now() do kiedy wyświetlać cityMessage
+
+// Szlaki handlowe — patrz sekcja CONFIG (TRADE_ROUTE_*) i gest w
+// mousedown/mousemove/mouseup, updateTradeRoutes/spawnRouteConvoy.
+let tradeRoutes = []; // {id, owner, cityAId, cityBId, curve:[{x,y}], timeSinceSpawnAtoB, timeSinceSpawnBtoA}
+let nextTradeRouteId = 1;
+let selectedTradeRoute = null; // do usunięcia klawiszem Delete/Backspace albo przyciskiem w panelu
+let dragStartOwnCity = null; // własne miasto, na którym zaczęto PPM przeciągnięcie — rozstrzyga TRADE_ROUTE vs ROUTE/FRONT
+
+// Baner alertów (u góry ekranu) — komunikaty widoczne ZAWSZE, niezależnie
+// od otwartego panelu miasta (np. przejęcie/utrata konwoju musi być
+// widoczna natychmiast, patrz updateConvoyCaptures).
+let alertMessage = null;
+let alertMessageUntil = 0;
 
 function spawnUnit(type, col, row, owner) {
   const center = tileToWorld(col, row);
@@ -823,6 +858,28 @@ function findCityAt(x, y) {
   }
   return null;
 }
+
+// Odległość punktu od odcinka a-b (rzut na odcinek, przycięty do końców) —
+// używane przez findTradeRouteAt do wykrywania kliknięcia w cienką linię szlaku.
+function pointToSegmentDistance(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = a.x + t * dx, cy = a.y + t * dy;
+  return Math.hypot(p.x - cx, p.y - cy);
+}
+const TRADE_ROUTE_CLICK_TOLERANCE = 8; // px — jak blisko trzeba kliknąć narysowaną krzywą szlaku
+function findTradeRouteAt(x, y) {
+  for (const route of tradeRoutes) {
+    const pts = route.curve;
+    for (let i = 1; i < pts.length; i++) {
+      if (pointToSegmentDistance({ x, y }, pts[i - 1], pts[i]) <= TRADE_ROUTE_CLICK_TOLERANCE) return route;
+    }
+  }
+  return null;
+}
+
 function getSelectedUnits() {
   // złamana (routed) jednostka ignoruje rozkazy gracza — patrz updateMorale
   return units.filter(u => u.selected && !u.routed);
@@ -855,15 +912,24 @@ const cityPanelEl = document.getElementById('cityPanel');
 const cityPanelTitleEl = document.getElementById('cityPanelTitle');
 const cityQueueListEl = document.getElementById('cityQueueList');
 const cityBuildButtonsEl = document.getElementById('cityBuildButtons');
-const sendConvoyBtnEl = document.getElementById('sendConvoyBtn');
+const cityRoutesListEl = document.getElementById('cityRoutesList');
 const closeCityPanelBtnEl = document.getElementById('closeCityPanelBtn');
-const cityMessageEl = document.getElementById('cityMessage');
+const alertBannerEl = document.getElementById('alertBanner');
 
-// Krótki, ginący komunikat w panelu miasta — np. powód, dla którego nie
-// da się wysłać konwoju. Czytelny zamiast ciszy po nieudanej akcji.
-function showCityMessage(text) {
-  cityMessage = text;
-  cityMessageUntil = performance.now() + 2500;
+// Baner alertów u góry ekranu — widoczny ZAWSZE (nie tylko przy otwartym
+// panelu miasta), np. przy przejęciu/utracie konwoju (patrz
+// updateConvoyCaptures) albo nieudanym wyznaczeniu szlaku.
+function showAlert(text) {
+  alertMessage = text;
+  alertMessageUntil = performance.now() + 3000;
+}
+function updateAlertBanner() {
+  if (performance.now() < alertMessageUntil) {
+    alertBannerEl.textContent = alertMessage;
+    alertBannerEl.style.display = 'block';
+  } else {
+    alertBannerEl.style.display = 'none';
+  }
 }
 
 function updateGoldPanel() {
@@ -871,6 +937,7 @@ function updateGoldPanel() {
   const rate = goldRate[OWNED_PLAYER];
   goldRateTextEl.textContent = (rate >= 0 ? '+' : '') + rate.toFixed(1);
   if (selectedCity) refreshCityPanel(); // trzyma kolejkę/przyciski aktualne, gdy panel jest otwarty
+  updateAlertBanner();
 }
 
 function refreshCityPanel() {
@@ -894,43 +961,43 @@ function refreshCityPanel() {
     cityBuildButtonsEl.appendChild(btn);
   }
 
-  // przycisk konwoju: wyłączony z jawnym powodem, zamiast cichej porażki
-  // przy kliknięciu miasta docelowego (patrz sendConvoy)
-  const canAffordConvoy = gold[city.owner] >= UNIT_TYPES.CONVOY.cost;
-  const hasOtherCity = CITIES.some(c => c.owner === city.owner && c !== city);
-  if (pendingConvoySource === city) {
-    sendConvoyBtnEl.textContent = 'Kliknij miasto docelowe…';
-    sendConvoyBtnEl.disabled = false;
-    sendConvoyBtnEl.title = 'Kliknij własne miasto na mapie, albo ten przycisk ponownie, by anulować';
-  } else {
-    sendConvoyBtnEl.textContent = 'Wyślij konwój';
-    sendConvoyBtnEl.disabled = !canAffordConvoy || !hasOtherCity;
-    sendConvoyBtnEl.title = !hasOtherCity ? 'Brak drugiego miasta do wysłania konwoju'
-      : !canAffordConvoy ? `Za mało złota (potrzeba ${UNIT_TYPES.CONVOY.cost}, masz ${Math.floor(gold[city.owner])})`
-      : 'Kliknij, potem wybierz miasto docelowe na mapie';
+  // szlaki wychodzące z tego miasta — rysowane PPM przeciągnięciem na
+  // mapie (patrz gest TRADE_ROUTE), tu tylko licznik + usuwanie
+  const cityRoutes = tradeRoutes.filter(r => r.cityAId === city.id || r.cityBId === city.id);
+  cityRoutesListEl.innerHTML = '';
+  const header = document.createElement('div');
+  header.textContent = cityRoutes.length
+    ? `Aktywne szlaki: ${cityRoutes.length}`
+    : 'Brak szlaków — narysuj trasę PPM do innego własnego miasta';
+  cityRoutesListEl.appendChild(header);
+  for (const route of cityRoutes) {
+    const otherId = route.cityAId === city.id ? route.cityBId : route.cityAId;
+    const row = document.createElement('div');
+    const label = document.createElement('span');
+    label.textContent = `→ ${otherId} `;
+    const btn = document.createElement('button');
+    btn.textContent = 'Usuń';
+    btn.onclick = () => {
+      tradeRoutes = tradeRoutes.filter(r => r !== route);
+      if (selectedTradeRoute === route) selectedTradeRoute = null;
+      refreshCityPanel();
+    };
+    row.appendChild(label);
+    row.appendChild(btn);
+    cityRoutesListEl.appendChild(row);
   }
-
-  cityMessageEl.textContent = performance.now() < cityMessageUntil ? cityMessage : '';
 }
 
 function showCityPanel(city) {
   selectedCity = city;
-  pendingConvoySource = null;
   cityPanelEl.style.display = 'block';
   refreshCityPanel();
 }
 function hideCityPanel() {
   selectedCity = null;
-  pendingConvoySource = null;
   cityPanelEl.style.display = 'none';
 }
 
-sendConvoyBtnEl.addEventListener('click', () => {
-  if (!selectedCity) return;
-  // drugie kliknięcie w trakcie oczekiwania na cel = anuluj
-  pendingConvoySource = pendingConvoySource === selectedCity ? null : selectedCity;
-  refreshCityPanel();
-});
 closeCityPanelBtnEl.addEventListener('click', hideCityPanel);
 
 // ============================================================
@@ -964,6 +1031,13 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === 'd' || e.key === 'D') {
     // tryb debug — liczba morale nad każdą jednostką, na stałe do balansowania
     debugMode = !debugMode;
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (selectedTradeRoute) {
+      e.preventDefault();
+      tradeRoutes = tradeRoutes.filter(r => r !== selectedTradeRoute);
+      selectedTradeRoute = null;
+      if (selectedCity) refreshCityPanel();
+    }
   }
 });
 
@@ -979,6 +1053,8 @@ canvas.addEventListener('mousedown', (e) => {
     dragButton = 'RIGHT';
     const hit = findUnitAt(pos.x, pos.y);
     dragStartHitSelectedUnit = !!(hit && hit.selected);
+    const cityHit = findCityAt(pos.x, pos.y);
+    dragStartOwnCity = (cityHit && cityHit.owner === OWNED_PLAYER) ? cityHit : null;
     rawStrokePoints = [pos];
   } else {
     dragButton = null;
@@ -998,7 +1074,7 @@ window.addEventListener('mousemove', (e) => {
       dragMode = 'SELECT';
       lassoPoints = [dragStart];
     } else if (dragButton === 'RIGHT') {
-      dragMode = dragStartHitSelectedUnit ? 'ROUTE' : 'FRONT';
+      dragMode = dragStartOwnCity ? 'TRADE_ROUTE' : (dragStartHitSelectedUnit ? 'ROUTE' : 'FRONT');
     }
   }
 
@@ -1007,7 +1083,7 @@ window.addEventListener('mousemove', (e) => {
     if (Math.hypot(pos.x - last.x, pos.y - last.y) > 5) lassoPoints.push(pos);
   }
 
-  if (dragButton === 'RIGHT' && (dragMode === 'ROUTE' || dragMode === 'FRONT')) {
+  if (dragButton === 'RIGHT' && (dragMode === 'ROUTE' || dragMode === 'FRONT' || dragMode === 'TRADE_ROUTE')) {
     const last = rawStrokePoints[rawStrokePoints.length - 1];
     if (Math.hypot(pos.x - last.x, pos.y - last.y) > 6) rawStrokePoints.push(pos);
   }
@@ -1029,73 +1105,90 @@ window.addEventListener('mouseup', (e) => {
         const inLasso = isOwnUnit(u) && pointInPolygon(u, lassoPoints);
         u.selected = e.shiftKey ? (u.selected || inLasso) : inLasso;
       }
-    } else if (pendingConvoySource) {
-      // gracz kliknął "Wyślij konwój" i czeka na miasto docelowe — ten
-      // klik rozstrzyga wysyłkę albo anuluje tryb, nigdy nie zaznacza jednostek
-      const cityHit = findCityAt(pos.x, pos.y);
-      if (cityHit === pendingConvoySource) {
-        showCityMessage('Wybierz inne miasto niż źródłowe');
-      } else if (cityHit && cityHit.owner === OWNED_PLAYER) {
-        if (!sendConvoy(pendingConvoySource, cityHit)) {
-          showCityMessage(`Za mało złota (potrzeba ${UNIT_TYPES.CONVOY.cost})`);
-        }
-      }
-      pendingConvoySource = null;
-      if (selectedCity) refreshCityPanel();
     } else {
       const cityHit = findCityAt(pos.x, pos.y);
       if (cityHit) {
         if (cityHit.owner === OWNED_PLAYER) {
           for (const u of units) u.selected = false;
+          selectedTradeRoute = null;
           showCityPanel(cityHit);
         } // cudze miasto — nie da się zaznaczyć, bez żadnej akcji
       } else {
         hideCityPanel();
         const hitAny = findUnitAt(pos.x, pos.y);
         const hit = isOwnUnit(hitAny) ? hitAny : null; // jednostek wroga nie da się zaznaczyć
-        if (e.shiftKey) {
-          if (hit) hit.selected = !hit.selected;
+        if (hit) {
+          selectedTradeRoute = null;
+          if (e.shiftKey) { hit.selected = !hit.selected; }
+          else { for (const u of units) u.selected = false; hit.selected = true; }
         } else {
-          for (const u of units) u.selected = false;
-          if (hit) hit.selected = true;
+          // brak jednostki pod kliknięciem — sprawdź, czy to zaznaczenie/usunięcie szlaku
+          const routeHit = findTradeRouteAt(pos.x, pos.y);
+          if (routeHit && routeHit.owner === OWNED_PLAYER) {
+            selectedTradeRoute = routeHit;
+          } else if (!e.shiftKey) {
+            for (const u of units) u.selected = false;
+            selectedTradeRoute = null;
+          }
         }
       }
     }
   } else if (dragButton === 'RIGHT') {
-    const selected = getSelectedUnits();
-    if (selected.length > 0) {
-      if (!wasDrag) {
-        const offsets = formationOffsets(selected.length, FORMATION_SPACING);
-        selected.forEach((u, i) => {
-          const target = { x: pos.x + offsets[i].dx, y: pos.y + offsets[i].dy };
-          const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
-          if (rawPath === null) {
-            orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
-          } else {
-            u.path = finalizePath(u, rawPath);
-          }
+    if (dragMode === 'TRADE_ROUTE') {
+      const destCity = findCityAt(pos.x, pos.y);
+      if (!destCity || destCity.owner !== OWNED_PLAYER) {
+        showAlert('Szlak musi kończyć się na własnym mieście');
+      } else if (destCity === dragStartOwnCity) {
+        showAlert('Wybierz inne miasto niż źródłowe');
+      } else {
+        const curve = simplifyCurve(rawStrokePoints, 6);
+        tradeRoutes.push({
+          id: nextTradeRouteId++,
+          owner: OWNED_PLAYER,
+          cityAId: dragStartOwnCity.id,
+          cityBId: destCity.id,
+          curve,
+          timeSinceSpawnAtoB: TRADE_ROUTE_SPAWN_INTERVAL, // konwój wyrusza od razu, w obie strony
+          timeSinceSpawnBtoA: TRADE_ROUTE_SPAWN_INTERVAL,
         });
-      } else if (dragMode === 'ROUTE') {
-        if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-        const curve = simplifyCurve(rawStrokePoints, 6);
-        for (const u of selected) {
-          const rawPath = buildRoutePath(u, curve);
-          if (rawPath === null) {
-            orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
-          } else {
-            u.path = finalizePath(u, rawPath);
+        if (selectedCity) refreshCityPanel();
+      }
+    } else {
+      const selected = getSelectedUnits();
+      if (selected.length > 0) {
+        if (!wasDrag) {
+          const offsets = formationOffsets(selected.length, FORMATION_SPACING);
+          selected.forEach((u, i) => {
+            const target = { x: pos.x + offsets[i].dx, y: pos.y + offsets[i].dy };
+            const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
+            if (rawPath === null) {
+              orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
+            } else {
+              u.path = finalizePath(u, rawPath);
+            }
+          });
+        } else if (dragMode === 'ROUTE') {
+          if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+          const curve = simplifyCurve(rawStrokePoints, 6);
+          for (const u of selected) {
+            const rawPath = buildRoutePath(u, curve);
+            if (rawPath === null) {
+              orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
+            } else {
+              u.path = finalizePath(u, rawPath);
+            }
           }
-        }
-      } else if (dragMode === 'FRONT') {
-        if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-        const curve = simplifyCurve(rawStrokePoints, 6);
-        const assignments = assignFrontTargets(selected, curve);
-        for (const { unit, target } of assignments) {
-          const rawPath = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
-          if (rawPath === null) {
-            orderFailEffects.push({ x: unit.x, y: unit.y, startTime: performance.now() });
-          } else {
-            unit.path = finalizePath(unit, rawPath);
+        } else if (dragMode === 'FRONT') {
+          if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+          const curve = simplifyCurve(rawStrokePoints, 6);
+          const assignments = assignFrontTargets(selected, curve);
+          for (const { unit, target } of assignments) {
+            const rawPath = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
+            if (rawPath === null) {
+              orderFailEffects.push({ x: unit.x, y: unit.y, startTime: performance.now() });
+            } else {
+              unit.path = finalizePath(unit, rawPath);
+            }
           }
         }
       }
@@ -1106,6 +1199,7 @@ window.addEventListener('mouseup', (e) => {
   dragMode = null;
   dragStart = null;
   dragCurrent = null;
+  dragStartOwnCity = null;
   rawStrokePoints = [];
   lassoPoints = [];
 });
@@ -1246,7 +1340,8 @@ function findNearestEnemyInRange(unit, allUnits) {
   let nearest = null;
   let nearestDist = Infinity;
   for (const other of allUnits) {
-    if (other.owner === unit.owner || other.hp <= 0) continue;
+    // konwoje nigdy nie są celem ataku — przechwytywane, nie niszczone (patrz updateConvoyCaptures)
+    if (other.owner === unit.owner || other.hp <= 0 || other.type === 'CONVOY') continue;
     const dist = Math.hypot(other.x - unit.x, other.y - unit.y);
     if (dist <= range && dist < nearestDist) {
       nearest = other;
@@ -1262,7 +1357,8 @@ function findNearestEnemyAnyRange(unit, allUnits) {
   let nearest = null;
   let nearestDist = Infinity;
   for (const other of allUnits) {
-    if (other.owner === unit.owner || other.hp <= 0) continue;
+    // konwój nie jest zagrożeniem — przejeżdżający obok nie powinien liczyć się jako "wróg" dla paniki
+    if (other.owner === unit.owner || other.hp <= 0 || other.type === 'CONVOY') continue;
     const dist = Math.hypot(other.x - unit.x, other.y - unit.y);
     if (dist < nearestDist) {
       nearest = other;
@@ -1279,7 +1375,8 @@ const TARGET_PRIORITIES = ['NEAREST', 'ENEMY_ARTILLERY', 'HEAVY_UNITS', 'WEAKEST
 
 function findTargetForUnit(unit, allUnits) {
   const range = UNIT_TYPES[unit.type].attackRange;
-  const inRange = allUnits.filter(o => o.owner !== unit.owner && o.hp > 0
+  // konwoje nigdy nie są celem ataku — przechwytywane, nie niszczone (patrz updateConvoyCaptures)
+  const inRange = allUnits.filter(o => o.owner !== unit.owner && o.hp > 0 && o.type !== 'CONVOY'
     && Math.hypot(o.x - unit.x, o.y - unit.y) <= range);
   if (inRange.length === 0) return null;
   const nearest = (list) => list.reduce((best, o) => {
@@ -1753,25 +1850,54 @@ let convoyArrivalEffects = []; // {x, y, startTime} — krótki żółty rozbły
 const CONVOY_ARRIVAL_EFFECT_DURATION_MS = 300;
 const CONVOY_ARRIVAL_RADIUS = 24; // px od środka miasta uznawane za "dotarł"
 
-// Wysyła konwój: koszt odjęty NATYCHMIAST (inwestycja z ryzykiem — bez
-// zwrotu, jeśli konwój zginie w drodze), zysk po dotarciu proporcjonalny
-// do dystansu między miastami (patrz updateConvoys).
-function sendConvoy(originCity, destCity) {
-  const cost = UNIT_TYPES.CONVOY.cost;
-  if (gold[originCity.owner] < cost) return false;
-  gold[originCity.owner] -= cost;
-  spawnUnit('CONVOY', originCity.col, originCity.row, originCity.owner);
+// Wysyła jeden konwój wzdłuż narysowanej krzywej szlaku (kierunek 'AtoB'
+// albo 'BtoA') — reużywa buildRoutePath/finalizePath, DOKŁADNIE ten sam
+// pipeline co TRASA dla jednostek, więc konwój podąża po krzywej, nie po
+// najkrótszej drodze. Wołane cyklicznie przez updateTradeRoutes, bez
+// udziału gracza i bez żadnego kosztu (ekonomia jest wyłącznie przychodowa).
+function spawnRouteConvoy(route, direction) {
+  const cityA = CITIES.find(c => c.id === route.cityAId);
+  const cityB = CITIES.find(c => c.id === route.cityBId);
+  if (!cityA || !cityB) return;
+  const originCity = direction === 'AtoB' ? cityA : cityB;
+  const destCity = direction === 'AtoB' ? cityB : cityA;
+  const curve = direction === 'AtoB' ? route.curve : [...route.curve].reverse();
+  spawnUnit('CONVOY', originCity.col, originCity.row, route.owner);
   const convoy = units[units.length - 1];
-  const origin = cityCenter(originCity), dest = cityCenter(destCity);
   convoy.targetCityId = destCity.id;
-  convoy.goldValue = Math.hypot(dest.x - origin.x, dest.y - origin.y) / 100 * CONVOY_GOLD_PER_100PX;
-  const rawPath = findPath(worldToTile(convoy.x, convoy.y), worldToTile(dest.x, dest.y), dest);
+  convoy.tradeRouteId = route.id;
+  convoy.captureProgress = 0;
+  convoy.capturingOwner = null;
+  convoy.captureCount = 0;
+  const origin = cityCenter(originCity), dest = cityCenter(destCity);
+  convoy.goldValue = Math.hypot(dest.x - origin.x, dest.y - origin.y) / 100 * TRADE_ROUTE_GOLD_PER_100PX;
+  const rawPath = buildRoutePath(convoy, curve);
   if (rawPath !== null) convoy.path = finalizePath(convoy, rawPath);
-  return true;
+}
+
+// Odlicza interwał wysyłki OSOBNO dla każdego kierunku każdego szlaku —
+// szlak pozostaje aktywny nawet po utracie konwoju (patrz
+// updateConvoyCaptures), po interwale i tak wyruszy kolejny.
+function updateTradeRoutes(dt) {
+  for (const route of tradeRoutes) {
+    route.timeSinceSpawnAtoB += dt;
+    route.timeSinceSpawnBtoA += dt;
+    if (route.timeSinceSpawnAtoB >= TRADE_ROUTE_SPAWN_INTERVAL) {
+      route.timeSinceSpawnAtoB = 0;
+      spawnRouteConvoy(route, 'AtoB');
+    }
+    if (route.timeSinceSpawnBtoA >= TRADE_ROUTE_SPAWN_INTERVAL) {
+      route.timeSinceSpawnBtoA = 0;
+      spawnRouteConvoy(route, 'BtoA');
+    }
+  }
 }
 
 // Konwoje, które dotarły, znikają i wypłacają złoto — osobno od zwykłej
 // ścieżki śmierci (bez deathEffects, to udany dowóz, nie zniszczenie).
+// Konwój, który był kiedykolwiek przejęty (captureCount>0), dostarcza
+// tylko ułamek wartości (CONVOY_CAPTURE_REWARD_RATIO) — łupienie ma być
+// gorszym interesem niż własny, nigdy nie przejęty handel.
 function updateConvoys(now) {
   const arrived = new Set();
   for (const u of units) {
@@ -1780,7 +1906,8 @@ function updateConvoys(now) {
     if (!targetCity) continue;
     const center = cityCenter(targetCity);
     if (Math.hypot(u.x - center.x, u.y - center.y) <= CONVOY_ARRIVAL_RADIUS) {
-      gold[u.owner] += u.goldValue;
+      const payout = u.captureCount > 0 ? u.goldValue * CONVOY_CAPTURE_REWARD_RATIO : u.goldValue;
+      gold[u.owner] += payout;
       convoyArrivalEffects.push({ x: center.x, y: center.y, startTime: now });
       arrived.add(u.id);
     }
@@ -1788,15 +1915,83 @@ function updateConvoys(now) {
   if (arrived.size > 0) units = units.filter(u => !arrived.has(u.id));
 }
 
-// Utrzymanie, tempo dochodu do UI, produkcja jednostek w miastach.
-// Pomijana w trybie headless (BalanceSim nie spawnuje miast/gold).
+// Przechwytywanie konwojów — wroga jednostka bojowa w CONVOY_CAPTURE_RANGE
+// przez CONVOY_CAPTURE_TIME nieprzerwanej obecności przejmuje konwój
+// zamiast go niszczyć (konwoje są wykluczone z namierzania, patrz
+// findTargetForUnit/findNearestEnemyInRange — nigdy nie trafiają do
+// pendingDamage). Jednostka WŁAŚCICIELA w tym samym promieniu przerywa
+// (zeruje) próbę przejęcia. Każde przejęcie (także odbicie) dewaluuje
+// ładunek o CONVOY_CAPTURE_VALUE_LOSS.
+let captureAlertEffects = []; // {x, y, startTime, color} — pierścień na mapie przy starcie/utracie przejęcia
+const CAPTURE_ALERT_EFFECT_DURATION_MS = 1200;
+function updateConvoyCaptures(dt, now) {
+  for (const u of units) {
+    if (u.type !== 'CONVOY' || u.hp <= 0) continue;
+    let nearestEnemy = null, nearestEnemyDist = Infinity;
+    let ownerNearby = false;
+    for (const other of units) {
+      if (other.type === 'CONVOY' || other.hp <= 0 || other.routed) continue;
+      const dist = Math.hypot(other.x - u.x, other.y - u.y);
+      if (dist > CONVOY_CAPTURE_RANGE) continue;
+      if (other.owner === u.owner) ownerNearby = true;
+      else if (dist < nearestEnemyDist) { nearestEnemy = other; nearestEnemyDist = dist; }
+    }
+
+    if (ownerNearby || !nearestEnemy) {
+      if (u.captureProgress > 0) { u.captureProgress = 0; u.capturingOwner = null; }
+      continue;
+    }
+
+    if (u.capturingOwner !== nearestEnemy.owner) {
+      u.capturingOwner = nearestEnemy.owner;
+      u.captureProgress = 0;
+      if (u.owner === OWNED_PLAYER) {
+        showAlert('Twój konwój jest przejmowany!');
+        captureAlertEffects.push({ x: u.x, y: u.y, startTime: now, color: '#ff8800' });
+      }
+    }
+
+    u.captureProgress += dt;
+    if (u.captureProgress >= CONVOY_CAPTURE_TIME) {
+      const lostOwner = u.owner;
+      const lostValue = u.goldValue;
+      u.goldValue *= (1 - CONVOY_CAPTURE_VALUE_LOSS);
+      u.captureCount += 1;
+      u.owner = nearestEnemy.owner;
+      u.captureProgress = 0;
+      u.capturingOwner = null;
+      u.tradeRouteId = null; // odłączony od oryginalnego szlaku — to teraz łup, nie regularna dostawa
+
+      let nearestCity = null, nearestCityDist = Infinity;
+      for (const c of CITIES) {
+        if (c.owner !== u.owner) continue;
+        const center = cityCenter(c);
+        const d = Math.hypot(center.x - u.x, center.y - u.y);
+        if (d < nearestCityDist) { nearestCity = c; nearestCityDist = d; }
+      }
+      if (nearestCity) {
+        u.targetCityId = nearestCity.id;
+        const dest = cityCenter(nearestCity);
+        const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(dest.x, dest.y), dest);
+        u.path = rawPath !== null ? finalizePath(u, rawPath) : [];
+      }
+
+      if (lostOwner === OWNED_PLAYER) {
+        showAlert(`Utracono konwój na rzecz ${u.owner}! -${Math.round(lostValue)} złota`);
+        captureAlertEffects.push({ x: u.x, y: u.y, startTime: now, color: '#ff2222' });
+      }
+    }
+  }
+}
+
+// Dochód bazowy z posiadanych miast, tempo dochodu do UI, produkcja
+// jednostek w kolejkach miast. Pomijana w trybie headless (BalanceSim nie
+// spawnuje miast/gold). Gospodarka jest wyłącznie przychodowa — jednostki
+// nie kosztują nic na sekundę.
 function updateEconomy(dt) {
   for (const owner of ['P1', 'P2']) {
     const before = gold[owner];
-    // dochód bazowy z posiadanych miast — siatka bezpieczeństwa, konwoje nadal głównym źródłem zysku
-    const income = CITIES.filter(c => c.owner === owner).length * CITY_BASE_INCOME_PER_SECOND * dt;
-    const upkeepDue = units.filter(u => u.owner === owner).reduce((s, u) => s + UNIT_TYPES[u.type].cost * UPKEEP_RATE_PER_COST * dt, 0);
-    gold[owner] = Math.max(0, gold[owner] + income - upkeepDue);
+    gold[owner] += CITIES.filter(c => c.owner === owner).length * CITY_BASE_INCOME_PER_SECOND * dt;
     const rate = (gold[owner] - before) / dt;
     goldRate[owner] = goldRate[owner] * 0.95 + rate * 0.05;
   }
@@ -1827,6 +2022,55 @@ function drawMap() {
   }
   for (let row = 0; row <= MAP_ROWS; row++) {
     ctx.beginPath(); ctx.moveTo(0, row * TILE_SIZE); ctx.lineTo(MAP_WIDTH_PX, row * TILE_SIZE); ctx.stroke();
+  }
+}
+
+// Cienkie, półprzezroczyste linie w kolorze właściciela — subtelne, żeby
+// nie zaśmiecały mapy. Zaznaczony szlak (do usunięcia) dostaje dodatkową
+// białą przerywaną nakładkę, ten sam wzorzec co pierścień zaznaczenia miasta.
+function drawTradeRoutes() {
+  for (const route of tradeRoutes) {
+    const pts = route.curve;
+    if (pts.length < 2) continue;
+    ctx.strokeStyle = PLAYERS[route.owner].color;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    if (route === selectedTradeRoute) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+// Znacznik na mapie przy starcie/utracie przejęcia konwoju (patrz
+// updateConvoyCaptures) — pomarańczowy pierścień = przejmowanie w toku,
+// czerwony = utracony. Ten sam wzorzec co drawConvoyArrivalEffects.
+function drawCaptureAlertEffects(now) {
+  captureAlertEffects = captureAlertEffects.filter(e => now - e.startTime < CAPTURE_ALERT_EFFECT_DURATION_MS);
+  for (const e of captureAlertEffects) {
+    const t = (now - e.startTime) / CAPTURE_ALERT_EFFECT_DURATION_MS;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, 10 + t * 30, 0, Math.PI * 2);
+    ctx.strokeStyle = e.color;
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -1926,6 +2170,20 @@ function drawMoraleBar(u, cfg) {
   ctx.fillStyle = 'rgba(0,0,0,0.5)';
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = u.morale >= MORALE_WARNING_THRESHOLD ? '#4a90d9' : '#f4c430';
+  ctx.fillRect(x, y, w * ratio, h);
+}
+
+// Pasek postępu przejęcia konwoju (patrz updateConvoyCaptures) — ten sam
+// layout co drawMoraleBar, żeby obrońca od razu widział, że ma sekundy na
+// reakcję, zanim straci konwój.
+function drawCaptureBar(u, cfg) {
+  if (!u.captureProgress || u.captureProgress <= 0) return;
+  const w = 18, h = 3;
+  const x = u.x - w / 2, y = u.y - cfg.drawRadius - 4;
+  const ratio = Math.min(1, u.captureProgress / CONVOY_CAPTURE_TIME);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#ff3333';
   ctx.fillRect(x, y, w * ratio, h);
 }
 
@@ -2080,6 +2338,7 @@ function drawUnits(now) {
 
     drawHpBar(u, cfg, now);
     drawMoraleBar(u, cfg);
+    drawCaptureBar(u, cfg);
     if (debugMode) {
       ctx.fillStyle = '#ffffff';
       ctx.strokeStyle = '#000000';
@@ -2280,6 +2539,16 @@ function drawGestureFeedback() {
     ctx.stroke();
     ctx.setLineDash([]);
     drawFrontTicks(pts, '#ff5533');
+  } else if (dragMode === 'TRADE_ROUTE') {
+    ctx.strokeStyle = PLAYERS[OWNED_PLAYER].color;
+    ctx.globalAlpha = 0.8;
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -2338,7 +2607,9 @@ function gameLoop(now) {
   resolveCollisions(units);
   units = resolveCombat(units, dt);
   updateEconomy(dt);
+  updateTradeRoutes(dt);
   updateConvoys(now);
+  updateConvoyCaptures(dt, now);
   updateGoldPanel();
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -2346,6 +2617,7 @@ function gameLoop(now) {
   ctx.translate(viewOffsetX, viewOffsetY);
   ctx.scale(viewScale, viewScale);
   drawMap();
+  drawTradeRoutes();
   drawCities();
   drawUnits(now);
   drawDyingUnits(now);
@@ -2354,6 +2626,7 @@ function gameLoop(now) {
   drawImpactEffects(now);
   drawDeathEffects(now);
   drawConvoyArrivalEffects(now);
+  drawCaptureAlertEffects(now);
   drawOrderFailEffects(now);
   drawGestureFeedback();
   ctx.restore();
