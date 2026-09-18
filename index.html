@@ -2245,7 +2245,7 @@ function updateEconomy(dt) {
 // Chaikin: każdą krawędź P-Q zamkniętej łamanej zastępuje dwoma punktami
 // w 1/4 i 3/4 jej długości. Kilka iteracji zaokrągla ostrą łamaną w
 // gładką krzywą — prosta, samodzielna technika, bez zewnętrznych bibliotek.
-function chaikinSmooth(points, iterations) {
+function chaikinSmoothClosedLoop(points, iterations) {
   let pts = points;
   for (let it = 0; it < iterations; it++) {
     const next = [];
@@ -2362,7 +2362,7 @@ function dilateMask(maskFn) {
 function buildSmoothShapes(maskFn) {
   const segments = marchingSquaresSegments(MAP_COLS, MAP_ROWS, maskFn);
   const loops = chainSegmentsToLoops(segments);
-  return loops.map(loop => chaikinSmooth(loop, 3));
+  return loops.map(loop => chaikinSmoothClosedLoop(loop, 3));
 }
 
 function fillShapes(shapes, fillStyle) {
