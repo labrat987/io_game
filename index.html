@@ -64,6 +64,39 @@ const COMBAT_SPEED_MULTIPLIER = 0.3; // mnożnik prędkości w tym oknie
 const LOW_HP_THRESHOLD = 0.3; // poniżej tego ułamka maxHp celu
 const LOW_HP_DAMAGE_BONUS = 1.5; // mnożnik obrażeń trafienia pociskiem
 
+// ============================================================
+// MORALE — patrz updateMorale. Osobny pasek od HP: jednostka może być
+// zdrowa, ale złamana psychicznie (otoczona, osamotniona), albo ranna,
+// ale twarda (weterani w zwartym szyku). Utrata jest CZASOWA — po
+// ucieczce na bezpieczny dystans jednostka wraca pod kontrolę (patrz
+// CLAUDE.md: trwała utrata wzmacniałaby snowball i byłaby frustrująca).
+// ============================================================
+const MORALE_MAX = 100;
+const MORALE_RECOVER_THRESHOLD = 30; // złamana jednostka wraca pod kontrolę po przekroczeniu
+const MORALE_WARNING_THRESHOLD = 25; // migotanie ostrzegawcze poniżej tego progu (jeszcze nie złamana)
+
+// Utrata morale
+const MORALE_LOSS_PER_DAMAGE = 0.4; // na punkt obrażeń otrzymanych w tej klatce
+const MORALE_LOW_HP_LOSS_MULTIPLIER = 1.5; // dodatkowa utrata skalowana brakującym % HP po ciosie
+const MORALE_OUTNUMBERED_LOSS_PER_SECOND = 8; // za KAŻDEGO dodatkowego atakującego wręcz ponad pierwszego
+const MORALE_PUSHED_LOSS_PER_SECOND = 6; // gdy jednostka przegrywa porównanie napierania jako cel
+const MORALE_ALLY_DEATH_LOSS = 15; // stała utrata, gdy sojusznik ginie w promieniu
+const MORALE_ALLY_DEATH_RADIUS = 100; // px
+
+// Wzrost morale (tylko gdy jednostka NIE jest złamana — patrz updateMorale)
+const MORALE_REGEN_PER_SECOND = 4; // poza walką (reużywa timeSinceCombat>=OUT_OF_COMBAT_DELAY)
+const MORALE_ALLY_PRESENCE_RADIUS = 80; // px, promień liczenia sojuszników (spójność oddziału)
+const MORALE_ALLY_PRESENCE_BONUS_PER_ALLY = 1; // na sojusznika w promieniu, na sekundę
+const MORALE_ALLY_PRESENCE_CAP = 6; // maks. liczonych sojuszników — bez tego wielki blok dawałby absurdalne tempo
+const MORALE_WINNING_PUSH_BONUS_PER_SECOND = 5; // gdy jednostka napiera i wygrywa starcie
+
+// Załamanie i ucieczka
+const PANIC_SPEED_MULTIPLIER = 1.4; // adrenalina — ucieka szybciej niż normalny marsz
+const PANIC_FLEE_DISTANCE = 250; // px, jak daleko jednostka próbuje uciec jednym rozkazem
+const PANIC_SAFE_DISTANCE = 150; // px od najbliższego wroga uznawane za bezpieczne
+const PANIC_RECOVERY_DELAY = 3; // s nieprzerwanego bezpieczeństwa, zanim ruszy odbudowa morale
+const PANIC_MORALE_RECOVER_PER_SECOND = 10; // szybsza niż standardowa — ma dać się uratować niedobitki
+
 // Kolor jednostki = gracz (nie typ) — typ rozróżniany promieniem (drawRadius)
 const PLAYERS = {
   P1: { color: '#2f6fed' },
@@ -83,11 +116,11 @@ const UNIT_TYPES = {
   // ognia, wolniejsze przeładowanie, kruche HP, bezbronni z bliska,
   // accuracy = promień rozrzutu (px) na pełnym attackRange (patrz
   // resolveCombat — rośnie kwadratowo z dystansem, nie liniowo)
-  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 12, reloadTime: 1.5, projectileSpeed: 300, minRange: 50, meleeDamage: 0.9, accuracy: 12.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5 },
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 48, reloadTime: 5.0, projectileSpeed: 150, minRange: 90, meleeDamage: 3.6, accuracy: 22.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0 },
-  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 1 },
-  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 3 },
-  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 2 },
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 12, reloadTime: 1.5, projectileSpeed: 300, minRange: 50, meleeDamage: 0.9, accuracy: 12.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.6 },
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 48, reloadTime: 5.0, projectileSpeed: 150, minRange: 90, meleeDamage: 3.6, accuracy: 22.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.6 },
+  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 2, moraleResistance: 1.0 },
+  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 5, moraleResistance: 1.6 },
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7 },
 };
 
 // Mnożniki prędkości i obrażeń per (typ jednostki × teren) — główna oś
@@ -185,6 +218,9 @@ function spawnUnit(type, col, row, owner) {
     hitFlashUntil: 0, // performance.now() do kiedy rysować błysk trafienia
     shakeUntil: 0, // performance.now() do kiedy rysować drganie (trafienie z działa)
     targetPriority: 'NEAREST', // tylko dla ranged — patrz findTargetForUnit, przełączane klawiszem Tab
+    morale: MORALE_MAX,
+    routed: false, // złamana — gracz nie kontroluje, patrz updateMorale/getSelectedUnits
+    timeSafeFromEnemy: 0, // liczy się tylko gdy routed — patrz updateMorale
   });
 }
 
@@ -571,7 +607,8 @@ function findUnitAt(x, y) {
   return null;
 }
 function getSelectedUnits() {
-  return units.filter(u => u.selected);
+  // złamana (routed) jednostka ignoruje rozkazy gracza — patrz updateMorale
+  return units.filter(u => u.selected && !u.routed);
 }
 function isOwnUnit(u) {
   return !!u && u.owner === OWNED_PLAYER;
@@ -754,9 +791,15 @@ function updateUnit(unit, dt) {
   // poruszać się z normalną prędkością, żeby mogła zejść na właściwy teren
   const perTypeSpeedMultiplier = TERRAIN_MODIFIERS[unit.type][terrain.name].speedMultiplier;
   const effectiveSpeedMultiplier = terrain.passable ? terrain.speedMultiplier * perTypeSpeedMultiplier : 1.0;
-  // w zwarciu jednostka ma faktycznie walczyć, nie przepychać się dalej
-  const combatSlow = unit.timeSinceMeleeCombat < MELEE_SLOW_DURATION ? COMBAT_SPEED_MULTIPLIER : 1;
-  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier * combatSlow;
+  // złamana jednostka ucieka na adrenalinie (szybciej), nie walczy więc
+  // spowolnienie zwarcia jej nie dotyczy; w zwarciu jednostka ma
+  // faktycznie walczyć, nie przepychać się dalej — część typów (kawaleria)
+  // wychodzi z tego łatwiej niż inne (combatSpeedMultiplier per typ)
+  const meleeSlowMultiplier = UNIT_TYPES[unit.type].combatSpeedMultiplier ?? COMBAT_SPEED_MULTIPLIER;
+  const speedStateMultiplier = unit.routed
+    ? PANIC_SPEED_MULTIPLIER
+    : (unit.timeSinceMeleeCombat < MELEE_SLOW_DURATION ? meleeSlowMultiplier : 1);
+  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier * speedStateMultiplier;
 
   let remaining = speed * dt;
   while (remaining > 0 && unit.path.length > 0) {
@@ -881,6 +924,22 @@ function findNearestEnemyInRange(unit, allUnits) {
   return nearest;
 }
 
+// Bez ograniczenia zasięgu — używane przez panikę (dystans do bezpiecznej
+// ucieczki, kierunek ucieczki), nie przez zwykłe namierzanie w walce.
+function findNearestEnemyAnyRange(unit, allUnits) {
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const other of allUnits) {
+    if (other.owner === unit.owner || other.hp <= 0) continue;
+    const dist = Math.hypot(other.x - unit.x, other.y - unit.y);
+    if (dist < nearestDist) {
+      nearest = other;
+      nearestDist = dist;
+    }
+  }
+  return { enemy: nearest, dist: nearestDist };
+}
+
 // Priorytety celów dla jednostek dystansowych — przełączane klawiszem Tab
 // (patrz listener na końcu pliku). Jednostki wręcz zawsze biją najbliższego
 // (findNearestEnemyInRange), to dotyczy wyłącznie ranged:true.
@@ -966,6 +1025,136 @@ function updateProjectiles(dt, now, pendingDamage) {
   projectiles = stillFlying;
 }
 
+// Morale: osobny pasek od HP. Spada od obrażeń (mocniej przy niskim HP),
+// przewagi liczebnej we zwarciu i przegrywania napierania; rośnie poza
+// walką i w obecności sojuszników. Przy 0 jednostka się łamie (routed) —
+// ucieka, nie walczy, gracz jej nie kontroluje — i wraca pod kontrolę
+// dopiero po odzyskaniu bezpiecznego dystansu (patrz CLAUDE.md: utrata
+// jednostek ma być czasowa, nie trwała — inaczej wzmacnia snowball).
+function updateMorale(allUnits, attacks, pendingDamage, dt) {
+  const moraleDelta = new Map(); // unit -> suma zmiany w tej klatce
+  const addDelta = (unit, amount) => moraleDelta.set(unit, (moraleDelta.get(unit) || 0) + amount);
+
+  // przewaga liczebna w zwarciu: kto atakuje kogo wręcz w tej klatce
+  // (świadomie tylko zwarcie, jak timeSinceMeleeCombat — ostrzał
+  // dystansowy jest już liczony osobno przez same obrażenia)
+  const meleeAttackersOf = new Map(); // target -> Set(attacker)
+  for (const { attacker, target } of attacks) {
+    if (!meleeAttackersOf.has(target)) meleeAttackersOf.set(target, new Set());
+    meleeAttackersOf.get(target).add(attacker);
+  }
+
+  for (const u of allUnits) {
+    if (u.hp <= 0) continue;
+    const cfg = UNIT_TYPES[u.type];
+
+    // obrażenia otrzymane w tej klatce — im niższe hp PO ciosie, tym większa strata
+    const dmgTaken = pendingDamage.get(u) || 0;
+    if (dmgTaken > 0) {
+      const hpFraction = Math.max(0, u.hp / cfg.maxHp);
+      const lossFromDamage = dmgTaken * MORALE_LOSS_PER_DAMAGE * (1 + MORALE_LOW_HP_LOSS_MULTIPLIER * (1 - hpFraction));
+      addDelta(u, -lossFromDamage / cfg.moraleResistance);
+    }
+
+    // przewaga liczebna — więcej niż jeden atakujący wręcz naraz
+    const attackerSet = meleeAttackersOf.get(u);
+    if (attackerSet && attackerSet.size > 1) {
+      addDelta(u, -((attackerSet.size - 1) * MORALE_OUTNUMBERED_LOSS_PER_SECOND * dt) / cfg.moraleResistance);
+    }
+  }
+
+  // napieranie: kto wygrywa starcie zyskuje, kto jest spychany traci
+  for (const { attacker, target } of attacks) {
+    if (attacker.hp <= 0 || target.hp <= 0) continue;
+    if (pushDamageMultiplier(attacker, target) === PUSH_WINNING_DAMAGE_MULTIPLIER) {
+      addDelta(attacker, MORALE_WINNING_PUSH_BONUS_PER_SECOND * dt);
+      addDelta(target, -MORALE_PUSHED_LOSS_PER_SECOND * dt / UNIT_TYPES[target.type].moraleResistance);
+    }
+  }
+
+  // śmierć sojusznika w promieniu — w tym wywołaniu allUnits wciąż
+  // zawiera jednostki, które właśnie zginęły w tej klatce (usuwane z
+  // listy dopiero na końcu resolveCombat), więc to zawsze NOWA śmierć
+  for (const dead of allUnits) {
+    if (dead.hp > 0) continue;
+    for (const ally of allUnits) {
+      if (ally === dead || ally.owner !== dead.owner || ally.hp <= 0) continue;
+      const dist = Math.hypot(ally.x - dead.x, ally.y - dead.y);
+      if (dist <= MORALE_ALLY_DEATH_RADIUS) {
+        addDelta(ally, -MORALE_ALLY_DEATH_LOSS / UNIT_TYPES[ally.type].moraleResistance);
+      }
+    }
+  }
+
+  for (const u of allUnits) {
+    if (u.hp <= 0) continue;
+
+    if (u.routed) {
+      // odbudowa w panice: JEDYNIE po realnym oddaleniu się od wroga —
+      // celowo bez zwykłego "poza walką"/"sojusznicy w pobliżu" z gałęzi
+      // niżej, żeby zasada była czytelna: trzeba faktycznie uciec
+      const { dist } = findNearestEnemyAnyRange(u, allUnits);
+      if (dist > PANIC_SAFE_DISTANCE) {
+        u.timeSafeFromEnemy += dt;
+      } else {
+        u.timeSafeFromEnemy = 0;
+      }
+      if (u.timeSafeFromEnemy >= PANIC_RECOVERY_DELAY) {
+        addDelta(u, PANIC_MORALE_RECOVER_PER_SECOND * dt);
+      }
+    } else {
+      // poza walką — reużywa istniejący licznik z resolveCombat
+      if (u.timeSinceCombat >= OUT_OF_COMBAT_DELAY) {
+        addDelta(u, MORALE_REGEN_PER_SECOND * dt);
+      }
+      // spójność oddziału — więcej sojuszników w pobliżu, szybszy wzrost
+      let nearbyAllies = 0;
+      for (const other of allUnits) {
+        if (other === u || other.owner !== u.owner || other.hp <= 0) continue;
+        if (Math.hypot(other.x - u.x, other.y - u.y) <= MORALE_ALLY_PRESENCE_RADIUS) {
+          nearbyAllies++;
+          if (nearbyAllies >= MORALE_ALLY_PRESENCE_CAP) break;
+        }
+      }
+      if (nearbyAllies > 0) {
+        addDelta(u, nearbyAllies * MORALE_ALLY_PRESENCE_BONUS_PER_ALLY * dt);
+      }
+    }
+  }
+
+  for (const u of allUnits) {
+    if (u.hp <= 0) continue;
+    const delta = moraleDelta.get(u) || 0;
+    u.morale = Math.max(0, Math.min(MORALE_MAX, u.morale + delta));
+
+    if (!u.routed && u.morale <= 0) {
+      u.routed = true;
+      u.path = []; // porzuca stary rozkaz, gracz i tak nią teraz nie kieruje
+      u.timeSafeFromEnemy = 0;
+    } else if (u.routed && u.morale >= MORALE_RECOVER_THRESHOLD) {
+      u.routed = false;
+      u.path = []; // pełna, natychmiastowa kontrola z powrotem u gracza
+    }
+  }
+
+  // ucieczka: złamanej jednostce bez aktualnej ścieżki wyznacz nową przez
+  // findPath (dokładnie jak zwykły rozkaz ruchu) — omija góry tak samo,
+  // odtwarzana, gdy dojdzie do celu, a wciąż jest złamana
+  for (const u of allUnits) {
+    if (u.hp <= 0 || !u.routed || u.path.length > 0) continue;
+    const { enemy } = findNearestEnemyAnyRange(u, allUnits);
+    if (!enemy) continue; // brak wroga — nic do ucieczki, i tak liczy się jako bezpiecznie
+    const dx = u.x - enemy.x, dy = u.y - enemy.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const fleeTarget = {
+      x: Math.max(TILE_SIZE / 2, Math.min(MAP_WIDTH_PX - TILE_SIZE / 2, u.x + (dx / len) * PANIC_FLEE_DISTANCE)),
+      y: Math.max(TILE_SIZE / 2, Math.min(MAP_HEIGHT_PX - TILE_SIZE / 2, u.y + (dy / len) * PANIC_FLEE_DISTANCE)),
+    };
+    const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(fleeTarget.x, fleeTarget.y), fleeTarget);
+    if (rawPath !== null) u.path = finalizePath(u, rawPath);
+  }
+}
+
 // KRYTYCZNE: obrażenia liczone jednocześnie dla wszystkich uczestników.
 // Fazy zbierania (trafienia pocisków + nowe starcia w tej klatce) tylko
 // gromadzą obrażenia w pendingDamage (bez dotykania hp!), dopiero na
@@ -994,7 +1183,8 @@ function resolveCombat(allUnits, dt) {
   updateProjectiles(dt, now, pendingDamage);
 
   for (const attacker of allUnits) {
-    if (attacker.hp <= 0) continue;
+    // złamana (routed) jednostka przestaje walczyć — patrz updateMorale
+    if (attacker.hp <= 0 || attacker.routed) continue;
     const cfg = UNIT_TYPES[attacker.type];
     const target = cfg.ranged ? findTargetForUnit(attacker, allUnits) : findNearestEnemyInRange(attacker, allUnits);
     if (!target) continue;
@@ -1095,6 +1285,8 @@ function resolveCombat(allUnits, dt) {
     }
   }
 
+  updateMorale(allUnits, attacks, pendingDamage, dt);
+
   const survivors = [];
   for (const u of allUnits) {
     if (u.hp <= 0) {
@@ -1164,6 +1356,20 @@ function drawHpBar(u, cfg, now) {
       ctx.strokeRect(x - 1, y - 1, w + 2, h + 2);
     }
   }
+}
+
+// Pasek morale, tuż pod paskiem HP (bliżej jednostki) — niebieski, gdy
+// jednostka wciąż trzyma nerwy, żółty poniżej progu ostrzegawczego.
+// Osobny od HP celowo: zdrowa jednostka może być psychicznie złamana.
+function drawMoraleBar(u, cfg) {
+  if (u.morale >= MORALE_MAX) return; // pokazuj tylko przy utraconym morale
+  const w = 18, h = 3;
+  const x = u.x - w / 2, y = u.y - cfg.drawRadius - 4;
+  const ratio = Math.max(0, u.morale / MORALE_MAX);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = u.morale >= MORALE_WARNING_THRESHOLD ? '#4a90d9' : '#f4c430';
+  ctx.fillRect(x, y, w * ratio, h);
 }
 
 // Prosty biały symbol per typ, rysowany kodem (bez grafik/emoji), żeby
@@ -1247,7 +1453,9 @@ function drawUnits(now) {
 
     ctx.beginPath();
     ctx.arc(u.x, u.y, cfg.drawRadius, 0, Math.PI * 2);
-    ctx.fillStyle = PLAYERS[u.owner].color;
+    // złamana (routed) jednostka: biała niezależnie od gracza — jasny
+    // sygnał "nie kontrolujesz jej teraz", patrz też znacznik paniki niżej
+    ctx.fillStyle = u.routed ? '#ffffff' : PLAYERS[u.owner].color;
     ctx.fill();
     if (now < u.hitFlashUntil) {
       ctx.globalAlpha = 0.6;
@@ -1273,10 +1481,20 @@ function drawUnits(now) {
       ctx.lineWidth = 2;
       ctx.stroke();
     }
+    if (!u.routed && u.morale < MORALE_WARNING_THRESHOLD) {
+      // na skraju załamania — wyraźne migotanie, zanim gracz straci kontrolę
+      const pulse = 0.4 + 0.4 * Math.sin(now / 120);
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, cfg.drawRadius + 5, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,80,0,${pulse.toFixed(2)})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
 
     if (shaking) ctx.restore();
 
     drawHpBar(u, cfg, now);
+    drawMoraleBar(u, cfg);
     if (cfg.ranged && u.targetPriority && u.targetPriority !== 'NEAREST') {
       const letter = { ENEMY_ARTILLERY: 'A', HEAVY_UNITS: 'H', WEAKEST: 'W' }[u.targetPriority];
       const bx = u.x + cfg.drawRadius * 0.7, by = u.y - cfg.drawRadius * 0.7;
@@ -1292,6 +1510,23 @@ function drawUnits(now) {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(letter, bx, by + 0.5);
+    }
+    if (u.routed) {
+      // znacznik paniki — jednoznaczny sygnał "nie kontrolujesz tej jednostki",
+      // w przeciwnym rogu niż znacznik priorytetu celu, żeby się nie kolidowały
+      const bx = u.x - cfg.drawRadius * 0.7, by = u.y - cfg.drawRadius * 0.7;
+      ctx.beginPath();
+      ctx.arc(bx, by, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#222';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('!', bx, by + 0.5);
     }
   }
 }
