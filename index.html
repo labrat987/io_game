@@ -263,6 +263,7 @@ function spawnUnit(type, col, row, owner) {
     routed: false, // złamana — gracz nie kontroluje, patrz updateMorale/getSelectedUnits
     timeSafeFromEnemy: 0, // liczy się tylko gdy routed — patrz updateMorale
     inMeleeLock: false, // tylko dla ranged — w zwarciu, nie strzela; patrz resolveCombat/drawUnits
+    shotsFired: 0, shotsHit: 0, // tylko dla ranged — diagnostyka celności w trybie debug (klawisz D)
   });
 }
 
@@ -391,21 +392,12 @@ function finalizePath(unit, rawPath) {
 // ============================================================
 // PATHFINDING (A*)
 // ============================================================
-function findPath(startTile, endTile, exactEndPoint) {
-  let end = endTile;
-  let endWasSnapped = false;
-  if (!isPassable(end.col, end.row)) {
-    end = nearestPassableTile(end.col, end.row);
-    endWasSnapped = true;
-  }
-  // Kafel startowy zawsze traktowany jako dostępny — jeśli jednostka mimo
-  // wszystko stoi na nieprzechodnim terenie, ma mieć jak stamtąd wyjść
-  // (sąsiedzi nadal filtrowani normalnie przez isPassable niżej).
-  if (startTile.col === end.col && startTile.row === end.row) {
-    if (exactEndPoint && !endWasSnapped) return [{ x: exactEndPoint.x, y: exactEndPoint.y }];
-    return [];
-  }
-
+// Rdzeń A* — zwraca węzeł końcowy (z łańcuchem .parent do odtworzenia
+// ścieżki i .g jako łączny koszt) albo null, gdy trasa nie istnieje.
+// Używane zarówno przez findPath (pełna ścieżka świata), jak i
+// estimatePathCost (sam koszt, do porównywania kandydatów bez liczenia
+// całej wygładzonej trasy — patrz findRouteEntryIndex).
+function runAStarSearch(startTile, end) {
   const key = (c, r) => r * MAP_COLS + c;
   const open = new Map(); // key -> node
   const closed = new Set();
@@ -426,24 +418,7 @@ function findPath(startTile, endTile, exactEndPoint) {
     for (const [k, node] of open) {
       if (!current || node.f < current.f) { current = node; currentKey = k; }
     }
-    if (current.col === end.col && current.row === end.row) {
-      const tilePath = [];
-      let n = current;
-      while (n) { tilePath.unshift({ col: n.col, row: n.row }); n = n.parent; }
-      const smoothed = smoothTilePath(tilePath);
-      const worldPoints = smoothed.slice(1).map(t => tileToWorld(t.col, t.row));
-      // margines od narożników przeszkód na punktach pośrednich (nie na
-      // ostatnim, który zaraz i tak może zostać nadpisany dokładnym celem)
-      for (let i = 0; i < worldPoints.length - 1; i++) {
-        worldPoints[i] = offsetFromObstacles(worldPoints[i], PATH_CORNER_MARGIN);
-      }
-      if (exactEndPoint && !endWasSnapped && worldPoints.length > 0) {
-        worldPoints[worldPoints.length - 1] = { x: exactEndPoint.x, y: exactEndPoint.y };
-      } else if (worldPoints.length > 0) {
-        worldPoints[worldPoints.length - 1] = offsetFromObstacles(worldPoints[worldPoints.length - 1], PATH_CORNER_MARGIN);
-      }
-      return worldPoints;
-    }
+    if (current.col === end.col && current.row === end.row) return current;
     open.delete(currentKey);
     closed.add(currentKey);
 
@@ -467,7 +442,53 @@ function findPath(startTile, endTile, exactEndPoint) {
       }
     }
   }
-  return null; // brak trasy — odróżnij od trywialnego "już na miejscu" ([])
+  return null;
+}
+
+function findPath(startTile, endTile, exactEndPoint) {
+  let end = endTile;
+  let endWasSnapped = false;
+  if (!isPassable(end.col, end.row)) {
+    end = nearestPassableTile(end.col, end.row);
+    endWasSnapped = true;
+  }
+  // Kafel startowy zawsze traktowany jako dostępny — jeśli jednostka mimo
+  // wszystko stoi na nieprzechodnim terenie, ma mieć jak stamtąd wyjść
+  // (sąsiedzi nadal filtrowani normalnie przez isPassable niżej).
+  if (startTile.col === end.col && startTile.row === end.row) {
+    if (exactEndPoint && !endWasSnapped) return [{ x: exactEndPoint.x, y: exactEndPoint.y }];
+    return [];
+  }
+
+  const finalNode = runAStarSearch(startTile, end);
+  if (!finalNode) return null; // brak trasy — odróżnij od trywialnego "już na miejscu" ([])
+
+  const tilePath = [];
+  let n = finalNode;
+  while (n) { tilePath.unshift({ col: n.col, row: n.row }); n = n.parent; }
+  const smoothed = smoothTilePath(tilePath);
+  const worldPoints = smoothed.slice(1).map(t => tileToWorld(t.col, t.row));
+  // margines od narożników przeszkód na punktach pośrednich (nie na
+  // ostatnim, który zaraz i tak może zostać nadpisany dokładnym celem)
+  for (let i = 0; i < worldPoints.length - 1; i++) {
+    worldPoints[i] = offsetFromObstacles(worldPoints[i], PATH_CORNER_MARGIN);
+  }
+  if (exactEndPoint && !endWasSnapped && worldPoints.length > 0) {
+    worldPoints[worldPoints.length - 1] = { x: exactEndPoint.x, y: exactEndPoint.y };
+  } else if (worldPoints.length > 0) {
+    worldPoints[worldPoints.length - 1] = offsetFromObstacles(worldPoints[worldPoints.length - 1], PATH_CORNER_MARGIN);
+  }
+  return worldPoints;
+}
+
+// Sam koszt trasy (bez wygładzania/budowania punktów świata) — do szybkiego
+// porównania wielu kandydatów, patrz findRouteEntryIndex.
+function estimatePathCost(startTile, endTile) {
+  let end = endTile;
+  if (!isPassable(end.col, end.row)) end = nearestPassableTile(end.col, end.row);
+  if (startTile.col === end.col && startTile.row === end.row) return 0;
+  const node = runAStarSearch(startTile, end);
+  return node ? node.g : Infinity;
 }
 function heuristic(a, b) {
   const dx = a.col - b.col, dy = a.row - b.row;
@@ -576,12 +597,54 @@ function pointAtArcLength(points, dist) {
 const ORDER_FAIL_EFFECT_DURATION_MS = 700;
 let orderFailEffects = []; // {x, y, startTime} — czerwony "X" gdy rozkaz nie ma jak dojść do celu
 
+// Jednostka w ruchu, której wydano nowy rozkaz TRASA, mogła już minąć
+// początek narysowanej krzywej — bez tego szukałaby drogi z powrotem do
+// startu. Szukamy punktu na krzywej najtańszego do osiągnięcia (koszt A*
+// ważony terenem, nie linia prosta) zamiast zawsze brać punkt 0.
+const ROUTE_ENTRY_SAMPLE_STEP = 3; // co N-ty punkt krzywej jako kandydat (wydajność)
+const ROUTE_ENTRY_MAX_CANDIDATE_DIST = 300; // px, tani wstępny filtr linią prostą przed A*
+const ROUTE_ENTRY_MAX_REASONABLE_COST = 20; // próg kosztu A* — powyżej: cała trasa od początku (świadomy zamiar gracza)
+
+function findRouteEntryIndex(unit, curvePoints) {
+  const indexSet = new Set();
+  for (let i = 0; i < curvePoints.length; i += ROUTE_ENTRY_SAMPLE_STEP) indexSet.add(i);
+  indexSet.add(curvePoints.length - 1);
+  // co-N-ty sampling może ominąć oczywistego kandydata tuż obok jednostki
+  // (krótkie krzywe, niekorzystne wyrównanie kroku) — geometrycznie
+  // najbliższy punkt (tanie, bez A*) jest zawsze dorzucany do kandydatów
+  let nearestIndex = 0, nearestDist = Infinity;
+  for (let i = 0; i < curvePoints.length; i++) {
+    const d = Math.hypot(curvePoints[i].x - unit.x, curvePoints[i].y - unit.y);
+    if (d < nearestDist) { nearestDist = d; nearestIndex = i; }
+  }
+  indexSet.add(nearestIndex);
+  const indices = [...indexSet];
+
+  const startTile = worldToTile(unit.x, unit.y);
+  let bestIndex = 0, bestCost = Infinity;
+  for (const i of indices) {
+    const cp = curvePoints[i];
+    // tani wstępny filtr linią prostą — dopiero ocalałych kandydatów
+    // sprawdzamy pełnym (droższym) A*
+    if (Math.hypot(cp.x - unit.x, cp.y - unit.y) > ROUTE_ENTRY_MAX_CANDIDATE_DIST) continue;
+    const cost = estimatePathCost(startTile, worldToTile(cp.x, cp.y));
+    if (cost < bestCost) { bestCost = cost; bestIndex = i; }
+  }
+  // indeks 0 jest zawsze wśród kandydatów, więc jeśli jednostka nie minęła
+  // jeszcze startu trasy, wygrywa naturalnie — bez specjalnego przypadku.
+  // Gdy nawet najlepszy kandydat jest bardzo drogi (jednostka daleko od
+  // całej krzywej), to świadomy zamiar gracza — cała trasa od początku.
+  if (bestCost > ROUTE_ENTRY_MAX_REASONABLE_COST) return 0;
+  return bestIndex;
+}
+
 function buildRoutePath(unit, curvePoints) {
+  const remainingCurve = curvePoints.slice(findRouteEntryIndex(unit, curvePoints));
   const fullPath = [];
   let prevWorld = { x: unit.x, y: unit.y };
-  for (let i = 0; i < curvePoints.length; i++) {
-    const cp = curvePoints[i];
-    const isLast = i === curvePoints.length - 1;
+  for (let i = 0; i < remainingCurve.length; i++) {
+    const cp = remainingCurve[i];
+    const isLast = i === remainingCurve.length - 1;
     const startTile = worldToTile(prevWorld.x, prevWorld.y);
     const endTile = worldToTile(cp.x, cp.y);
     const segment = findPath(startTile, endTile, isLast ? cp : undefined);
@@ -1030,15 +1093,26 @@ function attackerDamageMultiplier(attacker) {
 }
 
 // Porusza lecące pociski i zbiera obrażenia trafień do pendingDamage
-// (BEZ dotykania hp — patrz komentarz KRYTYCZNE niżej). Pocisk celuje w
-// punkt, gdzie cel był w chwili strzału, i się nie naprowadza — jeśli cel
-// zdążył odejść dalej niż jego collisionRadius od tego punktu, to pudło.
-// Trafienie to WYŁĄCZNIE efekt wizualny (błysk, przy działach drganie) i
-// iskra w miejscu uderzenia — bez fizycznego odrzutu. Wypychanie jednostek
-// ma być skutkiem tylko napierania w zwarciu (pushStrength), nigdy ostrzału.
+// (BEZ dotykania hp — patrz komentarz KRYTYCZNE niżej). Trafienie/pudło
+// jest już PRZESĄDZONE w chwili strzału (patrz resolveCombat, pole
+// isHit) — tu tylko stosujemy ten wynik. Trafiony pocisk namierza na
+// żywo aktualną pozycję celu (żeby wizualnie faktycznie w niego leciał,
+// nie w miejsce sprzed chwili — stąd nie chybia już samym ruchem celu);
+// spudłowany pocisk leci do stałego punktu z boku, ustalonego przy
+// strzale, niezależnie od tego, co zrobi cel. Trafienie to poza tym
+// WYŁĄCZNIE efekt wizualny (błysk, przy działach drganie) i iskra w
+// miejscu uderzenia — bez fizycznego odrzutu. Wypychanie jednostek ma
+// być skutkiem tylko napierania w zwarciu (pushStrength), nigdy ostrzału.
 function updateProjectiles(dt, now, pendingDamage) {
   const stillFlying = [];
   for (const p of projectiles) {
+    if (p.isHit && p.targetUnit.hp > 0) {
+      const dx = p.targetUnit.x - p.x, dy = p.targetUnit.y - p.y;
+      const remaining = Math.hypot(dx, dy) || 1;
+      const speed = Math.hypot(p.vx, p.vy);
+      p.vx = (dx / remaining) * speed;
+      p.vy = (dy / remaining) * speed;
+    }
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     p.distanceLeft -= Math.hypot(p.vx, p.vy) * dt;
@@ -1047,24 +1121,24 @@ function updateProjectiles(dt, now, pendingDamage) {
       continue;
     }
 
-    impactEffects.push({ x: p.impactX, y: p.impactY, startTime: now });
+    const finalX = p.isHit ? p.targetUnit.x : p.impactX;
+    const finalY = p.isHit ? p.targetUnit.y : p.impactY;
+    impactEffects.push({ x: finalX, y: finalY, startTime: now });
 
-    if (p.targetUnit.hp > 0) {
-      const missDist = Math.hypot(p.targetUnit.x - p.impactX, p.targetUnit.y - p.impactY);
-      if (missDist <= UNIT_TYPES[p.targetUnit.type].collisionRadius) {
-        // bonus za dobijanie: sprawdzany na aktualnym hp z tej klatki,
-        // przed jakimkolwiek odjęciem — zgodne z zasadą KRYTYCZNE
-        let dmg = p.damage;
-        if (p.targetUnit.hp < UNIT_TYPES[p.targetUnit.type].maxHp * LOW_HP_THRESHOLD) {
-          dmg *= LOW_HP_DAMAGE_BONUS;
-        }
-        pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + dmg);
-
-        p.targetUnit.hitFlashUntil = now + HIT_FLASH_DURATION_MS;
-        if (p.attackerType === 'CANNON') {
-          p.targetUnit.shakeUntil = now + CANNON_SHAKE_DURATION_MS;
-        }
+    if (p.isHit && p.targetUnit.hp > 0) {
+      // bonus za dobijanie: sprawdzany na aktualnym hp z tej klatki,
+      // przed jakimkolwiek odjęciem — zgodne z zasadą KRYTYCZNE
+      let dmg = p.damage;
+      if (p.targetUnit.hp < UNIT_TYPES[p.targetUnit.type].maxHp * LOW_HP_THRESHOLD) {
+        dmg *= LOW_HP_DAMAGE_BONUS;
       }
+      pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + dmg);
+
+      p.targetUnit.hitFlashUntil = now + HIT_FLASH_DURATION_MS;
+      if (p.attackerType === 'CANNON') {
+        p.targetUnit.shakeUntil = now + CANNON_SHAKE_DURATION_MS;
+      }
+      p.shooter.shotsHit = (p.shooter.shotsHit || 0) + 1;
     }
     // pocisk znika po dotarciu do punktu uderzenia niezależnie od trafienia
   }
@@ -1334,16 +1408,24 @@ function resolveCombat(allUnits, dt) {
       const missOffset = Math.sqrt(Math.random()) * spreadRadius;
       const impactX = target.x + Math.cos(missAngle) * missOffset;
       const impactY = target.y + Math.sin(missAngle) * missOffset;
+      // trafienie/pudło rozstrzygnięte TERAZ, na dystansie w chwili strzału —
+      // inaczej pocisk mierzący w stały punkt zawsze chybia poruszający się
+      // cel niezależnie od celności (patrz updateProjectiles: namierzanie
+      // żywego celu tylko dla strzałów już oznaczonych jako trafione)
+      const isHit = missOffset <= UNIT_TYPES[target.type].collisionRadius;
       projectiles.push({
         x: attacker.x, y: attacker.y, vx, vy,
-        impactX, impactY,
+        impactX, impactY, // używane tylko dla pudła (stały punkt z boku)
         distanceLeft: dist,
         damage: cfg.damagePerShot * dmgMultiplier,
         owner: attacker.owner,
         attackerType: attacker.type,
         targetUnit: target,
+        shooter: attacker, // do liczników trafień w trybie debug
+        isHit,
       });
       attacker.reloadRemaining = cfg.reloadTime;
+      attacker.shotsFired = (attacker.shotsFired || 0) + 1;
     }
   }
 
@@ -1639,6 +1721,13 @@ function drawUnits(now) {
       const ly = u.y - cfg.drawRadius - 16;
       ctx.strokeText(label, u.x, ly);
       ctx.fillText(label, u.x, ly);
+      if (u.selected && cfg.ranged) {
+        const pct = u.shotsFired > 0 ? Math.round((u.shotsHit / u.shotsFired) * 100) : 0;
+        const shotsLabel = `${u.shotsHit}/${u.shotsFired} (${pct}%)`;
+        const shotsY = ly - 12;
+        ctx.strokeText(shotsLabel, u.x, shotsY);
+        ctx.fillText(shotsLabel, u.x, shotsY);
+      }
     }
     if (cfg.ranged && u.targetPriority && u.targetPriority !== 'NEAREST') {
       const letter = { ENEMY_ARTILLERY: 'A', HEAVY_UNITS: 'H', WEAKEST: 'W' }[u.targetPriority];
