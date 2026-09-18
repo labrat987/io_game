@@ -12,6 +12,25 @@
     background: rgba(0,0,0,0.55); padding: 6px 14px; border-radius: 4px;
     pointer-events: none; line-height: 1.5;
   }
+  #goldPanel {
+    position: fixed; top: 12px; left: 12px;
+    color: #f4c430; font: bold 14px monospace;
+    background: rgba(0,0,0,0.55); padding: 6px 14px; border-radius: 4px;
+    pointer-events: none;
+  }
+  #cityPanel {
+    position: fixed; top: 12px; right: 12px; width: 220px;
+    color: #eee; font: 12px monospace;
+    background: rgba(0,0,0,0.8); padding: 10px; border-radius: 4px;
+    line-height: 1.6;
+  }
+  #cityPanel button {
+    display: block; width: 100%; margin: 3px 0; font: 11px monospace;
+    background: #333; color: #eee; border: 1px solid #555; border-radius: 3px;
+    padding: 4px; cursor: pointer; text-align: left;
+  }
+  #cityPanel button:disabled { color: #777; cursor: not-allowed; }
+  #cityPanel button:hover:not(:disabled) { background: #444; }
 </style>
 </head>
 <body>
@@ -19,7 +38,16 @@
   LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
   PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
   przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span><br>
-  Tab: zmień priorytet celu zaznaczonych jednostek dystansowych (najbliższy / artyleria / ciężkie / najsłabszy)
+  Tab: zmień priorytet celu zaznaczonych jednostek dystansowych (najbliższy / artyleria / ciężkie / najsłabszy) —
+  LPM w miasto: zaznacz/panel produkcji i konwojów
+</div>
+<div id="goldPanel">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)</div>
+<div id="cityPanel" style="display:none;">
+  <div id="cityPanelTitle"></div>
+  <div id="cityQueueList"></div>
+  <div id="cityBuildButtons"></div>
+  <button id="sendConvoyBtn">Wyślij konwój</button>
+  <button id="closeCityPanelBtn">Zamknij</button>
 </div>
 <canvas id="game"></canvas>
 <script>
@@ -156,11 +184,16 @@ const UNIT_TYPES = {
   // liniowo z dystansem (patrz resolveCombat) — celowo mały: dystansowi
   // mają trafiać niemal zawsze, chybienie to rzadki wyjątek na max.
   // zasięgu, nie reguła (realizm dowodzenia — skutek ma być przewidywalny)
-  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 5.2, reloadTime: 1.5, projectileSpeed: 300, minRange: 25, meleeDamage: 0.6, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5 },
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 6.6, reloadTime: 5.0, projectileSpeed: 150, minRange: 35, meleeDamage: 0.8, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5 },
-  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 2, moraleResistance: 0.9 },
-  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 5, moraleResistance: 1.8 },
-  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7 },
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 5.2, reloadTime: 1.5, projectileSpeed: 300, minRange: 25, meleeDamage: 0.6, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8 },
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 6.6, reloadTime: 5.0, projectileSpeed: 150, minRange: 35, meleeDamage: 0.8, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14 },
+  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 2, moraleResistance: 0.9, buildTime: 6 },
+  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 5, moraleResistance: 1.8, buildTime: 10 },
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9 },
+  // Bezbronny nosiciel złota (attackRange:0 -> nigdy nie znajdzie celu do
+  // ataku), jedyne źródło dochodu w ekonomii — patrz sendConvoy/updateConvoys.
+  // cost to jednocześnie koszt wysłania (ta sama konwencja co produkcja
+  // innych typów, bez osobnej duplikującej stałej).
+  CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, cost: 60, collisionRadius: 5, drawRadius: 6, pushStrength: 0, moraleResistance: 1.0 },
 };
 
 // Mnożniki prędkości i obrażeń per (typ jednostki × teren) — główna oś
@@ -181,6 +214,7 @@ const TERRAIN_MODIFIERS = {
   LIGHT_INFANTRY: makeAllOneModifiers(),
   HEAVY_INFANTRY: makeAllOneModifiers(),
   CAVALRY:        makeAllOneModifiers(),
+  CONVOY:         makeAllOneModifiers(),
 };
 // Jednostki dystansowe: las utrudnia ostrzał (dotyczy terenu ATAKUJĄCEGO)
 TERRAIN_MODIFIERS.ARCHER.FOREST.damageMultiplier = 0.5;
@@ -209,6 +243,33 @@ const MAP_DATA = [
 ];
 const MAP_COLS = MAP_DATA[0].length;
 const MAP_ROWS = MAP_DATA.length;
+
+// ============================================================
+// EKONOMIA — zakres celowo wąski: miasta, konwoje, złoto, produkcja,
+// utrzymanie. Bez bandytów, handlu, przejmowania miast, terytorium i
+// limitów zaopatrzenia (patrz CLAUDE.md, sekcja Kolejność budowy).
+// ============================================================
+const CITY_SIZE_TILES = 2; // miasto zajmuje 2x2 kafle, zweryfikowane ręcznie jako czyste pole
+// Zahardkodowane pozycje (jak MAP_DATA) — (col,row) to lewy-górny róg
+// kwadratu 2x2. Własność stała na tym etapie, bez przejmowania.
+const CITIES = [
+  { id: 'p1_a', col: 0,  row: 14, owner: 'P1' },
+  { id: 'p1_b', col: 5,  row: 14, owner: 'P1' },
+  { id: 'p1_c', col: 0,  row: 0,  owner: 'P1' },
+  { id: 'p2_a', col: 18, row: 14, owner: 'P2' },
+  { id: 'p2_b', col: 23, row: 14, owner: 'P2' },
+  { id: 'p2_c', col: 23, row: 0,  owner: 'P2' },
+];
+for (const city of CITIES) city.queue = []; // {type, remainingTime}
+
+const STARTING_GOLD = 200;
+const UPKEEP_RATE_PER_COST = 0.01; // złota/s na punkt kosztu jednostki (1%/s) — jedna dźwignia zamiast osobnej stałej na typ
+const UNPAID_UPKEEP_MORALE_LOSS_PER_SECOND = 5; // gdy gracza nie stać na żołd — patrz updateMorale
+const CONVOY_GOLD_PER_100PX = 8; // zysk konwoju za każde 100px dystansu między miastami
+
+function cityCenter(city) {
+  return { x: (city.col + CITY_SIZE_TILES / 2) * TILE_SIZE, y: (city.row + CITY_SIZE_TILES / 2) * TILE_SIZE };
+}
 
 // ============================================================
 // STAN GRY
@@ -245,6 +306,13 @@ window.addEventListener('resize', resizeCanvas);
 let units = [];
 let debugMode = false; // klawisz D — liczba morale nad każdą jednostką, do balansowania
 let nextUnitId = 1;
+
+// Ekonomia — pomijana w trybie headless (BalanceSim nie spawnuje miast)
+let gold = { P1: STARTING_GOLD, P2: STARTING_GOLD };
+let goldRate = { P1: 0, P2: 0 }; // wygładzony (EMA) wskaźnik do UI — jedyne realne źródło (konwoje) jest skokowe, nie ciągłe
+let unpaidUpkeep = { P1: false, P2: false }; // ustawiane w updateEconomy, czytane w updateMorale
+let selectedCity = null;
+let pendingConvoySource = null; // miasto źródłowe, gdy gracz czeka na wybór celu konwoju
 
 function spawnUnit(type, col, row, owner) {
   const center = tileToWorld(col, row);
@@ -719,6 +787,14 @@ function findUnitAt(x, y) {
   }
   return null;
 }
+function findCityAt(x, y) {
+  for (const city of CITIES) {
+    const c = cityCenter(city);
+    const halfSide = CITY_SIZE_TILES * TILE_SIZE / 2;
+    if (Math.abs(x - c.x) <= halfSide && Math.abs(y - c.y) <= halfSide) return city;
+  }
+  return null;
+}
 function getSelectedUnits() {
   // złamana (routed) jednostka ignoruje rozkazy gracza — patrz updateMorale
   return units.filter(u => u.selected && !u.routed);
@@ -740,6 +816,65 @@ function pointInPolygon(point, polygon) {
   }
   return inside;
 }
+
+// ============================================================
+// PANEL EKONOMII (HTML, nie canvas) — proste i funkcjonalne, to prototyp
+// ============================================================
+const PRODUCIBLE_TYPES = ['ARCHER', 'CANNON', 'LIGHT_INFANTRY', 'HEAVY_INFANTRY', 'CAVALRY'];
+const goldAmountEl = document.getElementById('goldAmount');
+const goldRateTextEl = document.getElementById('goldRateText');
+const cityPanelEl = document.getElementById('cityPanel');
+const cityPanelTitleEl = document.getElementById('cityPanelTitle');
+const cityQueueListEl = document.getElementById('cityQueueList');
+const cityBuildButtonsEl = document.getElementById('cityBuildButtons');
+const sendConvoyBtnEl = document.getElementById('sendConvoyBtn');
+const closeCityPanelBtnEl = document.getElementById('closeCityPanelBtn');
+
+function updateGoldPanel() {
+  goldAmountEl.textContent = Math.floor(gold[OWNED_PLAYER]);
+  const rate = goldRate[OWNED_PLAYER];
+  goldRateTextEl.textContent = (rate >= 0 ? '+' : '') + rate.toFixed(1);
+  if (selectedCity) refreshCityPanel(); // trzyma kolejkę/przyciski aktualne, gdy panel jest otwarty
+}
+
+function refreshCityPanel() {
+  const city = selectedCity;
+  cityPanelTitleEl.textContent = `Miasto ${city.id} (${city.owner})`;
+  cityQueueListEl.innerHTML = city.queue.length
+    ? city.queue.map((q, i) => `${i === 0 ? 'Buduje' : 'W kolejce'}: ${q.type} (${q.remainingTime.toFixed(1)}s)`).join('<br>')
+    : 'Kolejka pusta';
+  cityBuildButtonsEl.innerHTML = '';
+  for (const type of PRODUCIBLE_TYPES) {
+    const cfg = UNIT_TYPES[type];
+    const btn = document.createElement('button');
+    btn.textContent = `${type} — ${cfg.cost}zł, ${cfg.buildTime}s`;
+    btn.disabled = gold[city.owner] < cfg.cost;
+    btn.onclick = () => {
+      if (gold[city.owner] < cfg.cost) return;
+      gold[city.owner] -= cfg.cost;
+      city.queue.push({ type, remainingTime: cfg.buildTime });
+      refreshCityPanel();
+    };
+    cityBuildButtonsEl.appendChild(btn);
+  }
+}
+
+function showCityPanel(city) {
+  selectedCity = city;
+  pendingConvoySource = null;
+  cityPanelEl.style.display = 'block';
+  refreshCityPanel();
+}
+function hideCityPanel() {
+  selectedCity = null;
+  pendingConvoySource = null;
+  cityPanelEl.style.display = 'none';
+}
+
+sendConvoyBtnEl.addEventListener('click', () => {
+  if (selectedCity) pendingConvoySource = selectedCity;
+});
+closeCityPanelBtnEl.addEventListener('click', hideCityPanel);
 
 // ============================================================
 // OBSŁUGA MYSZY
@@ -832,18 +967,36 @@ window.addEventListener('mouseup', (e) => {
 
   if (dragButton === 'LEFT') {
     if (wasDrag) {
+      hideCityPanel();
       for (const u of units) {
         const inLasso = isOwnUnit(u) && pointInPolygon(u, lassoPoints);
         u.selected = e.shiftKey ? (u.selected || inLasso) : inLasso;
       }
+    } else if (pendingConvoySource) {
+      // gracz kliknął "Wyślij konwój" i czeka na miasto docelowe — ten
+      // klik rozstrzyga wysyłkę albo anuluje tryb, nigdy nie zaznacza jednostek
+      const cityHit = findCityAt(pos.x, pos.y);
+      if (cityHit && cityHit.owner === OWNED_PLAYER && cityHit !== pendingConvoySource) {
+        sendConvoy(pendingConvoySource, cityHit);
+      }
+      pendingConvoySource = null;
     } else {
-      const hitAny = findUnitAt(pos.x, pos.y);
-      const hit = isOwnUnit(hitAny) ? hitAny : null; // jednostek wroga nie da się zaznaczyć
-      if (e.shiftKey) {
-        if (hit) hit.selected = !hit.selected;
+      const cityHit = findCityAt(pos.x, pos.y);
+      if (cityHit) {
+        if (cityHit.owner === OWNED_PLAYER) {
+          for (const u of units) u.selected = false;
+          showCityPanel(cityHit);
+        } // cudze miasto — nie da się zaznaczyć, bez żadnej akcji
       } else {
-        for (const u of units) u.selected = false;
-        if (hit) hit.selected = true;
+        hideCityPanel();
+        const hitAny = findUnitAt(pos.x, pos.y);
+        const hit = isOwnUnit(hitAny) ? hitAny : null; // jednostek wroga nie da się zaznaczyć
+        if (e.shiftKey) {
+          if (hit) hit.selected = !hit.selected;
+        } else {
+          for (const u of units) u.selected = false;
+          if (hit) hit.selected = true;
+        }
       }
     }
   } else if (dragButton === 'RIGHT') {
@@ -1284,6 +1437,11 @@ function updateMorale(allUnits, attacks, pendingDamage, dt) {
         addTo(otherDelta, u, -MORALE_ISOLATION_LOSS_PER_SECOND * dt / UNIT_TYPES[u.type].moraleResistance);
       }
     }
+    // brak żołdu (ekonomia niewypłacalna) obniża morale zamiast natychmiastowej
+    // śmierci — patrz updateEconomy; jak samotność, bez tłumienia sojusznikami
+    if (unpaidUpkeep[u.owner]) {
+      addTo(otherDelta, u, -UNPAID_UPKEEP_MORALE_LOSS_PER_SECOND * dt / UNIT_TYPES[u.type].moraleResistance);
+    }
   }
 
   for (const u of allUnits) {
@@ -1504,6 +1662,70 @@ function resolveCombat(allUnits, dt) {
 }
 
 // ============================================================
+// EKONOMIA — patrz sekcja CONFIG na początku pliku
+// ============================================================
+let convoyArrivalEffects = []; // {x, y, startTime} — krótki żółty rozbłysk przy udanym dowozie (odróżnia od śmierci w walce)
+const CONVOY_ARRIVAL_EFFECT_DURATION_MS = 300;
+const CONVOY_ARRIVAL_RADIUS = 24; // px od środka miasta uznawane za "dotarł"
+
+// Wysyła konwój: koszt odjęty NATYCHMIAST (inwestycja z ryzykiem — bez
+// zwrotu, jeśli konwój zginie w drodze), zysk po dotarciu proporcjonalny
+// do dystansu między miastami (patrz updateConvoys).
+function sendConvoy(originCity, destCity) {
+  const cost = UNIT_TYPES.CONVOY.cost;
+  if (gold[originCity.owner] < cost) return false;
+  gold[originCity.owner] -= cost;
+  spawnUnit('CONVOY', originCity.col, originCity.row, originCity.owner);
+  const convoy = units[units.length - 1];
+  const origin = cityCenter(originCity), dest = cityCenter(destCity);
+  convoy.targetCityId = destCity.id;
+  convoy.goldValue = Math.hypot(dest.x - origin.x, dest.y - origin.y) / 100 * CONVOY_GOLD_PER_100PX;
+  const rawPath = findPath(worldToTile(convoy.x, convoy.y), worldToTile(dest.x, dest.y), dest);
+  if (rawPath !== null) convoy.path = finalizePath(convoy, rawPath);
+  return true;
+}
+
+// Konwoje, które dotarły, znikają i wypłacają złoto — osobno od zwykłej
+// ścieżki śmierci (bez deathEffects, to udany dowóz, nie zniszczenie).
+function updateConvoys(now) {
+  const arrived = new Set();
+  for (const u of units) {
+    if (u.type !== 'CONVOY' || u.hp <= 0) continue;
+    const targetCity = CITIES.find(c => c.id === u.targetCityId);
+    if (!targetCity) continue;
+    const center = cityCenter(targetCity);
+    if (Math.hypot(u.x - center.x, u.y - center.y) <= CONVOY_ARRIVAL_RADIUS) {
+      gold[u.owner] += u.goldValue;
+      convoyArrivalEffects.push({ x: center.x, y: center.y, startTime: now });
+      arrived.add(u.id);
+    }
+  }
+  if (arrived.size > 0) units = units.filter(u => !arrived.has(u.id));
+}
+
+// Utrzymanie, tempo dochodu do UI, produkcja jednostek w miastach.
+// Pomijana w trybie headless (BalanceSim nie spawnuje miast/gold).
+function updateEconomy(dt) {
+  for (const owner of ['P1', 'P2']) {
+    const upkeepDue = units.filter(u => u.owner === owner).reduce((s, u) => s + UNIT_TYPES[u.type].cost * UPKEEP_RATE_PER_COST * dt, 0);
+    const before = gold[owner];
+    unpaidUpkeep[owner] = upkeepDue > gold[owner];
+    gold[owner] = Math.max(0, gold[owner] - upkeepDue);
+    const rate = (gold[owner] - before) / dt;
+    goldRate[owner] = goldRate[owner] * 0.95 + rate * 0.05;
+  }
+
+  for (const city of CITIES) {
+    if (city.queue.length === 0) continue;
+    city.queue[0].remainingTime -= dt;
+    if (city.queue[0].remainingTime <= 0) {
+      const { type } = city.queue.shift();
+      spawnUnit(type, city.col, city.row, city.owner);
+    }
+  }
+}
+
+// ============================================================
 // RYSOWANIE
 // ============================================================
 function drawMap() {
@@ -1519,6 +1741,49 @@ function drawMap() {
   }
   for (let row = 0; row <= MAP_ROWS; row++) {
     ctx.beginPath(); ctx.moveTo(0, row * TILE_SIZE); ctx.lineTo(MAP_WIDTH_PX, row * TILE_SIZE); ctx.stroke();
+  }
+}
+
+// Żółty kwadrat (2x2 kafle) z obwódką w kolorze właściciela i prostą
+// ikoną dachu — miasto ma być jednoznacznie widoczne i rozróżnialne
+// per gracz na pierwszy rzut oka.
+function drawCities() {
+  const side = CITY_SIZE_TILES * TILE_SIZE;
+  for (const city of CITIES) {
+    const c = cityCenter(city);
+    ctx.fillStyle = '#f4c430';
+    ctx.fillRect(c.x - side / 2, c.y - side / 2, side, side);
+    ctx.strokeStyle = PLAYERS[city.owner].color;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(c.x - side / 2, c.y - side / 2, side, side);
+
+    ctx.beginPath();
+    ctx.moveTo(c.x - side * 0.3, c.y);
+    ctx.lineTo(c.x, c.y - side * 0.32);
+    ctx.lineTo(c.x + side * 0.3, c.y);
+    ctx.closePath();
+    ctx.fillStyle = '#7a5230';
+    ctx.fill();
+
+    if (selectedCity === city) {
+      ctx.strokeStyle = '#00eaff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(c.x - side / 2 - 4, c.y - side / 2 - 4, side + 8, side + 8);
+    }
+  }
+}
+
+function drawConvoyArrivalEffects(now) {
+  convoyArrivalEffects = convoyArrivalEffects.filter(e => now - e.startTime < CONVOY_ARRIVAL_EFFECT_DURATION_MS);
+  for (const e of convoyArrivalEffects) {
+    const t = (now - e.startTime) / CONVOY_ARRIVAL_EFFECT_DURATION_MS;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, 10 + t * 20, 0, Math.PI * 2);
+    ctx.strokeStyle = '#f4c430';
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -1658,7 +1923,13 @@ function drawUnits(now) {
     }
 
     ctx.beginPath();
-    ctx.arc(u.x, u.y, cfg.drawRadius, 0, Math.PI * 2);
+    if (u.type === 'CONVOY') {
+      // konwój: kwadrat, nie koło — jedyna zmiana kształtu bazowego,
+      // odróżnia go na pierwszy rzut oka od walczących jednostek
+      ctx.rect(u.x - cfg.drawRadius, u.y - cfg.drawRadius, cfg.drawRadius * 2, cfg.drawRadius * 2);
+    } else {
+      ctx.arc(u.x, u.y, cfg.drawRadius, 0, Math.PI * 2);
+    }
     // złamana (routed) jednostka: STAŁA pełna biel niezależnie od gracza —
     // "już ucieka, nie masz kontroli". Poniżej progu ostrzegawczego, ale
     // jeszcze nie złamana: PULSUJĄCE wypełnienie między kolorem gracza a
@@ -1975,18 +2246,23 @@ function gameLoop(now) {
   for (const u of units) updateUnit(u, dt);
   resolveCollisions(units);
   units = resolveCombat(units, dt);
+  updateEconomy(dt);
+  updateConvoys(now);
+  updateGoldPanel();
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.translate(viewOffsetX, viewOffsetY);
   ctx.scale(viewScale, viewScale);
   drawMap();
+  drawCities();
   drawUnits(now);
   drawDyingUnits(now);
   drawAttackLines();
   drawProjectiles();
   drawImpactEffects(now);
   drawDeathEffects(now);
+  drawConvoyArrivalEffects(now);
   drawOrderFailEffects(now);
   drawGestureFeedback();
   ctx.restore();
