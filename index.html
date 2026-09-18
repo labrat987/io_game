@@ -200,28 +200,33 @@ const PLAYERS = {
 const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
 
 // cost na razie nigdzie nieużywany (brak ekonomii) — zaślepka pod przyszły balans.
-// ranged:true = model salw (damagePerShot/reloadTime/projectileSpeed/minRange/
+// ranged:true = model salw (damagePerShot/reloadTime/projectileSpeed/
 // meleeDamage, patrz sekcja WALKA), ranged:false = ciągłe obrażenia (damagePerSecond).
 // speed ×0.5 i maxHp ×2 względem poprzedniej wersji (spowolnienie gry +
 // wydłużenie starć do ~15-25s, jedna dźwignia zamiast dublowania z
 // obrażeniami — patrz CLAUDE.md/podsumowanie tury). pushStrength: 0 =
 // jednostka nie napiera w walce wręcz (dotyczy obu dystansowych).
+// Obrażenia obniżone o kolejne 15% (starcia mają trwać dłużej, dać czas
+// na reakcję — przegrupowanie, odwrót osłabionych, wsparcie).
 const UNIT_TYPES = {
   // Dystansowi to wsparcie piechoty, nie samodzielna siła: osłabiona siła
   // ognia, wolniejsze przeładowanie, kruche HP, bezbronni z bliska,
   // accuracy = promień rozrzutu (px) na pełnym attackRange, rośnie
   // liniowo z dystansem (patrz resolveCombat) — celowo mały: dystansowi
   // mają trafiać niemal zawsze, chybienie to rzadki wyjątek na max.
-  // zasięgu, nie reguła (realizm dowodzenia — skutek ma być przewidywalny)
+  // zasięgu, nie reguła (realizm dowodzenia — skutek ma być przewidywalny).
+  // Bez minRange — bliskość wroga sama w sobie NIE blokuje ostrzału,
+  // liczy się wyłącznie faktyczne związanie walką wręcz (patrz
+  // resolveCombat: meleeAttackersOf).
   // lastStandChance: szansa na desperacką obronę ZAMIAST ucieczki w
   // chwili złamania (patrz updateMorale/Last Stand) — najwyższa u ciężkiej
   // piechoty (walczy do końca), najniższa u dystansowych (nieszkoleni do
   // beznadziejnej obrony wręcz, wolą (próbować) uciec).
-  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 5.2, reloadTime: 1.5, projectileSpeed: 300, minRange: 25, meleeDamage: 0.6, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.05 },
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 6.6, reloadTime: 5.0, projectileSpeed: 150, minRange: 35, meleeDamage: 0.8, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05 },
-  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 2, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.2 },
-  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 5, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4 },
-  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15 },
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 4.4, reloadTime: 1.5, projectileSpeed: 300, meleeDamage: 0.5, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.05 },
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 5.6, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.7, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05 },
+  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 8.5, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 2, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.2 },
+  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 12.8, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 5, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4 },
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 11.9, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15 },
   // Bezbronny nosiciel złota (attackRange:0 -> nigdy nie znajdzie celu do
   // ataku; wykluczony z namierzania przez innych — patrz findTargetForUnit/
   // findNearestEnemyInRange — więc nigdy nie ginie w walce, tylko może
@@ -300,7 +305,7 @@ const TERRAIN_MODIFIERS = {
   },
 };
 
-const BASE_SPEED_PX_PER_S = 36; // mnożone przez unit.speed i terrain.speedMultiplier (obniżone łącznie o ~40% od bazy — gra ma być operacyjna, czas na decyzje sztabowe, nie refleks)
+const BASE_SPEED_PX_PER_S = 28.8; // mnożone przez unit.speed i terrain.speedMultiplier (obniżone łącznie o ~50% od bazy — gracz ma zdążyć zareagować na przebieg starcia, przegrupować, wycofać osłabione oddziały)
 
 // Zahardkodowana mapa terenu — edytuj ręcznie (0 pole, 1 las, 2 gory,
 // 3 woda, 4 wzgórza). Powiększona o ~50% względem pierwszej wersji
@@ -1271,7 +1276,8 @@ window.addEventListener('mouseup', (e) => {
     if (wasDrag) {
       hideCityPanel();
       for (const u of units) {
-        const inLasso = isOwnUnit(u) && pointInPolygon(u, lassoPoints);
+        // konwój nigdy nie łapie się w lasso — jedyny sposób zaznaczenia to bezpośredni klik (findUnitAt, bez zmian)
+        const inLasso = isOwnUnit(u) && u.type !== 'CONVOY' && pointInPolygon(u, lassoPoints);
         u.selected = e.shiftKey ? (u.selected || inLasso) : inLasso;
       }
     } else {
@@ -1889,12 +1895,25 @@ function resolveCombat(allUnits, dt) {
 
   updateProjectiles(dt, now, pendingDamage);
 
+  // Kto faktycznie atakuje kogo wręcz W TEJ klatce (tylko prawdziwi
+  // wojownicy wręcz, ranged:false) — decyduje, którzy dystansowi są
+  // związani walką i nie mogą strzelać (patrz gałąź ranged niżej).
+  // Liczone PRZED główną pętlą, bo warunek musi być znany w momencie
+  // podejmowania decyzji strzał-czy-zwarcie dla każdej jednostki dystansowej.
+  const meleeAttackersOf = new Map(); // target -> Set(attacker)
+  for (const attacker of allUnits) {
+    if (attacker.hp <= 0 || attacker.routed) continue;
+    if (UNIT_TYPES[attacker.type].ranged) continue;
+    const target = findNearestEnemyInRange(attacker, allUnits);
+    if (!target) continue;
+    if (!meleeAttackersOf.has(target)) meleeAttackersOf.set(target, new Set());
+    meleeAttackersOf.get(target).add(attacker);
+  }
+
   for (const attacker of allUnits) {
     // złamana (routed) jednostka przestaje walczyć — patrz updateMorale
     if (attacker.hp <= 0 || attacker.routed) continue;
     const cfg = UNIT_TYPES[attacker.type];
-    const target = cfg.ranged ? findTargetForUnit(attacker, allUnits) : findNearestEnemyInRange(attacker, allUnits);
-    if (!target) continue;
     const dmgMultiplier = attackerDamageMultiplier(attacker);
     const attackerTile = worldToTile(attacker.x, attacker.y);
     const attackerTerrain = terrainAt(attackerTile.col, attackerTile.row);
@@ -1902,6 +1921,8 @@ function resolveCombat(allUnits, dt) {
 
     if (!cfg.ranged) {
       // walka wręcz — obrażenia ciągłe, skalowane tym, kto napiera
+      const target = findNearestEnemyInRange(attacker, allUnits);
+      if (!target) continue;
       attacks.push({ attacker, target });
       attackersThisFrame.add(attacker);
       let damage = cfg.damagePerSecond * dt * dmgMultiplier * pushDamageMultiplier(attacker, target);
@@ -1911,22 +1932,33 @@ function resolveCombat(allUnits, dt) {
       continue;
     }
 
-    const dist = Math.hypot(target.x - attacker.x, target.y - attacker.y);
-    if (dist < cfg.minRange) {
-      // dystansowy zmuszony do zwarcia — bezbronny (pushStrength=0 zawsze
-      // przegrywa porównanie), tylko śladowy atak wręcz. Trzyma
+    // Dystansowy: bliskość wroga sama w sobie NIE blokuje ostrzału — tylko
+    // faktyczne związanie walką wręcz (ktoś go w TEJ klatce atakuje).
+    // Łucznik może strzelać do wroga stojącego tuż obok, jeśli ten go nie
+    // atakuje (np. walczy z kimś innym).
+    const lockedBy = meleeAttackersOf.get(attacker);
+    if (lockedBy && lockedBy.size > 0) {
+      // związany walką wręcz — bezbronny (pushStrength=0 zawsze przegrywa
+      // porównanie), tylko śladowy atak wręcz na napastnika. Trzyma
       // rozstawienie "zerwane" przez CAŁY czas zwarcia (odliczanie
-      // setupTime zacznie realnie płynąć dopiero, gdy ta gałąź przestanie
-      // się wykonywać — wróg zginie albo odejdzie poza minRange).
+      // setupTime zacznie realnie płynąć dopiero, gdy przestanie być
+      // atakowany — napastnik zginie albo się oderwie).
+      const meleeEnemy = [...lockedBy][0];
       attacker.setupRemaining = cfg.setupTime;
       attacker.inMeleeLock = true;
-      attacks.push({ attacker, target });
+      attacks.push({ attacker, target: meleeEnemy });
       attackersThisFrame.add(attacker);
-      let damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, target);
+      let damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, meleeEnemy);
       if (attacker.lastStand) damage *= LAST_STAND_DAMAGE_BONUS_MULTIPLIER;
-      if (target.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
-      pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
-    } else if (!onWater && attacker.reloadRemaining <= 0 && attacker.setupRemaining <= 0) {
+      if (meleeEnemy.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
+      pendingDamage.set(meleeEnemy, (pendingDamage.get(meleeEnemy) || 0) + damage);
+      continue;
+    }
+
+    const target = findTargetForUnit(attacker, allUnits);
+    if (!target) continue;
+    const dist = Math.hypot(target.x - attacker.x, target.y - attacker.y);
+    if (!onWater && attacker.reloadRemaining <= 0 && attacker.setupRemaining <= 0) {
       // dystansowi wymagają rozstawienia — na wodzie nie da się go
       // rozstawić, więc ostrzał jest zablokowany (śladowy meleeDamage
       // wyżej, jeśli wróg jest w zwarciu, działa bez zmian)
@@ -1936,9 +1968,9 @@ function resolveCombat(allUnits, dt) {
       const speed = cfg.projectileSpeed;
       const vx = (target.x - attacker.x) / dist * speed;
       const vy = (target.y - attacker.y) / dist * speed;
-      // rozrzut rośnie liniowo z dystansem: blisko minRange lepsza
-      // celność, na pełnym attackRange wyraźnie gorsza, ale różnica
-      // między dystansem średnim a maksymalnym ma być łagodna, nie
+      // rozrzut rośnie liniowo z dystansem: z bliska niemal gwarantowane
+      // trafienie, na pełnym attackRange wyraźnie gorsza celność, ale
+      // różnica między dystansem średnim a maksymalnym ma być łagodna, nie
       // urwista (kwadratowy wzrost dawał zbyt karną krzywą trafień)
       const distFraction = dist / effectiveAttackRange(attacker);
       const spreadRadius = cfg.accuracy * distFraction;

@@ -22,8 +22,9 @@ const { chromium } = require('playwright');
 const ROOT = __dirname;
 const PORT = 8877;
 const REPEATS = 50; // minimum wg specyfikacji
-const MAX_SECONDS = 1000; // podniesione po tej turze (spowolnienie ×0.8 + dłuższa panika/Last Stand
-// wydłużyły starcia — zmierzony najdłuższy przypadek ARCHER vs CANNON ~668s, zostawiony margines)
+const MAX_SECONDS = 1600; // podniesione po tej turze (kolejne -20% prędkości/-15% obrażeń oraz zniesienie
+// minRange — dystansowi faktycznie się teraz dobijają zamiast wiecznego pata — wydłużyły starcia;
+// zmierzony najdłuższy przypadek CANNON vs CANNON ~1017s, zostawiony margines)
 
 function startServer() {
   const server = http.createServer((req, res) => {
