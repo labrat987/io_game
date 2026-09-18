@@ -55,6 +55,11 @@ const PUSH_WINNING_DAMAGE_MULTIPLIER = 1.0;
 const PUSH_STALEMATE_DAMAGE_MULTIPLIER = 0.5;
 const PUSH_LOSING_DAMAGE_MULTIPLIER = 0.25;
 
+// Spowolnienie w zwarciu — naprawia "przepychanie się" przez wroga
+// rozkazem ruchu bez realnego stoczenia walki (patrz resolveCombat/updateUnit)
+const MELEE_SLOW_DURATION = 1.5; // s po ostatnim ciosie zadanym/otrzymanym w zwarciu
+const COMBAT_SPEED_MULTIPLIER = 0.3; // mnożnik prędkości w tym oknie
+
 // Bonus "dobijania" dla ostrzału dystansowego — patrz updateProjectiles
 const LOW_HP_THRESHOLD = 0.3; // poniżej tego ułamka maxHp celu
 const LOW_HP_DAMAGE_BONUS = 1.5; // mnożnik obrażeń trafienia pociskiem
@@ -176,6 +181,7 @@ function spawnUnit(type, col, row, owner) {
     reloadRemaining: 0, // tylko dla ranged, ale ustawiane zawsze
     setupRemaining: 0, // tylko dla ranged — czas do końca rozstawienia po zatrzymaniu
     timeSinceCombat: 0, // s od ostatniego zadania/otrzymania obrażeń — reguluje regenerację
+    timeSinceMeleeCombat: Infinity, // s od ostatniego ciosu w zwarciu (nie ostrzału) — reguluje combatSlow
     hitFlashUntil: 0, // performance.now() do kiedy rysować błysk trafienia
     shakeUntil: 0, // performance.now() do kiedy rysować drganie (trafienie z działa)
     targetPriority: 'NEAREST', // tylko dla ranged — patrz findTargetForUnit, przełączane klawiszem Tab
@@ -383,7 +389,7 @@ function findPath(startTile, endTile, exactEndPoint) {
       }
     }
   }
-  return []; // brak trasy
+  return null; // brak trasy — odróżnij od trywialnego "już na miejscu" ([])
 }
 function heuristic(a, b) {
   const dx = a.col - b.col, dy = a.row - b.row;
@@ -489,6 +495,9 @@ function pointAtArcLength(points, dist) {
 // ============================================================
 // ROZKAZY RUCHU — TRYB A (trasa) / TRYB B (front)
 // ============================================================
+const ORDER_FAIL_EFFECT_DURATION_MS = 700;
+let orderFailEffects = []; // {x, y, startTime} — czerwony "X" gdy rozkaz nie ma jak dojść do celu
+
 function buildRoutePath(unit, curvePoints) {
   const fullPath = [];
   let prevWorld = { x: unit.x, y: unit.y };
@@ -498,8 +507,13 @@ function buildRoutePath(unit, curvePoints) {
     const startTile = worldToTile(prevWorld.x, prevWorld.y);
     const endTile = worldToTile(cp.x, cp.y);
     const segment = findPath(startTile, endTile, isLast ? cp : undefined);
+    if (segment === null) return null; // odcinek nieosiągalny — cała trasa pada
     fullPath.push(...segment);
-    prevWorld = cp;
+    // prevWorld musi być RZECZYWISTYM końcem obliczonej ścieżki, nie
+    // surowym punktem krzywej cp — inaczej kolejny odcinek liczy się od
+    // "widmowej" pozycji (np. wewnątrz góry, jeśli cp tam leżał), co
+    // tworzy prostą linię przez przeszkodę między segmentami
+    if (segment.length > 0) prevWorld = segment[segment.length - 1];
   }
   return fullPath;
 }
@@ -685,20 +699,35 @@ window.addEventListener('mouseup', (e) => {
         const offsets = formationOffsets(selected.length, FORMATION_SPACING);
         selected.forEach((u, i) => {
           const target = { x: pos.x + offsets[i].dx, y: pos.y + offsets[i].dy };
-          u.path = finalizePath(u, findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target));
+          const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
+          if (rawPath === null) {
+            orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
+          } else {
+            u.path = finalizePath(u, rawPath);
+          }
         });
       } else if (dragMode === 'ROUTE') {
         if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
         const curve = simplifyCurve(rawStrokePoints, 6);
         for (const u of selected) {
-          u.path = finalizePath(u, buildRoutePath(u, curve));
+          const rawPath = buildRoutePath(u, curve);
+          if (rawPath === null) {
+            orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
+          } else {
+            u.path = finalizePath(u, rawPath);
+          }
         }
       } else if (dragMode === 'FRONT') {
         if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
         const curve = simplifyCurve(rawStrokePoints, 6);
         const assignments = assignFrontTargets(selected, curve);
         for (const { unit, target } of assignments) {
-          unit.path = finalizePath(unit, findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target));
+          const rawPath = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
+          if (rawPath === null) {
+            orderFailEffects.push({ x: unit.x, y: unit.y, startTime: performance.now() });
+          } else {
+            unit.path = finalizePath(unit, rawPath);
+          }
         }
       }
     }
@@ -725,7 +754,9 @@ function updateUnit(unit, dt) {
   // poruszać się z normalną prędkością, żeby mogła zejść na właściwy teren
   const perTypeSpeedMultiplier = TERRAIN_MODIFIERS[unit.type][terrain.name].speedMultiplier;
   const effectiveSpeedMultiplier = terrain.passable ? terrain.speedMultiplier * perTypeSpeedMultiplier : 1.0;
-  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier;
+  // w zwarciu jednostka ma faktycznie walczyć, nie przepychać się dalej
+  const combatSlow = unit.timeSinceMeleeCombat < MELEE_SLOW_DURATION ? COMBAT_SPEED_MULTIPLIER : 1;
+  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier * combatSlow;
 
   let remaining = speed * dt;
   while (remaining > 0 && unit.path.length > 0) {
@@ -968,6 +999,9 @@ function resolveCombat(allUnits, dt) {
     const target = cfg.ranged ? findTargetForUnit(attacker, allUnits) : findNearestEnemyInRange(attacker, allUnits);
     if (!target) continue;
     const dmgMultiplier = attackerDamageMultiplier(attacker);
+    const attackerTile = worldToTile(attacker.x, attacker.y);
+    const attackerTerrain = terrainAt(attackerTile.col, attackerTile.row);
+    const onWater = !!attackerTerrain && attackerTerrain.name === 'WATER';
 
     if (!cfg.ranged) {
       // walka wręcz — obrażenia ciągłe, skalowane tym, kto napiera
@@ -986,7 +1020,10 @@ function resolveCombat(allUnits, dt) {
       attackersThisFrame.add(attacker);
       const damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, target);
       pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
-    } else if (attacker.reloadRemaining <= 0 && attacker.setupRemaining <= 0) {
+    } else if (!onWater && attacker.reloadRemaining <= 0 && attacker.setupRemaining <= 0) {
+      // dystansowi wymagają rozstawienia — na wodzie nie da się go
+      // rozstawić, więc ostrzał jest zablokowany (śladowy meleeDamage
+      // wyżej, jeśli wróg jest w zwarciu, działa bez zmian)
       // normalny strzał — obrażenia dopiero przy trafieniu pocisku, nie teraz.
       // Samo wystrzelenie już liczy się jako "w walce" dla regeneracji.
       attackersThisFrame.add(attacker);
@@ -1037,6 +1074,22 @@ function resolveCombat(allUnits, dt) {
       u.timeSinceCombat = 0;
     } else {
       u.timeSinceCombat += dt;
+    }
+  }
+
+  // Osobny zegar zwarcia (nie ostrzału) — napędza spowolnienie w walce
+  // wręcz. `attacks` zawiera wyłącznie starcia wręcz (w tym dystansowych
+  // zmuszonych do zwarcia), nigdy trafień pociskiem.
+  const meleeThisFrame = new Set();
+  for (const { attacker, target } of attacks) {
+    meleeThisFrame.add(attacker);
+    meleeThisFrame.add(target);
+  }
+  for (const u of allUnits) {
+    if (meleeThisFrame.has(u)) {
+      u.timeSinceMeleeCombat = 0;
+    } else {
+      u.timeSinceMeleeCombat += dt;
     }
   }
 
@@ -1274,6 +1327,22 @@ function drawImpactEffects(now) {
   }
 }
 
+function drawOrderFailEffects(now) {
+  orderFailEffects = orderFailEffects.filter(e => now - e.startTime < ORDER_FAIL_EFFECT_DURATION_MS);
+  for (const e of orderFailEffects) {
+    const t = (now - e.startTime) / ORDER_FAIL_EFFECT_DURATION_MS;
+    ctx.strokeStyle = '#ff3b3b';
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 2;
+    const r = 6 + t * 6;
+    ctx.beginPath();
+    ctx.moveTo(e.x - r, e.y - r); ctx.lineTo(e.x + r, e.y + r);
+    ctx.moveTo(e.x + r, e.y - r); ctx.lineTo(e.x - r, e.y + r);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
 function drawAttackLines() {
   for (const { attacker, target } of currentAttacks) {
     ctx.strokeStyle = PLAYERS[attacker.owner].color;
@@ -1439,6 +1508,7 @@ function gameLoop(now) {
   drawProjectiles();
   drawImpactEffects(now);
   drawDeathEffects(now);
+  drawOrderFailEffects(now);
   drawGestureFeedback();
   ctx.restore();
 
