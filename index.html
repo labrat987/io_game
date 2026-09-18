@@ -44,7 +44,7 @@ const WATER_DAMAGE_PER_SECOND = 0;
 // Regeneracja poza walką — patrz resolveCombat. Docelowo szybsza przy
 // własnych miastach i wolniejsza blisko frontu (patrz CLAUDE.md, sekcja
 // Ekonomia) — to modyfikator tej bazy, jeszcze niezaimplementowany.
-const OUT_OF_COMBAT_DELAY = 8; // s bez zadania/otrzymania obrażeń, zanim ruszy regeneracja
+const OUT_OF_COMBAT_DELAY = 12; // s bez zadania/otrzymania obrażeń, zanim ruszy regeneracja (>2x najdłuższe przeładowanie, żeby pojedyncze pudło nie otwierało okna regeneracji w trakcie ostrzału)
 const REGEN_PER_SECOND = 0.03; // ułamek maxHp na sekundę
 
 // Napieranie w walce wręcz — patrz resolveCombat/resolveCollisions
@@ -114,10 +114,12 @@ const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
 const UNIT_TYPES = {
   // Dystansowi to wsparcie piechoty, nie samodzielna siła: osłabiona siła
   // ognia, wolniejsze przeładowanie, kruche HP, bezbronni z bliska,
-  // accuracy = promień rozrzutu (px) na pełnym attackRange (patrz
-  // resolveCombat — rośnie kwadratowo z dystansem, nie liniowo)
-  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 12, reloadTime: 1.5, projectileSpeed: 300, minRange: 50, meleeDamage: 0.9, accuracy: 12.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.6 },
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 48, reloadTime: 5.0, projectileSpeed: 150, minRange: 90, meleeDamage: 3.6, accuracy: 22.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.6 },
+  // accuracy = promień rozrzutu (px) na pełnym attackRange, rośnie
+  // liniowo z dystansem (patrz resolveCombat) — celowo mały: dystansowi
+  // mają trafiać niemal zawsze, chybienie to rzadki wyjątek na max.
+  // zasięgu, nie reguła (realizm dowodzenia — skutek ma być przewidywalny)
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 5.2, reloadTime: 1.5, projectileSpeed: 300, minRange: 25, meleeDamage: 0.6, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.6 },
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 6.6, reloadTime: 5.0, projectileSpeed: 150, minRange: 35, meleeDamage: 0.8, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.6 },
   LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 2, moraleResistance: 1.0 },
   HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 5, moraleResistance: 1.6 },
   CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7 },
@@ -221,6 +223,7 @@ function spawnUnit(type, col, row, owner) {
     morale: MORALE_MAX,
     routed: false, // złamana — gracz nie kontroluje, patrz updateMorale/getSelectedUnits
     timeSafeFromEnemy: 0, // liczy się tylko gdy routed — patrz updateMorale
+    inMeleeLock: false, // tylko dla ranged — w zwarciu, nie strzela; patrz resolveCombat/drawUnits
   });
 }
 
@@ -1168,6 +1171,7 @@ function resolveCombat(allUnits, dt) {
 
   for (const u of allUnits) {
     const cfg = UNIT_TYPES[u.type];
+    if (cfg.ranged) u.inMeleeLock = false; // ustawiane z powrotem niżej, jeśli wciąż w zwarciu
     if (cfg.ranged && u.path.length > 0) {
       // w ruchu: przerwij rozstawienie i wyczyść przeładowanie — po
       // ponownym rozstawieniu jednostka jest od razu gotowa do strzału,
@@ -1205,7 +1209,12 @@ function resolveCombat(allUnits, dt) {
     const dist = Math.hypot(target.x - attacker.x, target.y - attacker.y);
     if (dist < cfg.minRange) {
       // dystansowy zmuszony do zwarcia — bezbronny (pushStrength=0 zawsze
-      // przegrywa porównanie), tylko śladowy atak wręcz
+      // przegrywa porównanie), tylko śladowy atak wręcz. Trzyma
+      // rozstawienie "zerwane" przez CAŁY czas zwarcia (odliczanie
+      // setupTime zacznie realnie płynąć dopiero, gdy ta gałąź przestanie
+      // się wykonywać — wróg zginie albo odejdzie poza minRange).
+      attacker.setupRemaining = cfg.setupTime;
+      attacker.inMeleeLock = true;
       attacks.push({ attacker, target });
       attackersThisFrame.add(attacker);
       const damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, target);
@@ -1463,7 +1472,21 @@ function drawUnits(now) {
       ctx.fill();
       ctx.globalAlpha = 1;
     }
-    drawUnitIcon(u, cfg);
+    if (cfg.ranged && u.inMeleeLock) {
+      // związana zwarciem artyleria/łucznicy — ikona przygaszona i
+      // przekreślona, gracz musi natychmiast widzieć, że nie strzela
+      ctx.globalAlpha = 0.4;
+      drawUnitIcon(u, cfg);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = 'rgba(255,40,40,0.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(u.x - cfg.drawRadius * 0.7, u.y + cfg.drawRadius * 0.7);
+      ctx.lineTo(u.x + cfg.drawRadius * 0.7, u.y - cfg.drawRadius * 0.7);
+      ctx.stroke();
+    } else {
+      drawUnitIcon(u, cfg);
+    }
     if (u.selected) {
       ctx.beginPath();
       ctx.arc(u.x, u.y, cfg.drawRadius + 4, 0, Math.PI * 2);
