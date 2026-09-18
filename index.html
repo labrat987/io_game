@@ -55,6 +55,7 @@
   <div id="cityPanelTitle"></div>
   <div id="cityQueueList"></div>
   <div id="cityBuildButtons"></div>
+  <div id="cityProductionStatus" style="color:#ff8844; min-height: 1.4em;"></div>
   <div id="cityRoutesList"></div>
   <button id="closeCityPanelBtn">Zamknij</button>
 </div>
@@ -72,6 +73,7 @@ const TERRAIN = {
   1: { name: 'FOREST',   passable: true,  speedMultiplier: 0.5,  color: '#3f6b35' },
   2: { name: 'MOUNTAIN', passable: false, speedMultiplier: 0,    color: '#8a8a8a' },
   3: { name: 'WATER',    passable: true,  speedMultiplier: 0.15, color: '#3a7bd5', pathCost: 20 },
+  4: { name: 'HILLS',    passable: true,  speedMultiplier: 0.85, color: '#c2a76c' }, // podnóża gór — wszystkie jednostki lekko spowolnione (jednolicie, bez nadpisań per typ)
 };
 
 // Obrażenia za sekundę stania na wodzie — wymaga systemu HP, którego
@@ -215,11 +217,11 @@ const UNIT_TYPES = {
   // chwili złamania (patrz updateMorale/Last Stand) — najwyższa u ciężkiej
   // piechoty (walczy do końca), najniższa u dystansowych (nieszkoleni do
   // beznadziejnej obrony wręcz, wolą (próbować) uciec).
-  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 5.2, reloadTime: 1.5, projectileSpeed: 300, minRange: 25, meleeDamage: 0.6, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.05 },
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 6.6, reloadTime: 5.0, projectileSpeed: 150, minRange: 35, meleeDamage: 0.8, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05 },
-  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 2, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.2 },
-  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 5, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4 },
-  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15 },
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 5.2, reloadTime: 1.5, projectileSpeed: 300, minRange: 25, meleeDamage: 0.6, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.05 },
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 6.6, reloadTime: 5.0, projectileSpeed: 150, minRange: 35, meleeDamage: 0.8, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05 },
+  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 2, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.2 },
+  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 5, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4 },
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15 },
   // Bezbronny nosiciel złota (attackRange:0 -> nigdy nie znajdzie celu do
   // ataku; wykluczony z namierzania przez innych — patrz findTargetForUnit/
   // findNearestEnemyInRange — więc nigdy nie ginie w walce, tylko może
@@ -227,53 +229,109 @@ const UNIT_TYPES = {
   // przez szlaki handlowe (spawnRouteConvoy), bez kosztu — brak pola
   // `cost`. Nigdy nie walczy, więc lastStandChance: 0 (nie dotyczy, ale
   // pole zawsze obecne dla spójności).
-  CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, collisionRadius: 5, drawRadius: 6, pushStrength: 0, moraleResistance: 1.0, lastStandChance: 0 },
+  CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, collisionRadius: 4, drawRadius: 5, pushStrength: 0, moraleResistance: 1.0, lastStandChance: 0 },
 };
 
-// Mnożniki prędkości i obrażeń per (typ jednostki × teren) — główna oś
-// przyszłego balansu. speedMultiplier na razie wszędzie 1.0 (żadna wartość
-// nie została jeszcze zlecona), ale jest realnie wpięty w ruch (sekcja
-// RUCH JEDNOSTEK), więc zmiana liczby tutaj od razu zadziała.
-function makeAllOneModifiers() {
-  return {
-    FIELD:    { speedMultiplier: 1, damageMultiplier: 1 },
-    FOREST:   { speedMultiplier: 1, damageMultiplier: 1 },
-    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1 },
-    WATER:    { speedMultiplier: 1, damageMultiplier: 1 },
-  };
-}
+// Mnożniki per (typ jednostki × teren) — główna oś balansu terenowego.
+// Cztery wymiary: speedMultiplier (prędkość ruchu, mnoży się z bazowym
+// TERRAIN.speedMultiplier — patrz updateUnit), damageMultiplier
+// (obrażenia ZADAWANE stojąc na tym terenie — patrz attackerDamageMultiplier),
+// rangeMultiplier (zasięg ataku dystansowego — patrz effectiveAttackRange),
+// pushMultiplier (siła napierania w zwarciu — patrz effectivePushStrength).
+// Wypisane w pełni (bez wzorca "wszystko=1 + nadpisania"), żeby cała
+// tabela była czytelna na pierwszy rzut oka. Pogrubione w komentarzu obok
+// = odstępstwo od neutralnego 1.
 const TERRAIN_MODIFIERS = {
-  ARCHER:         makeAllOneModifiers(),
-  CANNON:         makeAllOneModifiers(),
-  LIGHT_INFANTRY: makeAllOneModifiers(),
-  HEAVY_INFANTRY: makeAllOneModifiers(),
-  CAVALRY:        makeAllOneModifiers(),
-  CONVOY:         makeAllOneModifiers(),
+  // Dystansowi: las utrudnia ostrzał i skraca zasięg (gęstwina zasłania
+  // pole widzenia), wzgórza dają bonus do zasięgu (wyższa pozycja), woda
+  // drastycznie obniża obrażenia (i tak nie strzelają na wodzie — patrz
+  // onWater w resolveCombat).
+  ARCHER: {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 0.5, rangeMultiplier: 0.6, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1.4, pushMultiplier: 1 },
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1,   pushMultiplier: 1 },
+  },
+  CANNON: {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 0.5, rangeMultiplier: 0.6, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1.4, pushMultiplier: 1 },
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1,   pushMultiplier: 1 },
+  },
+  // Piechota lekka: las to jej naturalne środowisko — speedMultiplier 2.0
+  // ZNOSI bazową karę terenu lasu (0.5, patrz TERRAIN.FOREST), więc netto
+  // porusza się tam z normalną prędkością, bez kar bojowych.
+  LIGHT_INFANTRY: {
+    FIELD:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 2.0, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    MOUNTAIN: { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1,   damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
+  },
+  // Piechota ciężka: referencyjna, w pełni skuteczna na otwartym polu,
+  // bez szczególnych premii/kar terenowych poza wodą.
+  HEAVY_INFANTRY: {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
+  },
+  // Kawaleria: referencyjna na otwartym polu, ale las ją neutralizuje —
+  // mocno spowolniona (netto z bazową karą terenu 0.5 daje 0.25) i traci
+  // większość siły napierania (ciasnota drzew, brak miejsca na szarżę).
+  CAVALRY: {
+    FIELD:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 0.5, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 0.4 },
+    HILLS:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    MOUNTAIN: { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1,   damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
+  },
+  // Konwój nigdy nie walczy ani nie napiera — tylko bazowy modyfikator
+  // prędkości terenu (patrz TERRAIN) go dotyczy, stąd same neutralne 1.
+  CONVOY: {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+  },
 };
-// Jednostki dystansowe: las utrudnia ostrzał (dotyczy terenu ATAKUJĄCEGO)
-TERRAIN_MODIFIERS.ARCHER.FOREST.damageMultiplier = 0.5;
-TERRAIN_MODIFIERS.CANNON.FOREST.damageMultiplier = 0.5;
 
 const BASE_SPEED_PX_PER_S = 36; // mnożone przez unit.speed i terrain.speedMultiplier (obniżone łącznie o ~40% od bazy — gra ma być operacyjna, czas na decyzje sztabowe, nie refleks)
 
-// Zahardkodowana mapa terenu — edytuj ręcznie (0 pole, 1 las, 2 gory, 3 woda)
+// Zahardkodowana mapa terenu — edytuj ręcznie (0 pole, 1 las, 2 gory,
+// 3 woda, 4 wzgórza). Powiększona o ~50% względem pierwszej wersji
+// prototypu (skalowanie nearest-neighbor zachowujące układ terenu),
+// wzgórza dogenerowane automatycznie jako podnóża gór (każdy kafel pola
+// stykający się z górą).
 const MAP_DATA = [
-  [0,0,0,0,0,1,1,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],
-  [0,0,1,1,0,1,1,1,0,0,0,2,2,2,2,0,0,3,3,3,0,0,0,0,0],
-  [0,0,1,1,1,1,0,0,0,0,2,2,2,2,2,2,0,3,3,3,3,3,0,0,0],
-  [0,0,0,1,1,0,0,0,0,0,2,2,2,2,2,0,0,0,3,3,3,3,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,3,3,0,0,0,0],
-  [0,1,1,0,0,0,1,1,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0],
-  [0,1,1,0,0,0,1,1,1,0,0,0,0,0,0,0,1,1,1,0,0,2,2,0,0],
-  [0,0,0,0,0,0,0,1,1,0,0,0,3,3,0,0,0,1,0,0,0,2,2,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,0,0,0],
-  [0,0,0,2,2,0,0,0,0,0,0,3,3,3,3,0,0,0,0,1,1,0,0,0,0],
-  [0,0,0,2,2,2,0,0,0,0,0,0,3,3,0,0,0,0,1,1,1,1,0,0,0],
-  [0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0],
-  [0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,4,2,2,2,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,4,4,4,2,2,2,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,1,1,1,0,1,1,1,1,1,0,0,4,4,2,2,2,2,2,2,4,4,4,3,3,3,3,3,0,0,0,0,0,0,0],
+  [0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,4,2,2,2,2,2,2,2,2,2,4,3,3,3,3,3,3,3,3,0,0,0,0],
+  [0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,4,2,2,2,2,2,2,2,2,2,4,3,3,3,3,3,3,3,3,0,0,0,0],
+  [0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,4,2,2,2,2,2,2,2,4,4,4,0,0,3,3,3,3,3,3,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,2,2,2,2,2,4,4,0,0,0,0,0,3,3,3,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,2,2,2,2,2,4,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0],
+  [0,0,1,1,1,0,0,0,0,0,1,1,1,0,0,0,4,4,4,4,4,4,4,0,0,1,1,1,0,0,0,4,4,4,4,4,0,0],
+  [0,0,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,4,2,2,2,4,0,0],
+  [0,0,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,4,2,2,2,4,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,3,3,3,0,0,0,0,1,1,0,0,0,4,2,2,2,4,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,0,0,4,4,4,4,4,0,0],
+  [0,0,0,0,4,4,4,4,4,0,0,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,4,2,2,2,4,4,4,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0],
+  [0,0,0,0,4,2,2,2,2,2,4,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0],
+  [0,0,0,0,4,2,2,2,2,2,4,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0],
+  [0,0,0,0,4,4,4,2,2,2,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,4,4,4,4,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
 ];
 const MAP_COLS = MAP_DATA[0].length;
 const MAP_ROWS = MAP_DATA.length;
@@ -289,17 +347,18 @@ const CITY_SIZE_TILES = 1; // miasto zajmuje dokładnie jeden kafel
 // Zahardkodowane pozycje (jak MAP_DATA) — (col,row) to kafel miasta.
 // Własność stała na tym etapie, bez przejmowania.
 const CITIES = [
-  { id: 'p1_a', col: 0,  row: 14, owner: 'P1' },
-  { id: 'p1_b', col: 5,  row: 14, owner: 'P1' },
+  { id: 'p1_a', col: 0,  row: 21, owner: 'P1' },
+  { id: 'p1_b', col: 8,  row: 21, owner: 'P1' },
   { id: 'p1_c', col: 0,  row: 0,  owner: 'P1' },
-  { id: 'p2_a', col: 18, row: 14, owner: 'P2' },
-  { id: 'p2_b', col: 23, row: 14, owner: 'P2' },
-  { id: 'p2_c', col: 23, row: 0,  owner: 'P2' },
+  { id: 'p2_a', col: 27, row: 21, owner: 'P2' },
+  { id: 'p2_b', col: 35, row: 21, owner: 'P2' },
+  { id: 'p2_c', col: 35, row: 0,  owner: 'P2' },
 ];
 for (const city of CITIES) city.queue = []; // {type, remainingTime}
 
 const STARTING_GOLD = 250; // starcza na kilka jednostek na start
 const CITY_BASE_INCOME_PER_SECOND = 0.15; // mały, stały dochód z posiadanego miasta — trickle, szlaki handlowe są głównym źródłem zysku
+const CITY_QUEUE_MAX_LENGTH = 5; // maks. liczba jednostek w kolejce produkcji jednego miasta naraz
 
 // Szlaki handlowe — trwałe trasy rysowane przez gracza (patrz gest
 // TRADE_ROUTE w mousedown/mousemove/mouseup), po których automatycznie i
@@ -334,22 +393,56 @@ const HEADLESS = new URLSearchParams(location.search).has('headless');
 const MAP_WIDTH_PX = MAP_COLS * TILE_SIZE;
 const MAP_HEIGHT_PX = MAP_ROWS * TILE_SIZE;
 
-// Skala i przesunięcie dopasowujące mapę do okna (przeliczane przy resize)
+// Kamera: przewijalna i przybliżalna (pan środkowym przyciskiem, zoom
+// kółkiem do kursora — patrz listenery przy 'wheel'/mousedown niżej).
+// cameraX/cameraY to punkt świata w środku ekranu, cameraZoom to
+// viewScale. Domyślny zoom = "cała mapa w oknie" (jak w poprzedniej,
+// bezkamerowej wersji), z możliwością przybliżenia/oddalenia i
+// przewinięcia — mapa jest teraz większa niż zmieściłaby się z
+// zachowaniem obecnego rozmiaru jednostek, patrz CLAUDE.md/podsumowanie.
+let cameraX = MAP_WIDTH_PX / 2;
+let cameraY = MAP_HEIGHT_PX / 2;
+let cameraZoom = 1; // nadpisywane fit-scale'em zaraz po pierwszym ustaleniu rozmiaru canvasu
+const CAMERA_MAX_ZOOM_MULTIPLIER = 3; // ile razy bliżej niż "cała mapa w oknie" można się przybliżyć
+const CAMERA_ZOOM_STEP = 1.12; // mnożnik zoomu na jeden "krok" kółka myszy
+
 let viewScale = 1;
 let viewOffsetX = 0;
 let viewOffsetY = 0;
 
+function cameraFitScale() {
+  return Math.min(canvas.width / MAP_WIDTH_PX, canvas.height / MAP_HEIGHT_PX);
+}
+// Przycina zoom do [fitScale, fitScale*MAX] (nie da się oddalić bardziej
+// niż "cała mapa naraz") i pozycję kamery tak, żeby nie dało się odjechać
+// w pustkę poza mapą — przy zoomie ≤ fitScale kamera jest zablokowana
+// dokładnie na środku mapy (cała mapa i tak mieści się w oknie).
+function clampCamera() {
+  const fitScale = cameraFitScale();
+  cameraZoom = Math.max(fitScale, Math.min(fitScale * CAMERA_MAX_ZOOM_MULTIPLIER, cameraZoom));
+  const halfW = canvas.width / (2 * cameraZoom);
+  const halfH = canvas.height / (2 * cameraZoom);
+  const minX = Math.min(MAP_WIDTH_PX / 2, halfW), maxX = Math.max(MAP_WIDTH_PX / 2, MAP_WIDTH_PX - halfW);
+  const minY = Math.min(MAP_HEIGHT_PX / 2, halfH), maxY = Math.max(MAP_HEIGHT_PX / 2, MAP_HEIGHT_PX - halfH);
+  cameraX = Math.max(minX, Math.min(maxX, cameraX));
+  cameraY = Math.max(minY, Math.min(maxY, cameraY));
+}
 function updateViewTransform() {
-  viewScale = Math.min(canvas.width / MAP_WIDTH_PX, canvas.height / MAP_HEIGHT_PX);
-  viewOffsetX = (canvas.width - MAP_WIDTH_PX * viewScale) / 2;
-  viewOffsetY = (canvas.height - MAP_HEIGHT_PX * viewScale) / 2;
+  viewScale = cameraZoom;
+  viewOffsetX = canvas.width / 2 - cameraX * viewScale;
+  viewOffsetY = canvas.height / 2 - cameraY * viewScale;
 }
 function resizeCanvas() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  clampCamera();
   updateViewTransform();
 }
-resizeCanvas();
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+cameraZoom = cameraFitScale(); // start: cała mapa widoczna, jak dotąd
+clampCamera();
+updateViewTransform();
 window.addEventListener('resize', resizeCanvas);
 
 let units = [];
@@ -853,8 +946,7 @@ function findUnitAt(x, y) {
 function findCityAt(x, y) {
   for (const city of CITIES) {
     const c = cityCenter(city);
-    const halfSide = CITY_SIZE_TILES * TILE_SIZE / 2;
-    if (Math.abs(x - c.x) <= halfSide && Math.abs(y - c.y) <= halfSide) return city;
+    if (Math.hypot(x - c.x, y - c.y) <= CITY_MARKER_RADIUS + 4) return city; // +4 margines, jak przy jednostkach
   }
   return null;
 }
@@ -912,6 +1004,7 @@ const cityPanelEl = document.getElementById('cityPanel');
 const cityPanelTitleEl = document.getElementById('cityPanelTitle');
 const cityQueueListEl = document.getElementById('cityQueueList');
 const cityBuildButtonsEl = document.getElementById('cityBuildButtons');
+const cityProductionStatusEl = document.getElementById('cityProductionStatus');
 const cityRoutesListEl = document.getElementById('cityRoutesList');
 const closeCityPanelBtnEl = document.getElementById('closeCityPanelBtn');
 const alertBannerEl = document.getElementById('alertBanner');
@@ -936,33 +1029,38 @@ function updateGoldPanel() {
   goldAmountEl.textContent = Math.floor(gold[OWNED_PLAYER]);
   const rate = goldRate[OWNED_PLAYER];
   goldRateTextEl.textContent = (rate >= 0 ? '+' : '') + rate.toFixed(1);
-  if (selectedCity) refreshCityPanel(); // trzyma kolejkę/przyciski aktualne, gdy panel jest otwarty
+  if (selectedCity) updateCityPanelLive(); // trzyma kolejkę/koszty aktualne, gdy panel jest otwarty
   updateAlertBanner();
 }
 
-function refreshCityPanel() {
-  const city = selectedCity;
-  cityPanelTitleEl.textContent = `Miasto ${city.id} (${city.owner})`;
-  cityQueueListEl.innerHTML = city.queue.length
-    ? city.queue.map((q, i) => `${i === 0 ? 'Buduje' : 'W kolejce'}: ${q.type} (${q.remainingTime.toFixed(1)}s)`).join('<br>')
-    : 'Kolejka pusta';
+// Tworzy przyciski produkcji RAZ (przy otwarciu panelu) — NIGDY nie wołane
+// co klatkę. Wcześniej cały panel (łącznie z przyciskami) był budowany od
+// zera w KAŻDEJ klatce, co niszczyło i odtwarzało przycisk, na który
+// gracz właśnie kliknął, zanim przeglądarka zdążyła wysłać zdarzenie
+// 'click' — stąd "przycisk nie reaguje" (potwierdzone: Playwright łapał
+// błąd "element was detached from the DOM" przy próbie kliknięcia).
+function buildCityPanelButtons(city) {
   cityBuildButtonsEl.innerHTML = '';
   for (const type of PRODUCIBLE_TYPES) {
     const cfg = UNIT_TYPES[type];
     const btn = document.createElement('button');
-    btn.textContent = `${type} — ${cfg.cost}zł, ${cfg.buildTime}s`;
-    btn.disabled = gold[city.owner] < cfg.cost;
+    btn.dataset.type = type;
     btn.onclick = () => {
-      if (gold[city.owner] < cfg.cost) return;
+      if (city.queue.length >= CITY_QUEUE_MAX_LENGTH) { showAlert('Kolejka produkcji pełna'); return; }
+      if (gold[city.owner] < cfg.cost) { showAlert(`Za mało złota (potrzeba ${cfg.cost}, masz ${Math.floor(gold[city.owner])})`); return; }
       gold[city.owner] -= cfg.cost;
       city.queue.push({ type, remainingTime: cfg.buildTime });
-      refreshCityPanel();
+      updateCityPanelLive();
     };
     cityBuildButtonsEl.appendChild(btn);
   }
+  buildCityRoutesList(city);
+}
 
-  // szlaki wychodzące z tego miasta — rysowane PPM przeciągnięciem na
-  // mapie (patrz gest TRADE_ROUTE), tu tylko licznik + usuwanie
+// Lista szlaków też budowana od zera tylko przy faktycznej zmianie
+// (otwarcie panelu, dodanie/usunięcie szlaku) — ten sam problem
+// dotyczyłby przycisków "Usuń", gdyby odświeżać co klatkę.
+function buildCityRoutesList(city) {
   const cityRoutes = tradeRoutes.filter(r => r.cityAId === city.id || r.cityBId === city.id);
   cityRoutesListEl.innerHTML = '';
   const header = document.createElement('div');
@@ -980,7 +1078,7 @@ function refreshCityPanel() {
     btn.onclick = () => {
       tradeRoutes = tradeRoutes.filter(r => r !== route);
       if (selectedTradeRoute === route) selectedTradeRoute = null;
-      refreshCityPanel();
+      buildCityRoutesList(city);
     };
     row.appendChild(label);
     row.appendChild(btn);
@@ -988,10 +1086,42 @@ function refreshCityPanel() {
   }
 }
 
+// Wołane co klatkę — aktualizuje WYŁĄCZNIE tekst i disabled/title na już
+// istniejących elementach (tytuł, kolejka to zwykły tekst bez handlerów,
+// bezpieczny do podmiany co klatkę; przyciski produkcji NIGDY nie są tu
+// tworzone na nowo, tylko mutowane w miejscu).
+function updateCityPanelLive() {
+  const city = selectedCity;
+  cityPanelTitleEl.textContent = `Miasto ${city.id} (${city.owner})`;
+  cityQueueListEl.innerHTML = city.queue.length
+    ? `${city.queue.length}/${CITY_QUEUE_MAX_LENGTH} — ` + city.queue.map((q, i) => `${i === 0 ? 'Buduje' : 'W kolejce'}: ${q.type} (${q.remainingTime.toFixed(1)}s)`).join('<br>')
+    : 'Kolejka pusta';
+  const queueFull = city.queue.length >= CITY_QUEUE_MAX_LENGTH;
+  let anyAffordable = false;
+  for (const btn of cityBuildButtonsEl.children) {
+    const cfg = UNIT_TYPES[btn.dataset.type];
+    const canAfford = gold[city.owner] >= cfg.cost;
+    if (canAfford) anyAffordable = true;
+    btn.textContent = `${btn.dataset.type} — ${cfg.cost}zł, ${cfg.buildTime}s`;
+    btn.disabled = !canAfford || queueFull;
+    btn.title = queueFull ? 'Kolejka produkcji pełna'
+      : !canAfford ? `Za mało złota (potrzeba ${cfg.cost}, masz ${Math.floor(gold[city.owner])})`
+      : '';
+  }
+  // Powód, dla którego nie da się teraz nic wyprodukować — widoczny NA
+  // STAŁE, nie tylko po najechaniu myszą na wyłączony przycisk (przycisk
+  // wyłączony nie da się kliknąć, więc alert w onclick nigdy by się nie
+  // pokazał w tym typowym przypadku — patrz buildCityPanelButtons).
+  cityProductionStatusEl.textContent = queueFull ? 'Kolejka produkcji pełna — poczekaj, aż coś się zbuduje'
+    : !anyAffordable ? 'Za mało złota na jakąkolwiek jednostkę'
+    : '';
+}
+
 function showCityPanel(city) {
   selectedCity = city;
   cityPanelEl.style.display = 'block';
-  refreshCityPanel();
+  buildCityPanelButtons(city);
+  updateCityPanelLive();
 }
 function hideCityPanel() {
   selectedCity = null;
@@ -1018,6 +1148,45 @@ const CLICK_DRAG_THRESHOLD = 5; // px — poniżej tego to klik, nie przeciągni
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
+// Kamera: zoom kółkiem myszy DO KURSORA (ten sam punkt świata zostaje pod
+// kursorem przed i po zmianie), pan środkowym przyciskiem (przycisk 1,
+// dotąd nieużywany — zero konfliktu z LPM/PPM obsługującymi zaznaczanie
+// i rozkazy). Osobny, niezależny stan od dragButton/dragMode poniżej.
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const before = getMousePos(e);
+  cameraZoom *= (e.deltaY < 0 ? CAMERA_ZOOM_STEP : 1 / CAMERA_ZOOM_STEP);
+  clampCamera();
+  updateViewTransform();
+  const after = getMousePos(e);
+  cameraX += before.x - after.x;
+  cameraY += before.y - after.y;
+  clampCamera();
+  updateViewTransform();
+}, { passive: false });
+
+let isPanning = false;
+let panLastScreen = null;
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button === 1) {
+    e.preventDefault();
+    isPanning = true;
+    panLastScreen = { x: e.clientX, y: e.clientY };
+  }
+});
+window.addEventListener('mousemove', (e) => {
+  if (!isPanning) return;
+  const dx = e.clientX - panLastScreen.x, dy = e.clientY - panLastScreen.y;
+  panLastScreen = { x: e.clientX, y: e.clientY };
+  cameraX -= dx / viewScale;
+  cameraY -= dy / viewScale;
+  clampCamera();
+  updateViewTransform();
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 1) isPanning = false;
+});
+
 // Tab cyklicznie zmienia priorytet celu zaznaczonych jednostek dystansowych
 // (jednostki wręcz ignorują — nie mają pojęcia priorytetu celu)
 window.addEventListener('keydown', (e) => {
@@ -1036,7 +1205,7 @@ window.addEventListener('keydown', (e) => {
       e.preventDefault();
       tradeRoutes = tradeRoutes.filter(r => r !== selectedTradeRoute);
       selectedTradeRoute = null;
-      if (selectedCity) refreshCityPanel();
+      if (selectedCity) buildCityRoutesList(selectedCity);
     }
   }
 });
@@ -1151,7 +1320,7 @@ window.addEventListener('mouseup', (e) => {
           timeSinceSpawnAtoB: TRADE_ROUTE_SPAWN_INTERVAL, // konwój wyrusza od razu, w obie strony
           timeSinceSpawnBtoA: TRADE_ROUTE_SPAWN_INTERVAL,
         });
-        if (selectedCity) refreshCityPanel();
+        if (selectedCity) buildCityRoutesList(selectedCity);
       }
     } else {
       const selected = getSelectedUnits();
@@ -1304,7 +1473,7 @@ function resolveCollisions(allUnits) {
 
         let weightA = 0.5, weightB = 0.5;
         if (a.owner !== b.owner) {
-          const pA = UNIT_TYPES[a.type].pushStrength, pB = UNIT_TYPES[b.type].pushStrength;
+          const pA = effectivePushStrength(a), pB = effectivePushStrength(b);
           const totalPush = pA + pB;
           if (totalPush > 0) {
             weightA = pB / totalPush; // silniejszy (wyższe pA) => mniejsza waga => mniej się cofa
@@ -1374,7 +1543,7 @@ function findNearestEnemyAnyRange(unit, allUnits) {
 const TARGET_PRIORITIES = ['NEAREST', 'ENEMY_ARTILLERY', 'HEAVY_UNITS', 'WEAKEST'];
 
 function findTargetForUnit(unit, allUnits) {
-  const range = UNIT_TYPES[unit.type].attackRange;
+  const range = effectiveAttackRange(unit);
   // konwoje nigdy nie są celem ataku — przechwytywane, nie niszczone (patrz updateConvoyCaptures)
   const inRange = allUnits.filter(o => o.owner !== unit.owner && o.hp > 0 && o.type !== 'CONVOY'
     && Math.hypot(o.x - unit.x, o.y - unit.y) <= range);
@@ -1396,19 +1565,40 @@ function findTargetForUnit(unit, allUnits) {
   return nearest(inRange); // NEAREST i fallback, gdy brak celu pasującego do priorytetu
 }
 
+// Teren jednostki (bezpieczny fallback na POLE, jak wszędzie indziej —
+// patrz updateUnit/attackerDamageMultiplier).
+function unitTerrain(unit) {
+  const tile = worldToTile(unit.x, unit.y);
+  return terrainAt(tile.col, tile.row) || TERRAIN[0];
+}
+
+// Zasięg ataku dystansowego skalowany terenem (wzgórza = dalej widać i
+// strzela się dalej, las = zasłonięta gęstwina) — patrz TERRAIN_MODIFIERS.
+function effectiveAttackRange(unit) {
+  const terrain = unitTerrain(unit);
+  return UNIT_TYPES[unit.type].attackRange * TERRAIN_MODIFIERS[unit.type][terrain.name].rangeMultiplier;
+}
+
+// Siła napierania w zwarciu skalowana terenem (kawaleria traci impet w
+// lesie — patrz TERRAIN_MODIFIERS) — używane wszędzie tam, gdzie dotąd
+// czytano surowe UNIT_TYPES[x.type].pushStrength dla ŻYWEJ jednostki.
+function effectivePushStrength(unit) {
+  const terrain = unitTerrain(unit);
+  return UNIT_TYPES[unit.type].pushStrength * TERRAIN_MODIFIERS[unit.type][terrain.name].pushMultiplier;
+}
+
 // Kto napiera, ten trafia mocniej — obrażenia w zwarciu skalowane relacją
 // pushStrength atakującego względem celu (patrz resolveCollisions: to samo
 // pushStrength rozstrzyga, kto fizycznie ustępuje pola)
 function pushDamageMultiplier(attacker, target) {
-  const a = UNIT_TYPES[attacker.type].pushStrength, t = UNIT_TYPES[target.type].pushStrength;
+  const a = effectivePushStrength(attacker), t = effectivePushStrength(target);
   if (a > t) return PUSH_WINNING_DAMAGE_MULTIPLIER;
   if (a < t) return PUSH_LOSING_DAMAGE_MULTIPLIER;
   return PUSH_STALEMATE_DAMAGE_MULTIPLIER;
 }
 
 function attackerDamageMultiplier(attacker) {
-  const tile = worldToTile(attacker.x, attacker.y);
-  const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
+  const terrain = unitTerrain(attacker);
   return TERRAIN_MODIFIERS[attacker.type][terrain.name].damageMultiplier;
 }
 
@@ -1750,7 +1940,7 @@ function resolveCombat(allUnits, dt) {
       // celność, na pełnym attackRange wyraźnie gorsza, ale różnica
       // między dystansem średnim a maksymalnym ma być łagodna, nie
       // urwista (kwadratowy wzrost dawał zbyt karną krzywą trafień)
-      const distFraction = dist / cfg.attackRange;
+      const distFraction = dist / effectiveAttackRange(attacker);
       const spreadRadius = cfg.accuracy * distFraction;
       const missAngle = Math.random() * Math.PI * 2;
       const missOffset = Math.sqrt(Math.random()) * spreadRadius;
@@ -1781,7 +1971,7 @@ function resolveCombat(allUnits, dt) {
   // celu zamiast stać nieruchomo w zasięgu ataku — o tym, kto faktycznie
   // zyskuje grunt, rozstrzyga ważone resolveCollisions (patrz wyżej).
   for (const { attacker, target } of attacks) {
-    const pushStrength = UNIT_TYPES[attacker.type].pushStrength;
+    const pushStrength = effectivePushStrength(attacker);
     if (pushStrength <= 0) continue;
     const dx = target.x - attacker.x, dy = target.y - attacker.y;
     const dist = Math.hypot(dx, dy) || 1;
@@ -2009,20 +2199,194 @@ function updateEconomy(dt) {
 // ============================================================
 // RYSOWANIE
 // ============================================================
-function drawMap() {
-  for (let row = 0; row < MAP_ROWS; row++) {
-    for (let col = 0; col < MAP_COLS; col++) {
-      ctx.fillStyle = TERRAIN[MAP_DATA[row][col]].color;
-      ctx.fillRect(col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+
+// ------------------------------------------------------------
+// TEREN ORGANICZNY — siatka (MAP_DATA) zostaje jedynym źródłem prawdy dla
+// pathfindingu i odczytu terenu (worldToTile/terrainAt, A* — zero zmian).
+// Do RYSOWANIA zamieniamy widoczne kwadraty na gładkie, organiczne plamy:
+// marching squares na masce binarnej danego typu terenu + wygładzanie
+// Chaikina. Liczone RAZ przy starcie i cache'owane (mapa się nie zmienia
+// w trakcie gry) — drawMap() tylko wypełnia gotowe kształty, jak wcześniej
+// wypełniała kwadraty, więc zero kosztu w pętli renderowania.
+// ------------------------------------------------------------
+
+// Chaikin: każdą krawędź P-Q zamkniętej łamanej zastępuje dwoma punktami
+// w 1/4 i 3/4 jej długości. Kilka iteracji zaokrągla ostrą łamaną w
+// gładką krzywą — prosta, samodzielna technika, bez zewnętrznych bibliotek.
+function chaikinSmooth(points, iterations) {
+  let pts = points;
+  for (let it = 0; it < iterations; it++) {
+    const next = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[(i + 1) % pts.length];
+      next.push({ x: p.x * 0.75 + q.x * 0.25, y: p.y * 0.75 + q.y * 0.25 });
+      next.push({ x: p.x * 0.25 + q.x * 0.75, y: p.y * 0.25 + q.y * 0.75 });
+    }
+    pts = next;
+  }
+  return pts;
+}
+
+// Marching squares na masce binarnej (maskFn(col,row) -> bool). Próbki
+// SIEDZĄ NA ŚRODKACH kafli (nie na ich rogach!) — to kluczowe dla
+// dopasowania do prawdziwych granic kafli: skok 0→1 między środkami
+// dwóch sąsiednich kafli zawsze wypada dokładnie NA granicy między nimi
+// (dane binarne, cięcie zawsze w połowie odcinka łączącego próbki). Siatka
+// próbek dopełniona o 1 "widmowy" wiersz/kolumnę na każdej krawędzi mapy
+// (powielającą najbliższy prawdziwy kafel), żeby kontur sięgał dokładnie
+// do brzegu mapy, a nie tylko do środków skrajnych kafli. Tabela 16
+// przypadków wyprowadzona tak, by segmenty sąsiednich komórek zawsze
+// stykały się w spójnym kierunku (chodzenie zgodnie z ruchem wskazówek
+// zegara wokół "wnętrza" narożników) — inaczej nie złączyłyby się w pętle.
+function marchingSquaresSegments(cols, rows, maskFn) {
+  const sample = (c, r) => maskFn(Math.max(0, Math.min(cols - 1, c)), Math.max(0, Math.min(rows - 1, r)));
+  const segments = [];
+  for (let cy = -1; cy <= rows - 1; cy++) {
+    for (let cx = -1; cx <= cols - 1; cx++) {
+      const tl = sample(cx, cy), tr = sample(cx + 1, cy);
+      const br = sample(cx + 1, cy + 1), bl = sample(cx, cy + 1);
+      const caseIdx = (tl ? 8 : 0) | (tr ? 4 : 0) | (br ? 2 : 0) | (bl ? 1 : 0);
+      if (caseIdx === 0 || caseIdx === 15) continue;
+      const x0 = (cx + 0.5) * TILE_SIZE, y0 = (cy + 0.5) * TILE_SIZE;
+      const x1 = x0 + TILE_SIZE, y1 = y0 + TILE_SIZE;
+      const top = { x: (x0 + x1) / 2, y: y0 };
+      const bottom = { x: (x0 + x1) / 2, y: y1 };
+      const left = { x: x0, y: (y0 + y1) / 2 };
+      const right = { x: x1, y: (y0 + y1) / 2 };
+      const table = {
+        1:  [[bottom, left]],
+        2:  [[right, bottom]],
+        3:  [[right, left]],
+        4:  [[top, right]],
+        5:  [[top, right], [bottom, left]], // siodło (przekątna) — dwa niezależne segmenty
+        6:  [[top, bottom]],
+        7:  [[top, left]],
+        8:  [[left, top]],
+        9:  [[bottom, top]],
+        10: [[left, top], [right, bottom]], // siodło (druga przekątna)
+        11: [[right, top]],
+        12: [[left, right]],
+        13: [[bottom, right]],
+        14: [[left, bottom]],
+      };
+      for (const seg of table[caseIdx]) segments.push(seg);
     }
   }
-  ctx.strokeStyle = 'rgba(0,0,0,0.08)';
-  for (let col = 0; col <= MAP_COLS; col++) {
-    ctx.beginPath(); ctx.moveTo(col * TILE_SIZE, 0); ctx.lineTo(col * TILE_SIZE, MAP_HEIGHT_PX); ctx.stroke();
+  return segments;
+}
+
+// Łączy odcinki w zamknięte pętle dopasowując wspólne końce (klucz po
+// zaokrąglonych współrzędnych — segmenty z marching squares zawsze
+// dokładnie się stykają, więc dopasowanie jest ścisłe, bez tolerancji).
+function chainSegmentsToLoops(segments) {
+  const key = (p) => `${Math.round(p.x)},${Math.round(p.y)}`;
+  const byStart = new Map();
+  for (const seg of segments) {
+    const k = key(seg[0]);
+    if (!byStart.has(k)) byStart.set(k, []);
+    byStart.get(k).push(seg);
   }
-  for (let row = 0; row <= MAP_ROWS; row++) {
-    ctx.beginPath(); ctx.moveTo(0, row * TILE_SIZE); ctx.lineTo(MAP_WIDTH_PX, row * TILE_SIZE); ctx.stroke();
+  const used = new Set();
+  const loops = [];
+  for (const seg of segments) {
+    if (used.has(seg)) continue;
+    const startKey = key(seg[0]);
+    const loop = [seg[0]];
+    let current = seg;
+    let guard = 0;
+    while (guard++ < segments.length + 5) {
+      used.add(current);
+      loop.push(current[1]);
+      if (key(current[1]) === startKey) break; // pętla zamknięta
+      const candidates = byStart.get(key(current[1]));
+      const next = candidates && candidates.find(s => !used.has(s));
+      if (!next) break; // urwana (nie powinno się zdarzyć na spójnej masce)
+      current = next;
+    }
+    if (loop.length > 3) loops.push(loop);
   }
+  return loops;
+}
+
+// Poszerza maskę o 1 kafel (dla jasnych "brzegów"/"podnóży" pod właściwym
+// kolorem terenu — patrz terrainShapes niżej).
+function dilateMask(maskFn) {
+  const dilated = [];
+  for (let r = 0; r < MAP_ROWS; r++) dilated.push(new Array(MAP_COLS).fill(false));
+  for (let r = 0; r < MAP_ROWS; r++) {
+    for (let c = 0; c < MAP_COLS; c++) {
+      if (!maskFn(c, r)) continue;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const nr = r + dr, nc = c + dc;
+          if (nr >= 0 && nr < MAP_ROWS && nc >= 0 && nc < MAP_COLS) dilated[nr][nc] = true;
+        }
+      }
+    }
+  }
+  return (c, r) => dilated[r][c];
+}
+
+function buildSmoothShapes(maskFn) {
+  const segments = marchingSquaresSegments(MAP_COLS, MAP_ROWS, maskFn);
+  const loops = chainSegmentsToLoops(segments);
+  return loops.map(loop => chaikinSmooth(loop, 3));
+}
+
+function fillShapes(shapes, fillStyle) {
+  ctx.fillStyle = fillStyle;
+  for (const loop of shapes) {
+    ctx.beginPath();
+    ctx.moveTo(loop[0].x, loop[0].y);
+    for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i].x, loop[i].y);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+function strokeShapes(shapes, strokeStyle, lineWidth) {
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  for (const loop of shapes) {
+    ctx.beginPath();
+    ctx.moveTo(loop[0].x, loop[0].y);
+    for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i].x, loop[i].y);
+    ctx.closePath();
+    ctx.stroke();
+  }
+}
+
+// Cache obliczony raz przy starcie — mapa jest statyczna w trakcie gry.
+const terrainShapes = (() => {
+  const isType = (code) => (c, r) => MAP_DATA[r][c] === code;
+  const waterMask = isType(3);
+  const mountainMask = isType(2);
+  return {
+    water: buildSmoothShapes(waterMask),
+    waterHalo: buildSmoothShapes(dilateMask(waterMask)),
+    hills: buildSmoothShapes(isType(4)),
+    forest: buildSmoothShapes(isType(1)),
+    mountain: buildSmoothShapes(mountainMask),
+  };
+})();
+
+// Kolejność: POLE jako pełne tło, potem warstwy od najniższej: jasny brzeg
+// wody -> woda -> wzgórza (= podnóża gór, patrz generowanie MAP_DATA) ->
+// las -> góra (+ wyraźny jasny obrys szczytu dla dodatkowej wyrazistości
+// krawędzi). Wzgórza SĄ prawdziwym terenem otaczającym góry, więc same w
+// sobie już dają "jaśniejszą obwódkę wokół gór" — osobna, czysto
+// dekoracyjna otoczka gór byłaby zbędna i zasłaniałaby ich kolor (dokładnie
+// tam, gdzie leżą wzgórza). Siatka kafli NIE jest rysowana — niewidoczna
+// dla gracza, choć nadal istnieje wewnętrznie dla pathfindingu
+// (MAP_DATA/terrainAt).
+function drawMap() {
+  ctx.fillStyle = TERRAIN[0].color;
+  ctx.fillRect(0, 0, MAP_WIDTH_PX, MAP_HEIGHT_PX);
+  fillShapes(terrainShapes.waterHalo, '#8fd0f5');
+  fillShapes(terrainShapes.water, TERRAIN[3].color);
+  fillShapes(terrainShapes.hills, TERRAIN[4].color);
+  fillShapes(terrainShapes.forest, TERRAIN[1].color);
+  fillShapes(terrainShapes.mountain, TERRAIN[2].color);
+  strokeShapes(terrainShapes.mountain, 'rgba(235,235,225,0.6)', 1.5);
 }
 
 // Cienkie, półprzezroczyste linie w kolorze właściciela — subtelne, żeby
@@ -2074,31 +2438,33 @@ function drawCaptureAlertEffects(now) {
   }
 }
 
-// Żółty kwadrat (2x2 kafle) z obwódką w kolorze właściciela i prostą
-// ikoną dachu — miasto ma być jednoznacznie widoczne i rozróżnialne
-// per gracz na pierwszy rzut oka.
+// Mały, wyraźny punkt (nie kwadrat na cały kafel) — okrąg w żółtym
+// kolorze z grubą obwódką w kolorze właściciela i drobną kropką w
+// środku, żeby miasto czytało się jak punkt na mapie sztabowej, nie jak
+// zabudowanie zajmujące teren.
+const CITY_MARKER_RADIUS = 10; // px — wyraźnie mniejsze niż kafel (32px)
 function drawCities() {
-  const side = CITY_SIZE_TILES * TILE_SIZE;
   for (const city of CITIES) {
     const c = cityCenter(city);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, CITY_MARKER_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = '#f4c430';
-    ctx.fillRect(c.x - side / 2, c.y - side / 2, side, side);
+    ctx.fill();
     ctx.strokeStyle = PLAYERS[city.owner].color;
     ctx.lineWidth = 3;
-    ctx.strokeRect(c.x - side / 2, c.y - side / 2, side, side);
+    ctx.stroke();
 
     ctx.beginPath();
-    ctx.moveTo(c.x - side * 0.3, c.y);
-    ctx.lineTo(c.x, c.y - side * 0.32);
-    ctx.lineTo(c.x + side * 0.3, c.y);
-    ctx.closePath();
+    ctx.arc(c.x, c.y, CITY_MARKER_RADIUS * 0.35, 0, Math.PI * 2);
     ctx.fillStyle = '#7a5230';
     ctx.fill();
 
     if (selectedCity === city) {
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, CITY_MARKER_RADIUS + 4, 0, Math.PI * 2);
       ctx.strokeStyle = '#00eaff';
       ctx.lineWidth = 2;
-      ctx.strokeRect(c.x - side / 2 - 4, c.y - side / 2 - 4, side + 8, side + 8);
+      ctx.stroke();
     }
   }
 }
@@ -2171,6 +2537,40 @@ function drawMoraleBar(u, cfg) {
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = u.morale >= MORALE_WARNING_THRESHOLD ? '#4a90d9' : '#f4c430';
   ctx.fillRect(x, y, w * ratio, h);
+}
+
+// Mała strzałka przy jednostce, gdy BIEŻĄCY teren daje jej realny bonus
+// lub karę bojową (obrażenia/zasięg — patrz TERRAIN_MODIFIERS). Celowo
+// ignoruje sam speedMultiplier (samo zwolnienie marszu nie zaśmieca tego
+// wskaźnika) — chodzi o to, żeby gracz rozumiał, DLACZEGO jego łucznicy w
+// lesie są nieskuteczni, nie o każde spowolnienie terenu.
+function drawTerrainEffectIndicator(u, cfg) {
+  const terrain = unitTerrain(u);
+  const mods = TERRAIN_MODIFIERS[u.type][terrain.name];
+  const hasPenalty = mods.damageMultiplier < 1 || mods.rangeMultiplier < 1;
+  const hasBonus = !hasPenalty && (mods.damageMultiplier > 1 || mods.rangeMultiplier > 1);
+  if (!hasPenalty && !hasBonus) return;
+  const bx = u.x + cfg.drawRadius * 0.7, by = u.y + cfg.drawRadius * 0.7;
+  ctx.beginPath();
+  ctx.arc(bx, by, 6, 0, Math.PI * 2);
+  ctx.fillStyle = '#222';
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = hasPenalty ? '#ff4444' : '#44ff44';
+  ctx.beginPath();
+  if (hasPenalty) {
+    ctx.moveTo(bx - 3, by - 2);
+    ctx.lineTo(bx + 3, by - 2);
+    ctx.lineTo(bx, by + 3);
+  } else {
+    ctx.moveTo(bx - 3, by + 2);
+    ctx.lineTo(bx + 3, by + 2);
+    ctx.lineTo(bx, by - 3);
+  }
+  ctx.closePath();
+  ctx.fill();
 }
 
 // Pasek postępu przejęcia konwoju (patrz updateConvoyCaptures) — ten sam
@@ -2374,6 +2774,7 @@ function drawUnits(now) {
       ctx.textBaseline = 'middle';
       ctx.fillText(letter, bx, by + 0.5);
     }
+    drawTerrainEffectIndicator(u, cfg);
     if (u.routed) {
       // znacznik paniki — jednoznaczny sygnał "nie kontrolujesz tej jednostki",
       // w przeciwnym rogu niż znacznik priorytetu celu, żeby się nie kolidowały
@@ -2699,7 +3100,7 @@ window.BalanceSim = {
     this.resetWorld();
     if (terrain) this.setUniformTerrain({ FIELD: 0, FOREST: 1, WATER: 3 }[terrain]);
     this.spawnArmy(armyA, 'P1', 2, 6);
-    this.spawnArmy(armyB, 'P2', 18, 6);
+    this.spawnArmy(armyB, 'P2', 24, 6); // przesunięte z 18 — po powiększeniu mapy tam jest teraz góra
     this.issueAdvanceOrders('P1', this.armyCentroid('P2'));
     this.issueAdvanceOrders('P2', this.armyCentroid('P1'));
 
