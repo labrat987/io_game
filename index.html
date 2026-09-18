@@ -83,8 +83,8 @@ const UNIT_TYPES = {
   // ognia, wolniejsze przeładowanie, kruche HP, bezbronni z bliska,
   // accuracy = promień rozrzutu (px) na pełnym attackRange (patrz
   // resolveCombat — rośnie kwadratowo z dystansem, nie liniowo)
-  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 9,  reloadTime: 1.8, projectileSpeed: 300, minRange: 50, meleeDamage: 0.9, accuracy: 25, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5 },
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 36, reloadTime: 6.0, projectileSpeed: 150, minRange: 90, meleeDamage: 3.6, accuracy: 45, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0 },
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 12, reloadTime: 1.5, projectileSpeed: 300, minRange: 50, meleeDamage: 0.9, accuracy: 12.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 0.5 },
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 48, reloadTime: 5.0, projectileSpeed: 150, minRange: 90, meleeDamage: 3.6, accuracy: 22.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 8, drawRadius: 9, pushStrength: 0, setupTime: 2.0 },
   LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 10, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 6, drawRadius: 7, pushStrength: 1 },
   HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 15, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 7, drawRadius: 8, pushStrength: 3 },
   CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 14, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 7, drawRadius: 8, pushStrength: 2 },
@@ -1030,10 +1030,12 @@ function resolveCombat(allUnits, dt) {
       const speed = cfg.projectileSpeed;
       const vx = (target.x - attacker.x) / dist * speed;
       const vy = (target.y - attacker.y) / dist * speed;
-      // rozrzut rośnie kwadratowo z dystansem: blisko minRange niemal
-      // pewne trafienie, na pełnym attackRange wyraźnie gorsza celność
+      // rozrzut rośnie liniowo z dystansem: blisko minRange lepsza
+      // celność, na pełnym attackRange wyraźnie gorsza, ale różnica
+      // między dystansem średnim a maksymalnym ma być łagodna, nie
+      // urwista (kwadratowy wzrost dawał zbyt karną krzywą trafień)
       const distFraction = dist / cfg.attackRange;
-      const spreadRadius = cfg.accuracy * distFraction * distFraction;
+      const spreadRadius = cfg.accuracy * distFraction;
       const missAngle = Math.random() * Math.PI * 2;
       const missOffset = Math.sqrt(Math.random()) * spreadRadius;
       const impactX = target.x + Math.cos(missAngle) * missOffset;
