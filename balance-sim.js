@@ -22,7 +22,8 @@ const { chromium } = require('playwright');
 const ROOT = __dirname;
 const PORT = 8877;
 const REPEATS = 50; // minimum wg specyfikacji
-const MAX_SECONDS = 600; // patrz kalibracja w tej turze — mecze potrafią trwać setki sekund
+const MAX_SECONDS = 1000; // podniesione po tej turze (spowolnienie ×0.8 + dłuższa panika/Last Stand
+// wydłużyły starcia — zmierzony najdłuższy przypadek ARCHER vs CANNON ~668s, zostawiony margines)
 
 function startServer() {
   const server = http.createServer((req, res) => {
@@ -60,6 +61,8 @@ function summarize(battles) {
       .concat(battles.filter(b => b.winner === 'B').map(b => b.survivorsB)) || [0]),
     avgRoutedA: mean(battles.map(b => b.routedA)),
     avgRoutedB: mean(battles.map(b => b.routedB)),
+    avgLastStandA: mean(battles.map(b => b.lastStandA)),
+    avgLastStandB: mean(battles.map(b => b.lastStandB)),
     avgDmgPerUnitA: mean(battles.map(b => b.avgDamagePerUnitA)),
     avgDmgPerUnitB: mean(battles.map(b => b.avgDamagePerUnitB)),
   };
@@ -223,6 +226,17 @@ async function main() {
     const noDiff = spread < 0.10 && durSpreadPct < 0.15;
     console.log(`${a} vs ${b}: ${rows.map(r => `${r.terrain}=${pct(r.winRateA)}(${r.avgDuration.toFixed(0)}s)`).join(', ')}${noDiff ? '  <== TEREN BEZ RÓŻNICY' : ''}`);
   }
+
+  console.log('\n--- Załamania (rout) / Last Stand — starcia równoliczne 10v10, jako % startowego składu ---');
+  console.log('typA vs typB | A: złamane/LastStand | B: złamane/LastStand');
+  for (const r of equalCount) {
+    const routA = pct(r.avgRoutedA / 10), lsA = pct(r.avgLastStandA / 10);
+    const routB = pct(r.avgRoutedB / 10), lsB = pct(r.avgLastStandB / 10);
+    console.log(`${r.a} vs ${r.b} | A: ${routA} / ${lsA} | B: ${routB} / ${lsB}`);
+  }
+  const overallRoutRate = mean(equalCount.flatMap(r => [r.avgRoutedA / 10, r.avgRoutedB / 10]));
+  const overallLastStandRate = mean(equalCount.flatMap(r => [r.avgLastStandA / 10, r.avgLastStandB / 10]));
+  console.log(`\nŚrednio po wszystkich starciach równolicznych: złamanie ${pct(overallRoutRate)}, Last Stand ${pct(overallLastStandRate)} jednostek startowego składu.`);
 
   console.log('\n--- Starcia mieszane ---');
   for (const r of mixedResults) {
