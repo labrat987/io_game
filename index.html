@@ -74,7 +74,7 @@ const TERRAIN = {
   1: { name: 'FOREST',   passable: true,  speedMultiplier: 0.5,  color: '#3f6b35' },
   2: { name: 'MOUNTAIN', passable: false, speedMultiplier: 0,    color: '#8a8a8a' },
   3: { name: 'WATER',    passable: true,  speedMultiplier: 0.15, color: '#3a7bd5', pathCost: 20 },
-  4: { name: 'HILLS',    passable: true,  speedMultiplier: 0.85, color: '#c2a76c' }, // podnóża gór — wszystkie jednostki lekko spowolnione (jednolicie, bez nadpisań per typ)
+  4: { name: 'HILLS',    passable: true,  speedMultiplier: 1.0,  color: '#c2a76c' }, // podnóża gór — kara prędkości w całości w TERRAIN_MODIFIERS.<TYP>.HILLS.speedMultiplier, zróżnicowana per typ jednostki (kawaleria/działa najsilniej, lekka piechota najsłabiej)
 };
 
 // Obrażenia za sekundę stania na wodzie — wymaga systemu HP, którego
@@ -184,6 +184,17 @@ const LAST_STAND_PULSE_SPEED = 0.01; // rad/ms — stałe tempo pulsu, w odróż
 const LAST_STAND_PULSE_COLOR_A = '#cc1100'; // czerwony
 const LAST_STAND_PULSE_COLOR_B = '#ff9900'; // pomarańczowy
 
+// Zwrot jednostki i ataki z flanki/tyłu (patrz facingAngle, resolveCombat,
+// updateProjectiles, updateMorale) — kąt liczony między zwrotem CELU a
+// kierunkiem, z którego nadszedł cios (0° = w twarz, 180° = w plecy).
+const FLANK_SIDE_ANGLE_DEG = 60;   // 60-120° od zwrotu celu = flanka
+const FLANK_REAR_ANGLE_DEG = 120;  // powyżej 120° = tył
+const FLANK_DAMAGE_MULTIPLIER = 1.25; // +25% obrażeń z flanki
+const REAR_DAMAGE_MULTIPLIER = 1.40;  // +40% obrażeń z tyłu
+const MORALE_FLANK_HIT_LOSS_MULTIPLIER = 1.5; // dodatkowy mnożnik spadku morale z trafienia w tej klatce, jeśli NAJGORSZE trafienie było z flanki
+const MORALE_REAR_HIT_LOSS_MULTIPLIER = 2.0;  // jw., trafienie z tyłu
+const MORALE_MULTI_DIRECTION_HIT_MULTIPLIER = 1.5; // dodatkowy mnożnik, gdy cel trafiony z kilku rozstawionych kątowo kierunków jednocześnie (melee + ostrzał, patrz isEncircled) — osobne od MORALE_ENCIRCLEMENT_LOSS_MULTIPLIER (tamten dotyczy WYŁĄCZNIE przewagi liczebnej w zwarciu)
+
 // Wizualizacja ostrzegawcza — pulsowanie WYPEŁNIENIA jednostki (nie
 // pierścienia) między kolorem gracza a bielą, wyraźnie odróżnialne od
 // stałej pełnej bieli jednostki złamanej (routed) i od pulsu Last Stand
@@ -224,7 +235,7 @@ const UNIT_TYPES = {
   // piechoty (walczy do końca), najniższa u dystansowych (nieszkoleni do
   // beznadziejnej obrony wręcz, wolą (próbować) uciec).
   ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 4.4, reloadTime: 1.5, projectileSpeed: 300, meleeDamage: 0.5, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.05 },
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 5.6, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.7, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05 },
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 7.2, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.7, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05 }, // damagePerShot podniesione z 5.6 (+28.6%) — narzędzie przełamania, reloadTime bez zmian
   LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 8.5, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 2, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.2 },
   HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 12.8, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 5, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4 },
   CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 11.9, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15 },
@@ -255,14 +266,14 @@ const TERRAIN_MODIFIERS = {
   ARCHER: {
     FIELD:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
     FOREST:   { speedMultiplier: 1, damageMultiplier: 0.5, rangeMultiplier: 0.6, pushMultiplier: 1 },
-    HILLS:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1.4, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.65, damageMultiplier: 1,   rangeMultiplier: 1.4, pushMultiplier: 1 }, // podnóża: -35%
     MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
     WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1,   pushMultiplier: 1 },
   },
   CANNON: {
     FIELD:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
     FOREST:   { speedMultiplier: 1, damageMultiplier: 0.5, rangeMultiplier: 0.6, pushMultiplier: 1 },
-    HILLS:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1.4, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.45, damageMultiplier: 1,   rangeMultiplier: 1.4, pushMultiplier: 1 }, // podnóża: -55% (najsilniej spowolnione, razem z kawalerią)
     MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
     WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1,   pushMultiplier: 1 },
   },
@@ -272,7 +283,7 @@ const TERRAIN_MODIFIERS = {
   LIGHT_INFANTRY: {
     FIELD:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
     FOREST:   { speedMultiplier: 2.0, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
-    HILLS:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.8, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 }, // podnóża: -20% (najsłabiej spowolniona)
     MOUNTAIN: { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
     WATER:    { speedMultiplier: 1,   damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
   },
@@ -281,7 +292,7 @@ const TERRAIN_MODIFIERS = {
   HEAVY_INFANTRY: {
     FIELD:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
     FOREST:   { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
-    HILLS:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.6, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 }, // podnóża: -40%
     MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
     WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
   },
@@ -291,7 +302,7 @@ const TERRAIN_MODIFIERS = {
   CAVALRY: {
     FIELD:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
     FOREST:   { speedMultiplier: 0.5, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 0.4 },
-    HILLS:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.45, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 }, // podnóża: -55% (najsilniej spowolniona, razem z działami — traci swój atut szybkości)
     MOUNTAIN: { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
     WATER:    { speedMultiplier: 1,   damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
   },
@@ -307,6 +318,7 @@ const TERRAIN_MODIFIERS = {
 };
 
 const BASE_SPEED_PX_PER_S = 28.8; // mnożone przez unit.speed i terrain.speedMultiplier (obniżone łącznie o ~50% od bazy — gracz ma zdążyć zareagować na przebieg starcia, przegrupować, wycofać osłabione oddziały)
+const FACING_UPDATE_MIN_MOVE_PX = 0.5; // próg ruchu w klatce, poniżej którego zwrot (facingAngle) nie jest aktualizowany — zapobiega drganiu przy znikomym przesunięciu (patrz updateUnit)
 
 // Zahardkodowana mapa terenu — edytuj ręcznie (0 pole, 1 las, 2 gory,
 // 3 woda, 4 wzgórza). Powiększona o ~50% względem pierwszej wersji
@@ -513,6 +525,7 @@ function spawnUnit(type, col, row, owner) {
     lastStandRemaining: 0, // s do końca efektu Last Stand
     inMeleeLock: false, // tylko dla ranged — w zwarciu, nie strzela; patrz resolveCombat/drawUnits
     shotsFired: 0, shotsHit: 0, // tylko dla ranged — diagnostyka celności w trybie debug (klawisz D)
+    facingAngle: 0, // radiany — zwrot jednostki; aktualizowany ruchem w updateUnit, nadpisywany w walce przez resolveCombat/updateProjectiles (patrz flankowanie)
   });
 }
 
@@ -1466,6 +1479,7 @@ function updateUnit(unit, dt) {
     : (unit.timeSinceMeleeCombat < MELEE_SLOW_DURATION ? meleeSlowMultiplier : 1);
   const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier * speedStateMultiplier;
 
+  const x0 = unit.x, y0 = unit.y; // do wyliczenia zwrotu (facingAngle) z faktycznego przesunięcia tej klatki
   let remaining = speed * dt;
   while (remaining > 0 && unit.path.length > 0) {
     const dx = unit.path[0].x - unit.x, dy = unit.path[0].y - unit.y;
@@ -1489,6 +1503,16 @@ function updateUnit(unit, dt) {
       unit.y += (dy / dist) * remaining;
       remaining = 0;
     }
+  }
+
+  // Zwrot (facingAngle) z faktycznego przesunięcia tej klatki — próg
+  // zapobiega drganiu zwrotu przy znikomym ruchu (np. rozjeżdżanie się w
+  // resolveCollisions). Brak ruchu → zwrot zostaje bez zmian. W walce
+  // resolveCombat/updateProjectiles NADPISZE to zwrotem w stronę
+  // przeciwnika (patrz komentarz "KRYTYCZNE" przy resolveCombat).
+  const movedDist = Math.hypot(unit.x - x0, unit.y - y0);
+  if (movedDist > FACING_UPDATE_MIN_MOVE_PX) {
+    unit.facingAngle = Math.atan2(unit.y - y0, unit.x - x0);
   }
 }
 
@@ -1564,6 +1588,7 @@ function resolveCollisions(allUnits) {
 const DEATH_EFFECT_DURATION_MS = 400;
 const DEATH_FADE_DURATION_MS = 500;
 const IMPACT_EFFECT_DURATION_MS = 180;
+const FLANK_HIT_EFFECT_DURATION_MS = 350; // dłużej i wyraźniej niż zwykła iskra (impactEffects) — trafienie z flanki/tyłu ma być natychmiast czytelne
 const HIT_FLASH_DURATION_MS = 100;
 const CANNON_SHAKE_DURATION_MS = 150;
 const CANNON_SHAKE_MAGNITUDE = 2.5;
@@ -1571,6 +1596,7 @@ const CANNON_SHAKE_MAGNITUDE = 2.5;
 let deathEffects = []; // {x, y, color, startTime} — zanikający pierścień w miejscu śmierci
 let dyingUnits = []; // {type, owner, x, y, startTime} — znikająca sylwetka jednostki
 let impactEffects = []; // {x, y, startTime} — iskra w miejscu uderzenia pocisku (trafienie lub pudło)
+let flankHitEffects = []; // {x, y, startTime, category, angle} — wyraźniejszy efekt trafienia z flanki/tyłu (melee lub ostrzał), patrz resolveCombat/updateProjectiles/drawFlankHitEffects
 let currentAttacks = []; // {attacker, target} — tylko starcia melee, do rysowania linii w tej klatce
 let projectiles = []; // {x, y, vx, vy, impactX, impactY, distanceLeft, damage, owner, attackerType, targetUnit}
 
@@ -1683,7 +1709,7 @@ function attackerDamageMultiplier(attacker) {
 // WYŁĄCZNIE efekt wizualny (błysk, przy działach drganie) i iskra w
 // miejscu uderzenia — bez fizycznego odrzutu. Wypychanie jednostek ma
 // być skutkiem tylko napierania w zwarciu (pushStrength), nigdy ostrzału.
-function updateProjectiles(dt, now, pendingDamage) {
+function updateProjectiles(dt, now, pendingDamage, hitCategoryOf, rangedHitAttackersOf) {
   const stillFlying = [];
   for (const p of projectiles) {
     if (p.isHit && p.targetUnit.hp > 0) {
@@ -1706,9 +1732,17 @@ function updateProjectiles(dt, now, pendingDamage) {
     impactEffects.push({ x: finalX, y: finalY, startTime: now });
 
     if (p.isHit && p.targetUnit.hp > 0) {
+      // Kierunek, z którego pocisk wszedł w cel — to (p.vx,p.vy) tuż przed
+      // uderzeniem (dla trafień śledzących cel, aktualizowane co klatkę
+      // wyżej), więc jest dokładny nawet jeśli strzelec przemieścił się
+      // podczas lotu. Odwrócone, bo p.vx/vy to kierunek LOTU (strzelec→cel),
+      // a tu potrzebny kierunek cel→strzelec (patrz hitCategory).
+      const attackDirectionAngle = Math.atan2(-p.vy, -p.vx);
+      const category = hitCategory(p.targetUnit.facingAngle, attackDirectionAngle);
+
       // bonus za dobijanie: sprawdzany na aktualnym hp z tej klatki,
       // przed jakimkolwiek odjęciem — zgodne z zasadą KRYTYCZNE
-      let dmg = p.damage;
+      let dmg = p.damage * flankDamageMultiplierFor(category);
       if (p.targetUnit.hp < UNIT_TYPES[p.targetUnit.type].maxHp * LOW_HP_THRESHOLD) {
         dmg *= LOW_HP_DAMAGE_BONUS;
       }
@@ -1716,6 +1750,16 @@ function updateProjectiles(dt, now, pendingDamage) {
       // (mógł wejść w Last Stand w czasie lotu pocisku), nie w chwili odpalenia
       if (p.targetUnit.lastStand) dmg *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
       pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + dmg);
+      recordWorstHitCategory(hitCategoryOf, p.targetUnit, category);
+      if (!rangedHitAttackersOf.has(p.targetUnit)) rangedHitAttackersOf.set(p.targetUnit, new Set());
+      rangedHitAttackersOf.get(p.targetUnit).add(p.shooter);
+      if (category !== 'FRONT') {
+        flankHitEffects.push({ x: p.targetUnit.x, y: p.targetUnit.y, startTime: now, category, angle: attackDirectionAngle });
+      }
+      // cel odwraca się w stronę zagrożenia — na KOLEJNĄ klatkę (patrz
+      // komentarz o kolejności w resolveCombat: obrażenia TEJ klatki już
+      // policzone względem zwrotu SPRZED aktualizacji)
+      p.targetUnit.facingAngle = attackDirectionAngle;
 
       p.targetUnit.hitFlashUntil = now + HIT_FLASH_DURATION_MS;
       if (p.attackerType === 'CANNON') {
@@ -1726,6 +1770,34 @@ function updateProjectiles(dt, now, pendingDamage) {
     // pocisk znika po dotarciu do punktu uderzenia niezależnie od trafienia
   }
   projectiles = stillFlying;
+}
+
+// Kategoria trafienia względem zwrotu CELU: 'FRONT' (<60° od zwrotu),
+// 'FLANK' (60-120°), 'REAR' (>120°). attackDirectionAngle to kierunek OD
+// CELU w stronę, z której nadszedł cios (w zwarciu: w stronę atakującego;
+// przy ostrzale: przeciwnie do kierunku lotu pocisku w chwili trafienia).
+function hitCategory(targetFacingAngle, attackDirectionAngle) {
+  let diff = Math.abs(targetFacingAngle - attackDirectionAngle) % (Math.PI * 2);
+  if (diff > Math.PI) diff = Math.PI * 2 - diff;
+  const deg = diff * 180 / Math.PI;
+  if (deg > FLANK_REAR_ANGLE_DEG) return 'REAR';
+  if (deg > FLANK_SIDE_ANGLE_DEG) return 'FLANK';
+  return 'FRONT';
+}
+function flankDamageMultiplierFor(category) {
+  if (category === 'REAR') return REAR_DAMAGE_MULTIPLIER;
+  if (category === 'FLANK') return FLANK_DAMAGE_MULTIPLIER;
+  return 1;
+}
+// REAR > FLANK > FRONT — zapamiętuje NAJGORSZĄ kategorię trafienia celu w
+// tej klatce (może być trafiony kilka razy, z różnych stron) — używane
+// przez updateMorale do mnożnika spadku morale.
+const HIT_CATEGORY_SEVERITY = { FRONT: 0, FLANK: 1, REAR: 2 };
+function recordWorstHitCategory(map, unit, category) {
+  const existing = map.get(unit);
+  if (!existing || HIT_CATEGORY_SEVERITY[category] > HIT_CATEGORY_SEVERITY[existing]) {
+    map.set(unit, category);
+  }
 }
 
 // Czy napastnicy wręcz otaczają cel z wielu stron (nie tylko liczba, ale
@@ -1761,7 +1833,7 @@ function isEncircled(target, attackerSet) {
 // odbudowanego morale, po czym ma jeszcze okres ochronny przed ponownym
 // złamaniem (patrz CLAUDE.md: utrata jednostek ma być czasowa, nie trwała
 // — inaczej wzmacnia snowball — ale ma być odczuwalna, nie chwilowa).
-function updateMorale(allUnits, attacks, pendingDamage, dt) {
+function updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHitAttackersOf, dt) {
   const combatLoss = new Map(); // straty z walki tej klatki — na końcu tłumione obecnością sojuszników
   const otherDelta = new Map(); // regeneracja/panika/bonus za wygrane napieranie/brak żołdu — BEZ tłumienia
   const addTo = (map, unit, amount) => map.set(unit, (map.get(unit) || 0) + amount);
@@ -1791,6 +1863,17 @@ function updateMorale(allUnits, attacks, pendingDamage, dt) {
     meleeAttackersOf.get(target).add(attacker);
   }
 
+  // Atak z kilku kierunków jednocześnie (melee + ostrzał razem) — osobne
+  // od meleeAttackersOf powyżej, który liczy WYŁĄCZNIE przewagę liczebną w
+  // zwarciu (ten mechanizm zostaje nietknięty). Reużywa isEncircled do
+  // sprawdzenia rozstawu kątowego, tylko na szerszym zbiorze napastników.
+  const allDirectionAttackersOf = new Map();
+  for (const [target, set] of meleeAttackersOf) allDirectionAttackersOf.set(target, new Set(set));
+  for (const [target, shooters] of rangedHitAttackersOf) {
+    if (!allDirectionAttackersOf.has(target)) allDirectionAttackersOf.set(target, new Set());
+    for (const s of shooters) allDirectionAttackersOf.get(target).add(s);
+  }
+
   for (const u of allUnits) {
     if (u.hp <= 0) continue;
     const cfg = UNIT_TYPES[u.type];
@@ -1799,7 +1882,15 @@ function updateMorale(allUnits, attacks, pendingDamage, dt) {
     const dmgTaken = pendingDamage.get(u) || 0;
     if (dmgTaken > 0) {
       const hpFraction = Math.max(0, u.hp / cfg.maxHp);
-      const lossFromDamage = dmgTaken * MORALE_LOSS_PER_DAMAGE * (1 + MORALE_LOW_HP_LOSS_MULTIPLIER * (1 - hpFraction));
+      let lossFromDamage = dmgTaken * MORALE_LOSS_PER_DAMAGE * (1 + MORALE_LOW_HP_LOSS_MULTIPLIER * (1 - hpFraction));
+      // trafienie z flanki/tyłu łamie morale mocniej niż to samo trafienie
+      // z frontu — kategoria to NAJGORSZA z (ewentualnie kilku) trafień tej klatce
+      const category = hitCategoryOf.get(u);
+      if (category === 'REAR') lossFromDamage *= MORALE_REAR_HIT_LOSS_MULTIPLIER;
+      else if (category === 'FLANK') lossFromDamage *= MORALE_FLANK_HIT_LOSS_MULTIPLIER;
+      // atak z kilku rozstawionych kątowo kierunków jednocześnie (melee+ostrzał) — dodatkowo
+      const directionSet = allDirectionAttackersOf.get(u);
+      if (directionSet && isEncircled(u, directionSet)) lossFromDamage *= MORALE_MULTI_DIRECTION_HIT_MULTIPLIER;
       addTo(combatLoss, u, -lossFromDamage / cfg.moraleResistance);
     }
 
@@ -1941,6 +2032,8 @@ function resolveCombat(allUnits, dt) {
   const pendingDamage = new Map(); // unit -> suma obrażeń w tej klatce
   const attacks = []; // tylko starcia melee (linia), nie strzały dystansowe
   const attackersThisFrame = new Set(); // do liczenia timeSinceCombat — kto zadał albo wystrzelił
+  const hitCategoryOf = new Map(); // target -> NAJGORSZA kategoria trafienia w tej klatce ('FRONT'/'FLANK'/'REAR'), patrz recordWorstHitCategory
+  const rangedHitAttackersOf = new Map(); // target -> Set(shooter), tylko realne trafienia pociskiem w tej klatce — do wykrycia ataku z kilku kierunków razem z meleeAttackersOf (patrz updateMorale)
 
   for (const u of allUnits) {
     const cfg = UNIT_TYPES[u.type];
@@ -1957,7 +2050,7 @@ function resolveCombat(allUnits, dt) {
     }
   }
 
-  updateProjectiles(dt, now, pendingDamage);
+  updateProjectiles(dt, now, pendingDamage, hitCategoryOf, rangedHitAttackersOf);
 
   // Kto faktycznie atakuje kogo wręcz W TEJ klatce (tylko prawdziwi
   // wojownicy wręcz, ranged:false) — decyduje, którzy dystansowi są
@@ -1989,10 +2082,20 @@ function resolveCombat(allUnits, dt) {
       if (!target) continue;
       attacks.push({ attacker, target });
       attackersThisFrame.add(attacker);
-      let damage = cfg.damagePerSecond * dt * dmgMultiplier * pushDamageMultiplier(attacker, target);
+      // Kąt liczony względem zwrotu celu SPRZED tego starcia (aktualizacja
+      // zwrotu w stronę zagrożenia następuje NIŻEJ, dopiero po zadaniu
+      // obrażeń — patrz komentarz przy facingAngle w updateUnit).
+      const attackDirectionAngle = Math.atan2(attacker.y - target.y, attacker.x - target.x);
+      const category = hitCategory(target.facingAngle, attackDirectionAngle);
+      let damage = cfg.damagePerSecond * dt * dmgMultiplier * pushDamageMultiplier(attacker, target) * flankDamageMultiplierFor(category);
       if (attacker.lastStand) damage *= LAST_STAND_DAMAGE_BONUS_MULTIPLIER;
       if (target.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
       pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
+      recordWorstHitCategory(hitCategoryOf, target, category);
+      if (category !== 'FRONT') flankHitEffects.push({ x: target.x, y: target.y, startTime: now, category, angle: attackDirectionAngle });
+      // po zadaniu obrażeń: obaj obracają się twarzą do siebie na kolejną klatkę
+      attacker.facingAngle = attackDirectionAngle + Math.PI;
+      target.facingAngle = attackDirectionAngle;
       continue;
     }
 
@@ -2012,10 +2115,16 @@ function resolveCombat(allUnits, dt) {
       attacker.inMeleeLock = true;
       attacks.push({ attacker, target: meleeEnemy });
       attackersThisFrame.add(attacker);
-      let damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, meleeEnemy);
+      const attackDirectionAngle = Math.atan2(attacker.y - meleeEnemy.y, attacker.x - meleeEnemy.x);
+      const category = hitCategory(meleeEnemy.facingAngle, attackDirectionAngle);
+      let damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, meleeEnemy) * flankDamageMultiplierFor(category);
       if (attacker.lastStand) damage *= LAST_STAND_DAMAGE_BONUS_MULTIPLIER;
       if (meleeEnemy.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
       pendingDamage.set(meleeEnemy, (pendingDamage.get(meleeEnemy) || 0) + damage);
+      recordWorstHitCategory(hitCategoryOf, meleeEnemy, category);
+      if (category !== 'FRONT') flankHitEffects.push({ x: meleeEnemy.x, y: meleeEnemy.y, startTime: now, category, angle: attackDirectionAngle });
+      attacker.facingAngle = attackDirectionAngle + Math.PI;
+      meleeEnemy.facingAngle = attackDirectionAngle;
       continue;
     }
 
@@ -2029,6 +2138,7 @@ function resolveCombat(allUnits, dt) {
       // normalny strzał — obrażenia dopiero przy trafieniu pocisku, nie teraz.
       // Samo wystrzelenie już liczy się jako "w walce" dla regeneracji.
       attackersThisFrame.add(attacker);
+      attacker.facingAngle = Math.atan2(target.y - attacker.y, target.x - attacker.x); // dystansowy obraca się w stronę celu podczas strzału
       const speed = cfg.projectileSpeed;
       const vx = (target.x - attacker.x) / dist * speed;
       const vy = (target.y - attacker.y) / dist * speed;
@@ -2105,7 +2215,7 @@ function resolveCombat(allUnits, dt) {
     }
   }
 
-  updateMorale(allUnits, attacks, pendingDamage, dt);
+  updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHitAttackersOf, dt);
 
   const survivors = [];
   for (const u of allUnits) {
@@ -2843,6 +2953,22 @@ function drawUnits(now) {
     } else {
       drawUnitIcon(u, cfg);
     }
+
+    // Zwrot jednostki — mały, subtelny trójkąt na obwodzie koła wskazujący
+    // facingAngle (patrz updateUnit/resolveCombat/updateProjectiles).
+    ctx.save();
+    ctx.translate(u.x + Math.cos(u.facingAngle) * cfg.drawRadius, u.y + Math.sin(u.facingAngle) * cfg.drawRadius);
+    ctx.rotate(u.facingAngle);
+    const facingLen = cfg.drawRadius * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(facingLen * 0.6, 0);
+    ctx.lineTo(-facingLen * 0.35, facingLen * 0.35);
+    ctx.lineTo(-facingLen * 0.35, -facingLen * 0.35);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fill();
+    ctx.restore();
+
     if (u.selected) {
       ctx.beginPath();
       ctx.arc(u.x, u.y, cfg.drawRadius + 4, 0, Math.PI * 2);
@@ -2950,6 +3076,34 @@ function drawImpactEffects(now) {
       ctx.lineTo(e.x + Math.cos(angle) * len, e.y + Math.sin(angle) * len);
       ctx.stroke();
     }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Trafienie z flanki (pomarańczowy) lub tyłu (czerwony) — klin
+// zorientowany w stronę, z której nadszedł cios, wyraźnie większy i
+// dłużej widoczny niż zwykła iskra (impactEffects), żeby gracz od razu
+// zobaczył, że manewr zadziałał.
+function drawFlankHitEffects(now) {
+  flankHitEffects = flankHitEffects.filter(e => now - e.startTime < FLANK_HIT_EFFECT_DURATION_MS);
+  for (const e of flankHitEffects) {
+    const t = (now - e.startTime) / FLANK_HIT_EFFECT_DURATION_MS;
+    const color = e.category === 'REAR' ? '#ff3b3b' : '#ff9900';
+    const dist = 10 + t * 16;
+    const size = 5 * (1 - t * 0.4);
+    const px = e.x + Math.cos(e.angle) * dist, py = e.y + Math.sin(e.angle) * dist;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(e.angle + Math.PI);
+    ctx.globalAlpha = 1 - t;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(size, 0);
+    ctx.lineTo(-size * 0.6, size * 0.6);
+    ctx.lineTo(-size * 0.6, -size * 0.6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
     ctx.globalAlpha = 1;
   }
 }
@@ -3151,6 +3305,7 @@ function gameLoop(now) {
   drawAttackLines();
   drawProjectiles();
   drawImpactEffects(now);
+  drawFlankHitEffects(now);
   drawDeathEffects(now);
   drawConvoyArrivalEffects(now);
   drawCaptureAlertEffects(now);
@@ -3258,6 +3413,90 @@ window.BalanceSim = {
         const centroidA = this.armyCentroid('P1');
         if (centroidB) this.issueAdvanceOrders('P1', centroidB);
         if (centroidA) this.issueAdvanceOrders('P2', centroidA);
+      }
+
+      const aliveA = units.some(u => u.owner === 'P1');
+      const aliveB = units.some(u => u.owner === 'P2');
+      if (!aliveA || !aliveB) break;
+    }
+
+    const survivorsA = units.filter(u => u.owner === 'P1');
+    const survivorsB = units.filter(u => u.owner === 'P2');
+    const endHpA = survivorsA.reduce((s, u) => s + u.hp, 0);
+    const endHpB = survivorsB.reduce((s, u) => s + u.hp, 0);
+    const winner = survivorsA.length > 0 && survivorsB.length === 0 ? 'A'
+      : survivorsB.length > 0 && survivorsA.length === 0 ? 'B'
+      : 'DRAW';
+
+    return {
+      winner,
+      durationSeconds: tick * dt,
+      timedOut: tick >= maxTicks,
+      survivorsA: survivorsA.length,
+      survivorsB: survivorsB.length,
+      startCountA,
+      startCountB,
+      damageDealtByA: startHpB - endHpB,
+      damageDealtByB: startHpA - endHpA,
+      avgDamagePerUnitA: (startHpB - endHpB) / startCountA,
+      avgDamagePerUnitB: (startHpA - endHpA) / startCountB,
+      routedA: everRoutedA.size,
+      routedB: everRoutedB.size,
+      lastStandA: everLastStandA.size,
+      lastStandB: everLastStandB.size,
+    };
+  },
+
+  // Ustawia zwrot (facingAngle) całej armii danego gracza na stały kąt —
+  // do testu wpływu ataku z flanki/tyłu (patrz runFlankBattle niżej).
+  setFacing(owner, angle) {
+    for (const u of units) if (u.owner === owner) u.facingAngle = angle;
+  },
+
+  // Starcie do izolowanego pomiaru bonusu za flankowanie/atak z tyłu —
+  // czy kawaleria ładująca z boku/tyłu nieruchomej, zwróconej w stałym
+  // kierunku linii obrony (P2, facingAngle=0, BEZ rozkazu marszu — stoi i
+  // walczy w miejscu) rzeczywiście wygrywa częściej niż przy ataku czołowym
+  // (approachAngleDeg=0). approachAngleDeg liczony względem zwrotu
+  // obrońców: 0=czoło, ±90=flanka, 180=tył. Reszta pętli identyczna z
+  // runBattle (celowo skopiowana, nie refaktoryzowana do wspólnej funkcji,
+  // żeby nie ryzykować regresji w już zweryfikowanym runBattle).
+  runFlankBattle({ defenderType, defenderCount, attackerType, attackerCount, approachAngleDeg, maxSeconds = 240 }) {
+    this.resetWorld();
+    const centerCol = 15, centerRow = 12;
+    this.spawnArmy([{ type: defenderType, count: defenderCount }], 'P2', centerCol, centerRow);
+    this.setFacing('P2', 0);
+    const rad = approachAngleDeg * Math.PI / 180;
+    const spawnDist = 10; // kafli
+    const startCol = Math.max(1, Math.min(MAP_COLS - 2, centerCol + Math.round(Math.cos(rad) * spawnDist)));
+    const startRow = Math.max(1, Math.min(MAP_ROWS - 2, centerRow + Math.round(Math.sin(rad) * spawnDist)));
+    this.spawnArmy([{ type: attackerType, count: attackerCount }], 'P1', startCol, startRow);
+    this.issueAdvanceOrders('P1', this.armyCentroid('P2'));
+    // obrońcy BEZ rozkazu marszu — stoją w miejscu, testujemy wyłącznie skutek kąta natarcia
+
+    const startHpA = units.filter(u => u.owner === 'P1').reduce((s, u) => s + u.hp, 0);
+    const startHpB = units.filter(u => u.owner === 'P2').reduce((s, u) => s + u.hp, 0);
+    const startCountA = units.filter(u => u.owner === 'P1').length;
+    const startCountB = units.filter(u => u.owner === 'P2').length;
+    const everRoutedA = new Set(), everRoutedB = new Set();
+    const everLastStandA = new Set(), everLastStandB = new Set();
+
+    const dt = 0.05;
+    const maxTicks = Math.ceil(maxSeconds / dt);
+    let tick = 0;
+    for (; tick < maxTicks; tick++) {
+      for (const u of units) updateUnit(u, dt);
+      resolveCollisions(units);
+      units = resolveCombat(units, dt);
+
+      for (const u of units) {
+        if (u.routed) (u.owner === 'P1' ? everRoutedA : everRoutedB).add(u.id);
+        if (u.lastStand) (u.owner === 'P1' ? everLastStandA : everLastStandB).add(u.id);
+      }
+
+      if (tick > 0 && tick % 200 === 0) {
+        const centroidB = this.armyCentroid('P2');
+        if (centroidB) this.issueAdvanceOrders('P1', centroidB);
       }
 
       const aliveA = units.some(u => u.owner === 'P1');

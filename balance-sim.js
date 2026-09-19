@@ -160,6 +160,33 @@ async function main() {
     }
   }
 
+  // 4b. Wpływ ataku z flanki/tyłu (kawaleria) — izolowany test: obrońcy
+  // NIERUCHOMI o stałym zwrocie (window.BalanceSim.runFlankBattle), kawaleria
+  // ładuje z czoła (0°) vs z tyłu (180°) tej samej wielkości armii. Cel:
+  // sprawdzić, czy bonus flankowania robi z kawalerii dominującą jednostkę.
+  console.log('\n=== 4b/4 Wpływ ataku z flanki/tyłu (kawaleria, 10 vs 10, obrońca nieruchomy) ===');
+  const FLANK_REPEATS = 30;
+  const flankScenarios = [
+    { defenderType: 'LIGHT_INFANTRY' },
+    { defenderType: 'HEAVY_INFANTRY' },
+    { defenderType: 'ARCHER' },
+  ];
+  const flankResults = [];
+  for (const { defenderType } of flankScenarios) {
+    for (const [label, approachAngleDeg] of [['CZOŁO (0°)', 0], ['TYŁ (180°)', 180]]) {
+      process.stdout.write(`  CAVALRY vs ${defenderType}, atak z ${label}... `);
+      const battles = [];
+      for (let i = 0; i < FLANK_REPEATS; i++) {
+        battles.push(await page.evaluate((cfg) => window.BalanceSim.runFlankBattle(cfg), {
+          defenderType, defenderCount: 10, attackerType: 'CAVALRY', attackerCount: 10, approachAngleDeg, maxSeconds: MAX_SECONDS,
+        }));
+      }
+      const s = summarize(battles);
+      flankResults.push({ defenderType, approach: label, ...s });
+      console.log(`kawaleria (A) ${pct(s.winRateA)} / obrońca (B) ${pct(s.winRateB)} / remis ${pct(s.drawRate)}`);
+    }
+  }
+
   // 4. Starcia mieszane
   console.log('\n=== 4/4 Starcia mieszane (piechota + wsparcie vs czysta piechota) ===');
   const mixedScenarios = [
@@ -239,6 +266,15 @@ async function main() {
   const overallLastStandRate = mean(equalCount.flatMap(r => [r.avgLastStandA / 10, r.avgLastStandB / 10]));
   console.log(`\nŚrednio po wszystkich starciach równolicznych: złamanie ${pct(overallRoutRate)}, Last Stand ${pct(overallLastStandRate)} jednostek startowego składu.`);
 
+  console.log('\n--- Wpływ ataku z flanki/tyłu na kawalerię (obrońca nieruchomy) ---');
+  for (const t of ['LIGHT_INFANTRY', 'HEAVY_INFANTRY', 'ARCHER']) {
+    const front = flankResults.find(r => r.defenderType === t && r.approach.startsWith('CZOŁO'));
+    const rear = flankResults.find(r => r.defenderType === t && r.approach.startsWith('TYŁ'));
+    const swing = rear.winRateA - front.winRateA;
+    const flag = rear.winRateA > 0.8 ? '  <== KAWALERIA MOŻE BYĆ ZA SILNA Z TYŁU' : '';
+    console.log(`CAVALRY vs ${t}: czoło ${pct(front.winRateA)} -> tył ${pct(rear.winRateA)} (różnica ${swing >= 0 ? '+' : ''}${(swing * 100).toFixed(1)}pp)${flag}`);
+  }
+
   console.log('\n--- Starcia mieszane ---');
   for (const r of mixedResults) {
     console.log(`${r.name}: mieszana ${pct(r.winRateA)} / czysta piechota ${pct(r.winRateB)} / remis ${pct(r.drawRate)} / śr. obrażenia na jednostkę: mieszana ${r.avgDmgPerUnitA.toFixed(1)}, piechota ${r.avgDmgPerUnitB.toFixed(1)}`);
@@ -248,7 +284,7 @@ async function main() {
   console.log(consoleErrors.length ? JSON.stringify(consoleErrors) : '(brak)');
 
   console.log('\n--- Surowe dane (równoliczne, równokosztowe, mieszane) dla dalszej analizy ---');
-  console.log(JSON.stringify({ equalCount, equalCost, terrainResults, mixedResults }, null, 2));
+  console.log(JSON.stringify({ equalCount, equalCost, terrainResults, mixedResults, flankResults }, null, 2));
 }
 
 main().catch((err) => { console.error(err); process.exit(1); });
