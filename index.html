@@ -61,6 +61,16 @@
     background: rgba(0,0,0,0.8); padding: 6px 16px; border-radius: 4px;
     pointer-events: none;
   }
+  #gameOverOverlay {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.9); color: #eee; font: 14px monospace; z-index: 100;
+  }
+  #gameOverOverlay > div { background: rgba(20,20,20,0.9); padding: 24px 32px; border-radius: 6px; border: 1px solid #555; text-align: center; }
+  #gameOverOverlay h2 { color: #ffcc66; margin: 0 0 12px; }
+  #gameOverOverlay table { margin: 12px auto 0; border-collapse: collapse; }
+  #gameOverOverlay td, #gameOverOverlay th { padding: 3px 12px; text-align: right; }
+  #gameOverOverlay th { color: #ffcc66; }
+  #gameOverOverlay td:first-child, #gameOverOverlay th:first-child { text-align: left; }
 </style>
 </head>
 <body>
@@ -91,6 +101,10 @@
   <h4>Ikony typów jednostek</h4>
   Łuk = łucznik, lufa+koło = działo, dzida = piechota lekka, dzida+tarcza = piechota ciężka, grot = kawaleria, kwadrat = konwój
 
+  <h4>Miasta</h4>
+  <div class="row"><span class="swatch" style="background:#f4c430; opacity:0.5;"></span>Delikatny okrąg w kolorze właściciela — strefa obronna: -25% obrażeń i wolniejsza utrata morale dla obrońcy, obecność obrońcy blokuje przejęcie</div>
+  <div class="row"><span class="swatch" style="background:#ff5533;"></span>Pasek nad miastem w kolorze atakującego — postęp przejmowania (okupacja bez obrońcy w strefie)</div>
+
   <h4>Teren</h4>
   <div class="row"><span class="swatch" style="background:#a8c766;"></span>Pole — bez modyfikatorów, teren bazowy</div>
   <div class="row"><span class="swatch" style="background:#3f6b35;"></span>Las — osłabia dystansowych i kawalerię, przyspiesza lekką piechotę</div>
@@ -99,8 +113,9 @@
   <div class="row"><span class="swatch" style="background:#c2a76c;"></span>Wzgórza — spowolnienie zależne od typu, dystansowi +40% zasięgu</div>
 </div>
 <div id="unitStatsTooltip"></div>
-<div id="goldPanel">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)</div>
+<div id="goldPanel">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)<span id="lastCityBadge" style="display:none; color:#ffcc66;"><br>⚠ OSTATNIE MIASTO — wzmocniony dochód</span></div>
 <div id="alertBanner" style="display:none;"></div>
+<div id="gameOverOverlay" style="display:none;"></div>
 <div id="cityPanel" style="display:none;">
   <div id="cityPanelTitle"></div>
   <div id="cityUpgradeSection"></div>
@@ -439,15 +454,16 @@ const MAP_COLS = MAP_DATA[0].length;
 const MAP_ROWS = MAP_DATA.length;
 
 // ============================================================
-// EKONOMIA — zakres celowo wąski: miasta, szlaki handlowe, złoto,
-// produkcja. Bez bandytów, przejmowania miast, terytorium i limitów
-// zaopatrzenia (patrz CLAUDE.md, sekcja Kolejność budowy). Gospodarka
-// jest wyłącznie przychodowa — jednostki nie kosztują nic na sekundę,
-// jedyny wydatek to jednorazowy koszt produkcji.
+// EKONOMIA — miasta, szlaki handlowe, złoto, produkcja, przejmowanie
+// miast (okupacja czasowa, patrz CITY_CAPTURE_*/updateCityCaptures).
+// Bez bandytów, pełnego terytorium i limitów zaopatrzenia (patrz
+// CLAUDE.md, sekcja Kolejność budowy). Gospodarka jest wyłącznie
+// przychodowa — jednostki nie kosztują nic na sekundę, jedyny wydatek
+// to jednorazowy koszt produkcji.
 // ============================================================
 const CITY_SIZE_TILES = 1; // miasto zajmuje dokładnie jeden kafel
 // Zahardkodowane pozycje (jak MAP_DATA) — (col,row) to kafel miasta.
-// Własność stała na tym etapie, bez przejmowania.
+// Własność ZMIENNA — patrz CITY_CAPTURE_*/updateCityCaptures.
 const CITIES = [
   { id: 'p1_a', col: 0,  row: 21, owner: 'P1' },
   { id: 'p1_b', col: 8,  row: 21, owner: 'P1' },
@@ -456,11 +472,22 @@ const CITIES = [
   { id: 'p2_b', col: 35, row: 21, owner: 'P2' },
   { id: 'p2_c', col: 35, row: 0,  owner: 'P2' },
 ];
-for (const city of CITIES) { city.queue = []; city.level = 1; city.upgradeRemaining = 0; city.timeSinceLastConvoy = 0; } // queue: {type, remainingTime}; level 1-5, upgradeRemaining: s do końca trwającego ulepszenia (0 = brak); timeSinceLastConvoy: patrz CITY_LEVELS/updateTradeRoutes — tyka TYLKO gdy miasto ma ≥1 szlak
+for (const city of CITIES) { city.queue = []; city.level = 1; city.upgradeRemaining = 0; city.timeSinceLastConvoy = 0; city.siegeProgress = 0; city.besiegingOwner = null; } // queue: {type, remainingTime}; level 1-5, upgradeRemaining: s do końca trwającego ulepszenia (0 = brak); timeSinceLastConvoy: patrz CITY_LEVELS/updateTradeRoutes — tyka TYLKO gdy miasto ma ≥1 szlak; siegeProgress/besiegingOwner: patrz updateCityCaptures
 
 const STARTING_GOLD = 250; // starcza na kilka jednostek na start
 const CITY_BASE_INCOME_PER_SECOND = 0.15; // mały, stały dochód z posiadanego miasta — trickle, szlaki handlowe są głównym źródłem zysku
 const CITY_QUEUE_MAX_LENGTH = 5; // maks. liczba jednostek w kolejce produkcji jednego miasta naraz
+
+// Przejmowanie miast — okupacja czasowa (patrz updateCityCaptures), NIE
+// mylić z CONVOY_CAPTURE_* niżej (osobny, wcześniejszy mechanizm —
+// bandyckie przejmowanie KONWOJÓW, nie miast).
+const CITY_ZONE_RADIUS = 45; // px — strefa obronna/blokady przejęcia wokół miasta: ~4x jednostka, ~1.4 kafla, wyraźnie mniejsza niż odległość między miastami (256px+)
+const CITY_CAPTURE_TIME = 12; // s — czas przejęcia z DOKŁADNIE jednym atakującym w strefie, zero obrońców
+const CITY_CAPTURE_REGRESS_PER_SECOND = 2; // s postępu odejmowane/s, gdy obrońca wróci do strefy LUB atakujący ją opuści — stopniowo, nie od razu
+const CITY_CAPTURE_ATTACKER_BONUS_PER_UNIT = 0.3; // +30% tempa oblężenia za każdą kolejną jednostkę atakującą w strefie ponad pierwszą
+const CITY_CAPTURE_MAX_ATTACKER_MULTIPLIER = 3; // rozsądny limit — masowe stado nie przejmuje miasta błyskawicznie
+const CITY_DEFENSE_REDUCTION_RATIO = 0.25; // obrońcy WE WŁASNEJ strefie: -25% obrażeń otrzymanych, -25% straty morale — obrona ma być realnie łatwiejsza niż zdobycie
+const CITY_LAST_CITY_INCOME_PER_SECOND = 1.5; // "ostatnia szansa": zastępuje płaski przychód, gdy gracz ma DOKŁADNIE jedno miasto
 
 // Szlaki handlowe — trwałe trasy rysowane przez gracza (patrz gest
 // TRADE_ROUTE w mousedown/mousemove/mouseup). To MIASTO, nie szlak, jest
@@ -499,6 +526,27 @@ const CONVOY_CAPTURE_REWARD_RATIO = 0.55; // ułamek wartości, jaki przy dostaw
 
 function cityCenter(city) {
   return { x: (city.col + CITY_SIZE_TILES / 2) * TILE_SIZE, y: (city.row + CITY_SIZE_TILES / 2) * TILE_SIZE };
+}
+
+// Czy jednostka broni WŁASNEGO miasta (w CITY_ZONE_RADIUS od miasta z
+// tym samym owner) — używane zarówno do bonusu obronnego (obrażenia,
+// morale — patrz cityDefenseMultiplier/updateMorale), jak i do blokady
+// przejmowania (patrz updateCityCaptures). Atakujący w TEJ SAMEJ strefie
+// nigdy nie dostaje żadnej ulgi — funkcja patrzy WYŁĄCZNIE na miasta
+// należące do ownera jednostki.
+function isDefendingOwnCityZone(unit) {
+  for (const c of CITIES) {
+    if (c.owner !== unit.owner) continue;
+    const center = cityCenter(c);
+    if (Math.hypot(unit.x - center.x, unit.y - center.y) <= CITY_ZONE_RADIUS) return true;
+  }
+  return false;
+}
+// Mnożnik obrażeń OTRZYMYWANYCH przez cel — obrona ma być realnie
+// łatwiejsza niż zdobycie, żeby pojedyncza jednostka nie mogła przemknąć
+// przez front i zająć niebronionego zaplecza.
+function cityDefenseMultiplier(unit) {
+  return isDefendingOwnCityZone(unit) ? (1 - CITY_DEFENSE_REDUCTION_RATIO) : 1;
 }
 
 // ============================================================
@@ -576,6 +624,17 @@ let gold = { P1: STARTING_GOLD, P2: STARTING_GOLD };
 let goldRate = { P1: 0, P2: 0 }; // wygładzony (EMA) wskaźnik do UI — jedyne realne źródło (konwoje) jest skokowe, nie ciągłe
 let selectedCity = null;
 
+// Statystyki meczu — podstawa telemetrii na przyszłość (patrz CLAUDE.md,
+// sekcja Priorytety produktowe). Aktualizowane na bieżąco (nie liczone
+// dopiero na końcu), patrz spawnUnit/resolveCombat/updateEconomy/
+// updateConvoys/updateCityCaptures.
+let stats = {
+  P1: { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 },
+  P2: { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 },
+};
+const matchStartTime = performance.now();
+let gameOver = false;
+
 // Szlaki handlowe — patrz sekcja CONFIG (TRADE_ROUTE_*, CITY_LEVELS) i
 // gest w mousedown/mousemove/mouseup, updateTradeRoutes/spawnCityConvoy.
 // Czysto geometryczne — licznik wysyłki żyje na mieście (city.timeSinceLastConvoy), nie tutaj.
@@ -587,8 +646,8 @@ let dragStartOwnCity = null; // własne miasto, na którym zaczęto PPM przecią
 // Baner alertów (u góry ekranu) — komunikaty widoczne ZAWSZE, niezależnie
 // od otwartego panelu miasta (np. przejęcie/utrata konwoju musi być
 // widoczna natychmiast, patrz updateConvoyCaptures).
-let alertMessage = null;
-let alertMessageUntil = 0;
+let alerts = []; // {text, until} — kolejka, NIE pojedynczy skalar: "miasto atakowane" i "miasto stracone" mogą wystąpić blisko siebie w czasie
+const ALERT_MAX_STACKED = 3; // limit jednocześnie wyświetlanych linii, żeby baner nie rozrósł się bez końca
 
 function spawnUnit(type, col, row, owner) {
   const center = tileToWorld(col, row);
@@ -622,6 +681,9 @@ function spawnUnit(type, col, row, owner) {
     engagementDuration: 0, // s trwania AKTUALNEGO zaangażowania — im dłużej trwa, tym bardziej zanika bonus za flankowanie/tył (patrz flankBonusFor)
     chaseAnchorX: null, chaseAnchorY: null, // pozycja w momencie nawiązania AKTUALNEGO zaangażowania — limit dystansu "napierania"/pościgu, patrz MAX_CHASE_DISTANCE_PX w resolveCombat
   });
+  // Statystyki meczu — konwój to automat ekonomii, nie "zbudowana
+  // jednostka" w sensie gracza, pomijany.
+  if (type !== 'CONVOY' && stats[owner]) stats[owner].unitsBuilt++;
 }
 
 // Dwie armie po przeciwnych krańcach mapy, na sprawdzonym przechodnim
@@ -1128,6 +1190,7 @@ function pointInPolygon(point, polygon) {
 const PRODUCIBLE_TYPES = ['ARCHER', 'CANNON', 'LIGHT_INFANTRY', 'HEAVY_INFANTRY', 'CAVALRY'];
 const goldAmountEl = document.getElementById('goldAmount');
 const goldRateTextEl = document.getElementById('goldRateText');
+const lastCityBadgeEl = document.getElementById('lastCityBadge');
 const cityPanelEl = document.getElementById('cityPanel');
 const cityPanelTitleEl = document.getElementById('cityPanelTitle');
 const cityUpgradeSectionEl = document.getElementById('cityUpgradeSection');
@@ -1138,6 +1201,7 @@ const cityProductionStatusEl = document.getElementById('cityProductionStatus');
 const cityRoutesListEl = document.getElementById('cityRoutesList');
 const closeCityPanelBtnEl = document.getElementById('closeCityPanelBtn');
 const alertBannerEl = document.getElementById('alertBanner');
+const gameOverOverlayEl = document.getElementById('gameOverOverlay');
 const legendToggleBtnEl = document.getElementById('legendToggleBtn');
 const legendPanelEl = document.getElementById('legendPanel');
 const unitStatsTooltipEl = document.getElementById('unitStatsTooltip');
@@ -1184,15 +1248,19 @@ function hideUnitStatsTooltip() {
 }
 
 // Baner alertów u góry ekranu — widoczny ZAWSZE (nie tylko przy otwartym
-// panelu miasta), np. przy przejęciu/utracie konwoju (patrz
-// updateConvoyCaptures) albo nieudanym wyznaczeniu szlaku.
-function showAlert(text) {
-  alertMessage = text;
-  alertMessageUntil = performance.now() + 3000;
+// panelu miasta), np. przy przejęciu/utracie konwoju/miasta (patrz
+// updateConvoyCaptures/updateCityCaptures) albo nieudanym wyznaczeniu
+// szlaku. Kolejka, nie pojedynczy komunikat — dwa zdarzenia (np. "miasto
+// atakowane" i chwilę później "miasto stracone") nie mogą się nawzajem
+// kasować.
+function showAlert(text, durationMs = 3000) {
+  alerts.push({ text, until: performance.now() + durationMs });
 }
 function updateAlertBanner() {
-  if (performance.now() < alertMessageUntil) {
-    alertBannerEl.textContent = alertMessage;
+  const now = performance.now();
+  alerts = alerts.filter(a => now < a.until);
+  if (alerts.length > 0) {
+    alertBannerEl.innerHTML = alerts.slice(-ALERT_MAX_STACKED).map(a => a.text).join('<br>');
     alertBannerEl.style.display = 'block';
   } else {
     alertBannerEl.style.display = 'none';
@@ -1203,6 +1271,7 @@ function updateGoldPanel() {
   goldAmountEl.textContent = Math.floor(gold[OWNED_PLAYER]);
   const rate = goldRate[OWNED_PLAYER];
   goldRateTextEl.textContent = (rate >= 0 ? '+' : '') + rate.toFixed(1);
+  lastCityBadgeEl.style.display = CITIES.filter(c => c.owner === OWNED_PLAYER).length === 1 ? 'inline' : 'none';
   if (selectedCity) updateCityPanelLive(); // trzyma kolejkę/koszty aktualne, gdy panel jest otwarty
   updateAlertBanner();
 }
@@ -1896,7 +1965,7 @@ function updateProjectiles(dt, now, pendingDamage, hitCategoryOf, rangedHitAttac
 
       // bonus za dobijanie: sprawdzany na aktualnym hp z tej klatki,
       // przed jakimkolwiek odjęciem — zgodne z zasadą KRYTYCZNE
-      let dmg = p.damage * flankBonusFor(category, p.targetUnit.engagementDuration, p.targetUnit.type);
+      let dmg = p.damage * flankBonusFor(category, p.targetUnit.engagementDuration, p.targetUnit.type) * cityDefenseMultiplier(p.targetUnit);
       if (p.targetUnit.hp < UNIT_TYPES[p.targetUnit.type].maxHp * LOW_HP_THRESHOLD) {
         dmg *= LOW_HP_DAMAGE_BONUS;
       }
@@ -2134,7 +2203,9 @@ function updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHit
     const dampingFactor = 1 - Math.min(MORALE_ALLY_PRESENCE_MAX_DAMPING, nearbyAlliesOf.get(u) * MORALE_ALLY_PRESENCE_DAMPING_PER_ALLY);
     // dystansowi wciągnięci w zwarcie łamią się dużo szybciej
     const meleeLockPenalty = (cfg.ranged && u.inMeleeLock) ? MORALE_MELEE_LOCK_LOSS_MULTIPLIER : 1;
-    const dampedCombatLoss = (combatLoss.get(u) || 0) * dampingFactor * meleeLockPenalty;
+    // obrońca WE WŁASNEJ strefie miasta traci morale wolniej — patrz cityDefenseMultiplier
+    const cityDefenseFactor = isDefendingOwnCityZone(u) ? (1 - CITY_DEFENSE_REDUCTION_RATIO) : 1;
+    const dampedCombatLoss = (combatLoss.get(u) || 0) * dampingFactor * meleeLockPenalty * cityDefenseFactor;
     const delta = dampedCombatLoss + (otherDelta.get(u) || 0);
     u.morale = Math.max(0, Math.min(MORALE_MAX, u.morale + delta));
 
@@ -2313,7 +2384,7 @@ function resolveCombat(allUnits, dt) {
       // stąd bonus flankowania).
       const attackDirectionAngle = Math.atan2(attacker.y - target.y, attacker.x - target.x);
       const category = hitCategory(target.facingAngle, attackDirectionAngle);
-      let damage = cfg.damagePerSecond * dt * dmgMultiplier * pushDamageMultiplier(attacker, target) * flankBonusFor(category, target.engagementDuration, target.type);
+      let damage = cfg.damagePerSecond * dt * dmgMultiplier * pushDamageMultiplier(attacker, target) * flankBonusFor(category, target.engagementDuration, target.type) * cityDefenseMultiplier(target);
       if (attacker.lastStand) damage *= LAST_STAND_DAMAGE_BONUS_MULTIPLIER;
       if (target.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
       pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
@@ -2341,7 +2412,7 @@ function resolveCombat(allUnits, dt) {
       attackersThisFrame.add(attacker);
       const attackDirectionAngle = Math.atan2(attacker.y - meleeEnemy.y, attacker.x - meleeEnemy.x);
       const category = hitCategory(meleeEnemy.facingAngle, attackDirectionAngle);
-      let damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, meleeEnemy) * flankBonusFor(category, meleeEnemy.engagementDuration, meleeEnemy.type);
+      let damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, meleeEnemy) * flankBonusFor(category, meleeEnemy.engagementDuration, meleeEnemy.type) * cityDefenseMultiplier(meleeEnemy);
       if (attacker.lastStand) damage *= LAST_STAND_DAMAGE_BONUS_MULTIPLIER;
       if (meleeEnemy.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
       pendingDamage.set(meleeEnemy, (pendingDamage.get(meleeEnemy) || 0) + damage);
@@ -2457,6 +2528,7 @@ function resolveCombat(allUnits, dt) {
     if (u.hp <= 0) {
       deathEffects.push({ x: u.x, y: u.y, color: PLAYERS[u.owner].color, startTime: now });
       dyingUnits.push({ type: u.type, owner: u.owner, x: u.x, y: u.y, startTime: now });
+      if (stats[u.owner]) stats[u.owner].unitsLost++;
       continue;
     }
     if (u.hp < UNIT_TYPES[u.type].maxHp && u.timeSinceCombat >= OUT_OF_COMBAT_DELAY) {
@@ -2540,6 +2612,7 @@ function updateConvoys(now) {
     if (Math.hypot(u.x - center.x, u.y - center.y) <= CONVOY_ARRIVAL_RADIUS) {
       const payout = u.captureCount > 0 ? u.goldValue * CONVOY_CAPTURE_REWARD_RATIO : u.goldValue;
       gold[u.owner] += payout;
+      stats[u.owner].goldEarned += payout;
       convoyArrivalEffects.push({ x: center.x, y: center.y, startTime: now });
       arrived.add(u.id);
     }
@@ -2616,6 +2689,118 @@ function updateConvoyCaptures(dt, now) {
   }
 }
 
+// Przejmowanie miast — okupacja czasowa (patrz CITY_CAPTURE_*). NIE mylić
+// z updateConvoyCaptures/CONVOY_CAPTURE_* wyżej — osobny, wcześniejszy
+// mechanizm dla konwojów. Licznik (city.siegeProgress) rusza WYŁĄCZNIE
+// gdy w CITY_ZONE_RADIUS nie ma ani jednego obrońcy i jest DOKŁADNIE
+// jeden przeciwny właściciel z jednostkami w strefie (jednoznaczny
+// besiegingOwner); obecność obrońcy albo brak/niejednoznaczność
+// atakujących natychmiast wstrzymuje i stopniowo (nie od razu) cofa
+// postęp. Więcej atakujących przyspiesza, do rozsądnego limitu.
+function updateCityCaptures(dt, now) {
+  for (const city of CITIES) {
+    const center = cityCenter(city);
+    let defenderCount = 0;
+    const attackersByOwner = new Map(); // owner -> liczba jednostek w strefie
+    for (const u of units) {
+      if (u.type === 'CONVOY' || u.hp <= 0 || u.routed) continue;
+      if (Math.hypot(u.x - center.x, u.y - center.y) > CITY_ZONE_RADIUS) continue;
+      if (u.owner === city.owner) { defenderCount++; continue; }
+      attackersByOwner.set(u.owner, (attackersByOwner.get(u.owner) || 0) + 1);
+    }
+
+    const activeSiege = defenderCount === 0 && attackersByOwner.size === 1
+      ? [...attackersByOwner.entries()][0]
+      : null;
+
+    if (activeSiege) {
+      const [besiegerOwner, count] = activeSiege;
+      if (city.besiegingOwner !== besiegerOwner) {
+        city.besiegingOwner = besiegerOwner;
+        city.siegeProgress = 0; // nowe oblężenie (inny atakujący) — nie kontynuuje poprzedniego
+        if (city.owner === OWNED_PLAYER) {
+          showAlert(`Miasto ${city.id} jest atakowane!`);
+          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: PLAYERS[besiegerOwner].color });
+        }
+      }
+      const multiplier = Math.min(1 + (count - 1) * CITY_CAPTURE_ATTACKER_BONUS_PER_UNIT, CITY_CAPTURE_MAX_ATTACKER_MULTIPLIER);
+      city.siegeProgress += dt * multiplier;
+
+      if (city.siegeProgress >= CITY_CAPTURE_TIME) {
+        const oldOwner = city.owner;
+        city.owner = besiegerOwner; // poziom miasta NIE resetowany
+        city.siegeProgress = 0;
+        city.besiegingOwner = null;
+
+        // Szlaki poprzedniego właściciela dotykające tego miasta znikają —
+        // nowy właściciel musi wyznaczyć własne.
+        tradeRoutes = tradeRoutes.filter(r => !((r.cityAId === city.id || r.cityBId === city.id) && r.owner === oldOwner));
+
+        // Konwoje w drodze do przejętego miasta -> najbliższe INNE miasto
+        // tego samego właściciela; brak takiego -> przepadają (ten sam
+        // wzorzec przekierowania co updateConvoyCaptures wyżej).
+        for (const u of units) {
+          if (u.type !== 'CONVOY' || u.targetCityId !== city.id) continue;
+          let nearestCity = null, nearestCityDist = Infinity;
+          for (const c of CITIES) {
+            if (c.owner !== u.owner) continue;
+            const d = Math.hypot(cityCenter(c).x - u.x, cityCenter(c).y - u.y);
+            if (d < nearestCityDist) { nearestCity = c; nearestCityDist = d; }
+          }
+          if (nearestCity) {
+            u.targetCityId = nearestCity.id;
+            const dest = cityCenter(nearestCity);
+            const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(dest.x, dest.y), dest);
+            u.path = rawPath !== null ? finalizePath(u, rawPath) : [];
+          } else {
+            units = units.filter(x => x.id !== u.id);
+          }
+        }
+
+        stats[city.owner].citiesCaptured++;
+        if (oldOwner === OWNED_PLAYER) {
+          showAlert(`Utracono miasto ${city.id}!`);
+          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: '#ff2222' });
+        }
+        if (city.owner === OWNED_PLAYER) {
+          showAlert(`Zdobyto miasto ${city.id}!`);
+          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: '#33ff33' });
+        }
+
+        if (CITIES.filter(c => c.owner === oldOwner).length === 0) {
+          triggerGameOver(city.owner, oldOwner);
+          return; // gra zakończona — reszta miast w tej klatce nieistotna
+        }
+      }
+    } else if (city.siegeProgress > 0) {
+      city.siegeProgress = Math.max(0, city.siegeProgress - CITY_CAPTURE_REGRESS_PER_SECOND * dt);
+      if (city.siegeProgress === 0) city.besiegingOwner = null;
+    }
+  }
+}
+
+// Zamraża symulację (gameLoop przestaje ją aktualizować, ale dorysowuje
+// jeszcze tę klatkę pod overlayem) i pokazuje ekran końca gry ze
+// statystykami meczu — podstawa telemetrii na przyszłość (patrz CLAUDE.md).
+function triggerGameOver(winner, loser) {
+  gameOver = true;
+  const durationSeconds = (performance.now() - matchStartTime) / 1000;
+  gameOverOverlayEl.innerHTML = `
+    <div>
+      <h2>Zwycięstwo: ${winner}</h2>
+      <div>Czas trwania meczu: ${durationSeconds.toFixed(0)}s</div>
+      <table>
+        <tr><th></th><th>${winner}</th><th>${loser}</th></tr>
+        <tr><td>Zbudowane jednostki</td><td>${stats[winner].unitsBuilt}</td><td>${stats[loser].unitsBuilt}</td></tr>
+        <tr><td>Stracone jednostki</td><td>${stats[winner].unitsLost}</td><td>${stats[loser].unitsLost}</td></tr>
+        <tr><td>Przejęte miasta</td><td>${stats[winner].citiesCaptured}</td><td>${stats[loser].citiesCaptured}</td></tr>
+        <tr><td>Zarobione złoto</td><td>${Math.round(stats[winner].goldEarned)}</td><td>${Math.round(stats[loser].goldEarned)}</td></tr>
+      </table>
+    </div>
+  `;
+  gameOverOverlayEl.style.display = 'flex';
+}
+
 // Dochód bazowy z posiadanych miast, tempo dochodu do UI, produkcja
 // jednostek w kolejkach miast. Pomijana w trybie headless (BalanceSim nie
 // spawnuje miast/gold). Gospodarka jest wyłącznie przychodowa — jednostki
@@ -2623,7 +2808,13 @@ function updateConvoyCaptures(dt, now) {
 function updateEconomy(dt) {
   for (const owner of ['P1', 'P2']) {
     const before = gold[owner];
-    gold[owner] += CITIES.filter(c => c.owner === owner).length * CITY_BASE_INCOME_PER_SECOND * dt;
+    // Mechanizm ostatniej szansy: dokładnie jedno miasto -> płaski dochód
+    // zastąpiony wzmocnionym (CITY_LAST_CITY_INCOME_PER_SECOND), znika
+    // natychmiast po odzyskaniu drugiego miasta.
+    const ownedCities = CITIES.filter(c => c.owner === owner).length;
+    const income = ownedCities === 1 ? CITY_LAST_CITY_INCOME_PER_SECOND : ownedCities * CITY_BASE_INCOME_PER_SECOND;
+    gold[owner] += income * dt;
+    stats[owner].goldEarned += income * dt;
     const rate = (gold[owner] - before) / dt;
     goldRate[owner] = goldRate[owner] * 0.95 + rate * 0.05;
   }
@@ -2893,6 +3084,41 @@ function drawCaptureAlertEffects(now) {
   }
 }
 
+// Strefa obronna/blokady przejęcia (patrz CITY_ZONE_RADIUS/
+// updateCityCaptures) — delikatna, w kolorze właściciela, żeby było
+// widać zasięg bez zasłaniania mapy. Rysowana ZAWSZE dla obu stron,
+// pod markerem miasta (kolejność wywołań w gameLoop).
+function drawCityDefenseZones() {
+  for (const city of CITIES) {
+    const c = cityCenter(city);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, CITY_ZONE_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = PLAYERS[city.owner].color;
+    ctx.globalAlpha = 0.08;
+    ctx.fill();
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = PLAYERS[city.owner].color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Pasek postępu oblężenia (patrz updateCityCaptures) — ten sam layout co
+// drawCaptureBar, ale NAD markerem (kropki poziomu zajmują miejsce pod
+// spodem) i w kolorze ATAKUJĄCEGO, żeby było od razu widać KTO atakuje.
+// Widoczny bezwarunkowo dla obu stron (drawCities rysuje wszystkie miasta).
+function drawCitySiegeBar(city, c) {
+  if (!city.siegeProgress || city.siegeProgress <= 0 || !city.besiegingOwner) return;
+  const w = 24, h = 4;
+  const x = c.x - w / 2, y = c.y - CITY_MARKER_RADIUS - 10;
+  const ratio = Math.min(1, city.siegeProgress / CITY_CAPTURE_TIME);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = PLAYERS[city.besiegingOwner].color;
+  ctx.fillRect(x, y, w * ratio, h);
+}
+
 // Mały, wyraźny punkt (nie kwadrat na cały kafel) — okrąg w żółtym
 // kolorze z grubą obwódką w kolorze właściciela i drobną kropką w
 // środku, żeby miasto czytało się jak punkt na mapie sztabowej, nie jak
@@ -2925,6 +3151,8 @@ function drawCities() {
       ctx.fillStyle = '#ffffff';
       ctx.fill();
     }
+
+    drawCitySiegeBar(city, c);
 
     if (selectedCity === city) {
       ctx.beginPath();
@@ -3484,6 +3712,8 @@ function drawFrontTicks(pts, color) {
 // ============================================================
 let lastTime = performance.now();
 function gameLoop(now) {
+  if (gameOver) return; // mecz zakończony — ostatnia klatka zamrożona pod #gameOverOverlay, pętla się nie wznawia
+
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
@@ -3494,6 +3724,7 @@ function gameLoop(now) {
   updateTradeRoutes(dt);
   updateConvoys(now);
   updateConvoyCaptures(dt, now);
+  updateCityCaptures(dt, now);
   updateGoldPanel();
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -3502,6 +3733,7 @@ function gameLoop(now) {
   ctx.scale(viewScale, viewScale);
   drawMap();
   drawTradeRoutes();
+  drawCityDefenseZones();
   drawCities();
   drawUnits(now);
   drawDyingUnits(now);
@@ -3779,6 +4011,64 @@ window.BalanceSim = {
       defenderDied: !defenderAlive,
       durationSeconds: tick * dt,
       timedOut: tick >= maxTicks,
+    };
+  },
+
+  // Pomiar zdobycia miasta (patrz updateCityCaptures) — atakujący (P1)
+  // rozstawieni w strefie realnego miasta P2 ('p2_a'), opcjonalnie razem
+  // z obrońcami (P2, defenderCount=0 -> miasto niebronione). Woła
+  // DOKŁADNIE te same funkcje co gameLoop (updateUnit/resolveCollisions/
+  // resolveCombat/updateCityCaptures), więc bonus obronny i tempo
+  // oblężenia liczą się dokładnie jak w prawdziwej grze.
+  runCityCaptureScenario({ attackerType, attackerCount, defenderType, defenderCount = 0, maxSeconds = 300 }) {
+    this.resetWorld();
+    const city = CITIES.find(c => c.id === 'p2_a');
+    city.owner = 'P2';
+    city.siegeProgress = 0;
+    city.besiegingOwner = null;
+    const center = cityCenter(city);
+    // Ciasny klaster (promień 6px, znacznie mniejszy niż attackRange=20)
+    // dla OBU stron wokół tego samego środka — gwarantuje, że KAŻDY
+    // atakujący jest w zasięgu KAŻDEGO obrońcy niezależnie od liczebności
+    // (przy różnych promieniach dla obu grup część jednostek potrafiła
+    // wypaść poza wzajemny zasięg przy małej liczbie obrońców, fałszując
+    // pomiar — więc obie grupy dostają ten sam, ciasny promień).
+    for (let i = 0; i < attackerCount; i++) {
+      spawnUnit(attackerType, city.col, city.row, 'P1');
+      const u = units[units.length - 1];
+      const angle = (i / attackerCount) * Math.PI * 2;
+      u.x = center.x + Math.cos(angle) * 6;
+      u.y = center.y + Math.sin(angle) * 6;
+    }
+    for (let i = 0; i < defenderCount; i++) {
+      spawnUnit(defenderType, city.col, city.row, 'P2');
+      const u = units[units.length - 1];
+      const angle = (i / defenderCount) * Math.PI * 2 + Math.PI / defenderCount;
+      u.x = center.x + Math.cos(angle) * 6;
+      u.y = center.y + Math.sin(angle) * 6;
+    }
+
+    const startAttackers = units.filter(u => u.owner === 'P1').length;
+    const dt = 0.05;
+    const maxTicks = Math.ceil(maxSeconds / dt);
+    let tick = 0;
+    let captured = false;
+    for (; tick < maxTicks; tick++) {
+      for (const u of units) updateUnit(u, dt);
+      resolveCollisions(units);
+      units = resolveCombat(units, dt);
+      updateCityCaptures(dt, tick * dt);
+      if (city.owner === 'P1') { captured = true; tick++; break; }
+      if (!units.some(u => u.owner === 'P1' && u.hp > 0)) break; // wszyscy atakujący pobici — obrona utrzymana
+    }
+    const survivingAttackers = units.filter(u => u.owner === 'P1' && u.hp > 0).length;
+    return {
+      captured,
+      durationSeconds: tick * dt,
+      timedOut: tick >= maxTicks,
+      startAttackers,
+      survivingAttackers,
+      attackerLosses: startAttackers - survivingAttackers,
     };
   },
 };
