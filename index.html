@@ -481,7 +481,7 @@ const CITY_QUEUE_MAX_LENGTH = 5; // maks. liczba jednostek w kolejce produkcji j
 // Przejmowanie miast — okupacja czasowa (patrz updateCityCaptures), NIE
 // mylić z CONVOY_CAPTURE_* niżej (osobny, wcześniejszy mechanizm —
 // bandyckie przejmowanie KONWOJÓW, nie miast).
-const CITY_ZONE_RADIUS = 45; // px — strefa obronna/blokady przejęcia wokół miasta: ~4x jednostka, ~1.4 kafla, wyraźnie mniejsza niż odległość między miastami (256px+)
+const CITY_ZONE_RADIUS = 35; // px — strefa obronna/blokady przejęcia/leczenia wokół miasta (obniżone z 45 — nie ma boostować aż tylu jednostek naraz), ~3x jednostka, ~1.1 kafla, wyraźnie mniejsza niż odległość między miastami (256px+)
 const CITY_CAPTURE_TIME = 12; // s — czas przejęcia z DOKŁADNIE jednym atakującym w strefie, zero obrońców
 const CITY_CAPTURE_REGRESS_PER_SECOND = 2; // s postępu odejmowane/s, gdy obrońca wróci do strefy LUB atakujący ją opuści — stopniowo, nie od razu
 const CITY_CAPTURE_ATTACKER_BONUS_PER_UNIT = 0.3; // +30% tempa oblężenia za każdą kolejną jednostkę atakującą w strefie ponad pierwszą
@@ -547,6 +547,18 @@ function isDefendingOwnCityZone(unit) {
 // przez front i zająć niebronionego zaplecza.
 function cityDefenseMultiplier(unit) {
   return isDefendingOwnCityZone(unit) ? (1 - CITY_DEFENSE_REDUCTION_RATIO) : 1;
+}
+
+// Miejsce WYSTARCZAJĄCE do regeneracji HP — wyłącznie własna strefa
+// miasta (wymusza rotację oddziałów: uszkodzone trzeba wycofać do
+// miasta, świeże zajmują ich miejsce w linii) i nie woda. NIE sprawdza
+// timeSinceCombat/OUT_OF_COMBAT_DELAY — to osobny warunek czasowy,
+// sprawdzany przez wywołujących (patrz resolveCombat/drawHpBar).
+function canRegenerateHere(unit) {
+  if (!isDefendingOwnCityZone(unit)) return false;
+  const tile = worldToTile(unit.x, unit.y);
+  const terrain = terrainAt(tile.col, tile.row);
+  return !terrain || terrain.name !== 'WATER';
 }
 
 // ============================================================
@@ -1288,13 +1300,7 @@ function buildCityPanelButtons(city) {
     const cfg = UNIT_TYPES[type];
     const btn = document.createElement('button');
     btn.dataset.type = type;
-    btn.onclick = () => {
-      if (city.queue.length >= CITY_QUEUE_MAX_LENGTH) { showAlert('Kolejka produkcji pełna'); return; }
-      if (gold[city.owner] < cfg.cost) { showAlert(`Za mało złota (potrzeba ${cfg.cost}, masz ${Math.floor(gold[city.owner])})`); return; }
-      gold[city.owner] -= cfg.cost;
-      city.queue.push({ type, remainingTime: cfg.buildTime });
-      updateCityPanelLive();
-    };
+    btn.onclick = () => { queueProduction(city, type); };
     btn.addEventListener('mouseenter', () => showUnitStatsTooltip(type));
     btn.addEventListener('mouseleave', hideUnitStatsTooltip);
     cityBuildButtonsEl.appendChild(btn);
@@ -1309,15 +1315,7 @@ function buildCityPanelButtons(city) {
 function buildCityUpgradeSection(city) {
   cityUpgradeSectionEl.innerHTML = '';
   const btn = document.createElement('button');
-  btn.onclick = () => {
-    const next = city.level + 1;
-    if (next > CITY_LEVEL_MAX || city.upgradeRemaining > 0) return;
-    const cost = CITY_LEVELS[next].upgradeCost;
-    if (gold[city.owner] < cost) { showAlert(`Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`); return; }
-    gold[city.owner] -= cost;
-    city.upgradeRemaining = CITY_LEVELS[next].upgradeTime;
-    updateCityPanelLive();
-  };
+  btn.onclick = () => { upgradeCity(city); };
   cityUpgradeSectionEl.appendChild(btn);
 }
 
@@ -1546,6 +1544,99 @@ window.addEventListener('mousemove', (e) => {
   }
 });
 
+// Rozkazy ruchu — wydzielone tak, by AI (patrz window.GameAPI/ai.js) mogło
+// wołać DOKŁADNIE tę samą logikę co gest myszy gracza, na dowolnej liście
+// jednostek (nie tylko getSelectedUnits()). Zachowanie dla gracza bez zmian
+// — te same wywołania, tylko przeniesione z inline kodu handlera.
+function issueMoveOrder(unitList, target) {
+  const offsets = formationOffsets(unitList.length, FORMATION_SPACING);
+  unitList.forEach((u, i) => {
+    const t = { x: target.x + offsets[i].dx, y: target.y + offsets[i].dy };
+    const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(t.x, t.y), t);
+    if (rawPath === null) {
+      orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
+    } else {
+      u.path = finalizePath(u, rawPath);
+    }
+  });
+}
+function issueRouteOrder(unitList, curve) {
+  for (const u of unitList) {
+    const rawPath = buildRoutePath(u, curve);
+    if (rawPath === null) {
+      orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
+    } else {
+      u.path = finalizePath(u, rawPath);
+    }
+  }
+}
+function issueFrontOrder(unitList, curve) {
+  const assignments = assignFrontTargets(unitList, curve);
+  for (const { unit, target } of assignments) {
+    const rawPath = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
+    if (rawPath === null) {
+      orderFailEffects.push({ x: unit.x, y: unit.y, startTime: performance.now() });
+    } else {
+      unit.path = finalizePath(unit, rawPath);
+    }
+  }
+}
+// Tylko dla dystansowych — patrz TARGET_PRIORITIES/handler Tab niżej,
+// który wciąż CYKLUJE dla gracza; AI ustawia wartość wprost, bez cyklu.
+function setTargetPriority(unit, priority) {
+  if (UNIT_TYPES[unit.type].ranged) unit.targetPriority = priority;
+}
+
+// Produkcja/ulepszenie miasta — ta sama logika co przyciski panelu miasta
+// (patrz buildCityPanelButtons/buildCityUpgradeSection), wydzielona żeby
+// AI mogło jej użyć bez klikania DOM. showAlert TYLKO dla własnego miasta
+// gracza — inaczej AI spamowałoby jego baner swoimi brakami złota.
+function queueProduction(city, type) {
+  const cfg = UNIT_TYPES[type];
+  if (city.queue.length >= CITY_QUEUE_MAX_LENGTH) {
+    if (city.owner === OWNED_PLAYER) showAlert('Kolejka produkcji pełna');
+    return false;
+  }
+  if (gold[city.owner] < cfg.cost) {
+    if (city.owner === OWNED_PLAYER) showAlert(`Za mało złota (potrzeba ${cfg.cost}, masz ${Math.floor(gold[city.owner])})`);
+    return false;
+  }
+  gold[city.owner] -= cfg.cost;
+  city.queue.push({ type, remainingTime: cfg.buildTime });
+  if (selectedCity === city) updateCityPanelLive();
+  return true;
+}
+function upgradeCity(city) {
+  const next = city.level + 1;
+  if (next > CITY_LEVEL_MAX || city.upgradeRemaining > 0) return false;
+  const cost = CITY_LEVELS[next].upgradeCost;
+  if (gold[city.owner] < cost) {
+    if (city.owner === OWNED_PLAYER) showAlert(`Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`);
+    return false;
+  }
+  gold[city.owner] -= cost;
+  city.upgradeRemaining = CITY_LEVELS[next].upgradeTime;
+  if (selectedCity === city) updateCityPanelLive();
+  return true;
+}
+// Szlak handlowy między dwoma miastami TEGO SAMEGO właściciela — walidacja
+// wewnątrz; gest myszy w mouseup sam decyduje, czy pokazać komunikat błędu
+// (te komunikaty są specyficzne dla przeciągnięcia, nie dla samej reguły).
+function createTradeRoute(cityFrom, cityTo, owner, curve) {
+  if (!cityFrom || !cityTo || cityFrom === cityTo) return false;
+  if (cityFrom.owner !== owner || cityTo.owner !== owner) return false;
+  const oldIdx = tradeRoutes.findIndex(r =>
+    (r.cityAId === cityFrom.id && r.cityBId === cityTo.id) ||
+    (r.cityAId === cityTo.id && r.cityBId === cityFrom.id));
+  if (oldIdx !== -1) {
+    if (selectedTradeRoute === tradeRoutes[oldIdx]) selectedTradeRoute = null;
+    tradeRoutes.splice(oldIdx, 1);
+  }
+  tradeRoutes.push({ id: nextTradeRouteId++, owner, cityAId: cityFrom.id, cityBId: cityTo.id, curve });
+  if (selectedCity) buildCityRoutesList(selectedCity);
+  return true;
+}
+
 window.addEventListener('mouseup', (e) => {
   if (!dragButton) return;
   const pos = getMousePos(e);
@@ -1601,66 +1692,24 @@ window.addEventListener('mouseup', (e) => {
       } else {
         // Jeden szlak na parę miast — nowa trasa zastępuje starą między tą
         // samą parą (w dowolnej kolejności cityA/cityB), bez potrzeby
-        // ręcznego usuwania.
-        const oldIdx = tradeRoutes.findIndex(r =>
-          (r.cityAId === dragStartOwnCity.id && r.cityBId === destCity.id) ||
-          (r.cityAId === destCity.id && r.cityBId === dragStartOwnCity.id));
-        if (oldIdx !== -1) {
-          if (selectedTradeRoute === tradeRoutes[oldIdx]) selectedTradeRoute = null;
-          tradeRoutes.splice(oldIdx, 1);
-        }
-        // Czysto geometryczny opis — żadnego licznika tutaj. Licznik
-        // wysyłki żyje na MIEŚCIE (city.timeSinceLastConvoy), którego to
-        // utworzenie/usunięcie/zmiana szlaku NIGDY nie dotyka (patrz
-        // updateTradeRoutes) — zabezpieczenie przed exploitem odświeżania
-        // konwojów przerysowywaniem tras.
-        const curve = simplifyCurve(rawStrokePoints, 6);
-        tradeRoutes.push({
-          id: nextTradeRouteId++,
-          owner: OWNED_PLAYER,
-          cityAId: dragStartOwnCity.id,
-          cityBId: destCity.id,
-          curve,
-        });
-        if (selectedCity) buildCityRoutesList(selectedCity);
+        // ręcznego usuwania. Czysto geometryczny opis — żadnego licznika
+        // tutaj. Licznik wysyłki żyje na MIEŚCIE (city.timeSinceLastConvoy),
+        // którego to utworzenie/usunięcie/zmiana szlaku NIGDY nie dotyka
+        // (patrz updateTradeRoutes) — zabezpieczenie przed exploitem
+        // odświeżania konwojów przerysowywaniem tras.
+        createTradeRoute(dragStartOwnCity, destCity, OWNED_PLAYER, simplifyCurve(rawStrokePoints, 6));
       }
     } else {
       const selected = getSelectedUnits();
       if (selected.length > 0) {
         if (!wasDrag) {
-          const offsets = formationOffsets(selected.length, FORMATION_SPACING);
-          selected.forEach((u, i) => {
-            const target = { x: pos.x + offsets[i].dx, y: pos.y + offsets[i].dy };
-            const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
-            if (rawPath === null) {
-              orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
-            } else {
-              u.path = finalizePath(u, rawPath);
-            }
-          });
+          issueMoveOrder(selected, pos);
         } else if (dragMode === 'ROUTE') {
           if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-          const curve = simplifyCurve(rawStrokePoints, 6);
-          for (const u of selected) {
-            const rawPath = buildRoutePath(u, curve);
-            if (rawPath === null) {
-              orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
-            } else {
-              u.path = finalizePath(u, rawPath);
-            }
-          }
+          issueRouteOrder(selected, simplifyCurve(rawStrokePoints, 6));
         } else if (dragMode === 'FRONT') {
           if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-          const curve = simplifyCurve(rawStrokePoints, 6);
-          const assignments = assignFrontTargets(selected, curve);
-          for (const { unit, target } of assignments) {
-            const rawPath = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
-            if (rawPath === null) {
-              orderFailEffects.push({ x: unit.x, y: unit.y, startTime: performance.now() });
-            } else {
-              unit.path = finalizePath(unit, rawPath);
-            }
-          }
+          issueFrontOrder(selected, simplifyCurve(rawStrokePoints, 6));
         }
       }
     }
@@ -2531,13 +2580,9 @@ function resolveCombat(allUnits, dt) {
       if (stats[u.owner]) stats[u.owner].unitsLost++;
       continue;
     }
-    if (u.hp < UNIT_TYPES[u.type].maxHp && u.timeSinceCombat >= OUT_OF_COMBAT_DELAY) {
-      const tile = worldToTile(u.x, u.y);
-      const terrain = terrainAt(tile.col, tile.row);
-      if (!terrain || terrain.name !== 'WATER') {
-        const maxHp = UNIT_TYPES[u.type].maxHp;
-        u.hp = Math.min(maxHp, u.hp + maxHp * REGEN_PER_SECOND * dt);
-      }
+    if (u.hp < UNIT_TYPES[u.type].maxHp && u.timeSinceCombat >= OUT_OF_COMBAT_DELAY && canRegenerateHere(u)) {
+      const maxHp = UNIT_TYPES[u.type].maxHp;
+      u.hp = Math.min(maxHp, u.hp + maxHp * REGEN_PER_SECOND * dt);
     }
     survivors.push(u);
   }
@@ -3207,16 +3252,14 @@ function drawHpBar(u, cfg, now) {
   ctx.fillRect(x, y, w * ratio, h);
 
   // regeneruje się? delikatnie pulsująca jasna obwódka, żeby było widać,
-  // które oddziały odzyskują siły (woda wyklucza regenerację — bez pulsu)
-  if (u.timeSinceCombat >= OUT_OF_COMBAT_DELAY) {
-    const tile = worldToTile(u.x, u.y);
-    const terrain = terrainAt(tile.col, tile.row);
-    if (!terrain || terrain.name !== 'WATER') {
-      const pulse = 0.35 + 0.35 * Math.sin(now / 300);
-      ctx.strokeStyle = `rgba(255,255,255,${pulse.toFixed(2)})`;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x - 1, y - 1, w + 2, h + 2);
-    }
+  // które oddziały odzyskują siły — TYLKO we własnej strefie miasta
+  // (patrz canRegenerateHere), zgodnie z tym samym warunkiem co realna
+  // regeneracja w resolveCombat.
+  if (u.timeSinceCombat >= OUT_OF_COMBAT_DELAY && canRegenerateHere(u)) {
+    const pulse = 0.35 + 0.35 * Math.sin(now / 300);
+    ctx.strokeStyle = `rgba(255,255,255,${pulse.toFixed(2)})`;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 1, y - 1, w + 2, h + 2);
   }
 }
 
@@ -3710,6 +3753,14 @@ function drawFrontTicks(pts, color) {
 // ============================================================
 // PĘTLA GRY
 // ============================================================
+// Rejestracja aktualizacji AI (patrz window.GameAPI/ai.js) w pętli gry —
+// wołane raz na klatkę, PO rozstrzygnięciu stanu świata, tak samo jak
+// każda inna funkcja update* niżej. NIE działa w trybie HEADLESS, bo
+// gameLoop w ogóle się tam nie uruchamia (balance-sim.js woła funkcje
+// bezpośrednio) — AI nigdy nie zakłóca testów balansu.
+let aiTickCallbacks = [];
+function onAITick(fn) { aiTickCallbacks.push(fn); }
+
 let lastTime = performance.now();
 function gameLoop(now) {
   if (gameOver) return; // mecz zakończony — ostatnia klatka zamrożona pod #gameOverOverlay, pętla się nie wznawia
@@ -3725,6 +3776,7 @@ function gameLoop(now) {
   updateConvoys(now);
   updateConvoyCaptures(dt, now);
   updateCityCaptures(dt, now);
+  for (const fn of aiTickCallbacks) fn(dt, now);
   updateGoldPanel();
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -4072,6 +4124,32 @@ window.BalanceSim = {
     };
   },
 };
+
+// ============================================================
+// GameAPI — jedyny most między silnikiem a AI przeciwnika (patrz ai.js,
+// wczytywane jako moduł ES tuż niżej). AI komunikuje się z grą WYŁĄCZNIE
+// przez te funkcje — dokładnie te same, których używa gracz (rozkazy
+// ruchu, produkcja, ulepszenia, szlaki) — nigdy bezpośrednio nie mutuje
+// stanu silnika. `units`/`tradeRoutes`/`gameOver` są w tym pliku
+// NADPISYWANE (np. `units = resolveCombat(...)`), więc muszą być
+// udostępnione jako gettery — zwykły alias złapałby jednorazowy,
+// nieaktualizujący się snapshot. `CITIES`/`gold`/`stats`/`PLAYERS`/
+// `UNIT_TYPES`/... to stałe referencje (CITIES to `const`, pozostałe to
+// obiekty mutowane W MIEJSCU, nigdy nie nadpisywane całościowo) —
+// bezpieczne jako zwykłe pola.
+window.GameAPI = {
+  CITIES, PLAYERS, OWNED_PLAYER, UNIT_TYPES, TERRAIN, TERRAIN_MODIFIERS, CITY_LEVELS,
+  TILE_SIZE, MAP_COLS, MAP_ROWS, MAP_WIDTH_PX, MAP_HEIGHT_PX, CITY_ZONE_RADIUS,
+  gold, stats,
+  getUnits: () => units,
+  getTradeRoutes: () => tradeRoutes,
+  isGameOver: () => gameOver,
+  findPath, finalizePath, buildRoutePath, assignFrontTargets, simplifyCurve, formationOffsets,
+  worldToTile, tileToWorld, cityCenter, terrainAt, effectiveAttackRange, isDefendingOwnCityZone,
+  issueMoveOrder, issueRouteOrder, issueFrontOrder, queueProduction, upgradeCity, createTradeRoute, setTargetPriority,
+  onTick: onAITick,
+};
 </script>
+<script type="module" src="ai.js"></script>
 </body>
 </html>
