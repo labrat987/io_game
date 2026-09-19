@@ -53,6 +53,7 @@
 <div id="alertBanner" style="display:none;"></div>
 <div id="cityPanel" style="display:none;">
   <div id="cityPanelTitle"></div>
+  <div id="cityUpgradeSection"></div>
   <div id="cityQueueList"></div>
   <div id="cityBuildButtons"></div>
   <div id="cityProductionStatus" style="color:#ff8844; min-height: 1.4em;"></div>
@@ -234,7 +235,7 @@ const UNIT_TYPES = {
   // przez szlaki handlowe (spawnRouteConvoy), bez kosztu — brak pola
   // `cost`. Nigdy nie walczy, więc lastStandChance: 0 (nie dotyczy, ale
   // pole zawsze obecne dla spójności).
-  CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, collisionRadius: 4, drawRadius: 5, pushStrength: 0, moraleResistance: 1.0, lastStandChance: 0 },
+  CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, collisionRadius: 4, drawRadius: 3, pushStrength: 0, moraleResistance: 1.0, lastStandChance: 0 }, // drawRadius zmniejszony (był 5) — wyraźnie mniejszy niż jednostki bojowe (6-8); collisionRadius bez zmian, to wyłącznie redukcja wizualna
 };
 
 // Mnożniki per (typ jednostki × teren) — główna oś balansu terenowego.
@@ -359,7 +360,7 @@ const CITIES = [
   { id: 'p2_b', col: 35, row: 21, owner: 'P2' },
   { id: 'p2_c', col: 35, row: 0,  owner: 'P2' },
 ];
-for (const city of CITIES) city.queue = []; // {type, remainingTime}
+for (const city of CITIES) { city.queue = []; city.level = 1; city.upgradeRemaining = 0; } // queue: {type, remainingTime}; level 1-3, upgradeRemaining: s pozostałe do końca trwającego ulepszenia (0 = brak)
 
 const STARTING_GOLD = 250; // starcza na kilka jednostek na start
 const CITY_BASE_INCOME_PER_SECOND = 0.15; // mały, stały dochód z posiadanego miasta — trickle, szlaki handlowe są głównym źródłem zysku
@@ -369,7 +370,21 @@ const CITY_QUEUE_MAX_LENGTH = 5; // maks. liczba jednostek w kolejce produkcji j
 // TRADE_ROUTE w mousedown/mousemove/mouseup), po których automatycznie i
 // cyklicznie kursują konwoje w obie strony (patrz updateTradeRoutes).
 const TRADE_ROUTE_GOLD_PER_100PX = 15; // zysk za dostarczony konwój, na 100px długości narysowanego szlaku
-const TRADE_ROUTE_SPAWN_INTERVAL = 60; // s między kolejnymi konwojami, liczone OSOBNO dla każdego kierunku
+
+// Poziomy miast (1 = start, CITY_LEVEL_MAX = maks.). upgradeCost/upgradeTime
+// to koszt złota i czas ulepszenia DO danego poziomu (poziom 1 nie ma kosztu
+// — startowy). spawnInterval: sekundy między konwojami wyruszającymi Z
+// miasta na tym poziomie, liczone OSOBNO dla każdego kierunku wg poziomu
+// miasta-ŹRÓDŁA tego kierunku (patrz updateTradeRoutes) — ulepszenie miasta
+// przyspiesza tylko konwoje wysyłane Z NIEGO, nie te przychodzące z drugiej
+// strony. Poziom 1 celowo wolniejszy niż dawne płaskie 60s — konwój ma być
+// wydarzeniem, nie stałym strumieniem; poziom 3 odzyskuje dawne tempo.
+const CITY_LEVEL_MAX = 3;
+const CITY_LEVELS = {
+  1: { upgradeCost: 0,   upgradeTime: 0,  spawnInterval: 150 },
+  2: { upgradeCost: 300, upgradeTime: 40, spawnInterval: 100 },
+  3: { upgradeCost: 700, upgradeTime: 80, spawnInterval: 60  },
+};
 
 // Przechwytywanie konwojów — zamiast ginąć w walce (konwoje są całkowicie
 // wykluczone z namierzania, patrz findTargetForUnit/findNearestEnemyInRange),
@@ -1007,6 +1022,7 @@ const goldAmountEl = document.getElementById('goldAmount');
 const goldRateTextEl = document.getElementById('goldRateText');
 const cityPanelEl = document.getElementById('cityPanel');
 const cityPanelTitleEl = document.getElementById('cityPanelTitle');
+const cityUpgradeSectionEl = document.getElementById('cityUpgradeSection');
 const cityQueueListEl = document.getElementById('cityQueueList');
 const cityBuildButtonsEl = document.getElementById('cityBuildButtons');
 const cityProductionStatusEl = document.getElementById('cityProductionStatus');
@@ -1059,7 +1075,26 @@ function buildCityPanelButtons(city) {
     };
     cityBuildButtonsEl.appendChild(btn);
   }
+  buildCityUpgradeSection(city);
   buildCityRoutesList(city);
+}
+
+// Przycisk ulepszenia poziomu miasta — ten sam wzorzec co przyciski
+// produkcji: tworzony RAZ przy otwarciu panelu, treść/disabled mutowane
+// w updateCityPanelLive, nigdy nie przebudowywany co klatkę.
+function buildCityUpgradeSection(city) {
+  cityUpgradeSectionEl.innerHTML = '';
+  const btn = document.createElement('button');
+  btn.onclick = () => {
+    const next = city.level + 1;
+    if (next > CITY_LEVEL_MAX || city.upgradeRemaining > 0) return;
+    const cost = CITY_LEVELS[next].upgradeCost;
+    if (gold[city.owner] < cost) { showAlert(`Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`); return; }
+    gold[city.owner] -= cost;
+    city.upgradeRemaining = CITY_LEVELS[next].upgradeTime;
+    updateCityPanelLive();
+  };
+  cityUpgradeSectionEl.appendChild(btn);
 }
 
 // Lista szlaków też budowana od zera tylko przy faktycznej zmianie
@@ -1097,7 +1132,24 @@ function buildCityRoutesList(city) {
 // tworzone na nowo, tylko mutowane w miejscu).
 function updateCityPanelLive() {
   const city = selectedCity;
-  cityPanelTitleEl.textContent = `Miasto ${city.id} (${city.owner})`;
+  cityPanelTitleEl.textContent = `Miasto ${city.id} (${city.owner}) — poziom ${city.level}/${CITY_LEVEL_MAX}`;
+  const upgradeBtn = cityUpgradeSectionEl.firstChild;
+  if (city.level >= CITY_LEVEL_MAX) {
+    upgradeBtn.textContent = `Poziom maksymalny (${CITY_LEVEL_MAX})`;
+    upgradeBtn.disabled = true;
+    upgradeBtn.title = '';
+  } else if (city.upgradeRemaining > 0) {
+    upgradeBtn.textContent = `Ulepszanie do poziomu ${city.level + 1}... (${city.upgradeRemaining.toFixed(1)}s)`;
+    upgradeBtn.disabled = true;
+    upgradeBtn.title = '';
+  } else {
+    const next = city.level + 1;
+    const cost = CITY_LEVELS[next].upgradeCost;
+    const canAfford = gold[city.owner] >= cost;
+    upgradeBtn.textContent = `Ulepsz do poziomu ${next} (${cost}zł, ${CITY_LEVELS[next].upgradeTime}s)`;
+    upgradeBtn.disabled = !canAfford;
+    upgradeBtn.title = canAfford ? '' : `Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`;
+  }
   cityQueueListEl.innerHTML = city.queue.length
     ? `${city.queue.length}/${CITY_QUEUE_MAX_LENGTH} — ` + city.queue.map((q, i) => `${i === 0 ? 'Buduje' : 'W kolejce'}: ${q.type} (${q.remainingTime.toFixed(1)}s)`).join('<br>')
     : 'Kolejka pusta';
@@ -1316,6 +1368,16 @@ window.addEventListener('mouseup', (e) => {
       } else if (destCity === dragStartOwnCity) {
         showAlert('Wybierz inne miasto niż źródłowe');
       } else {
+        // Jeden szlak na parę miast — nowa trasa zastępuje starą między tą
+        // samą parą (w dowolnej kolejności cityA/cityB), bez potrzeby
+        // ręcznego usuwania.
+        const oldIdx = tradeRoutes.findIndex(r =>
+          (r.cityAId === dragStartOwnCity.id && r.cityBId === destCity.id) ||
+          (r.cityAId === destCity.id && r.cityBId === dragStartOwnCity.id));
+        if (oldIdx !== -1) {
+          if (selectedTradeRoute === tradeRoutes[oldIdx]) selectedTradeRoute = null;
+          tradeRoutes.splice(oldIdx, 1);
+        }
         const curve = simplifyCurve(rawStrokePoints, 6);
         tradeRoutes.push({
           id: nextTradeRouteId++,
@@ -1323,8 +1385,10 @@ window.addEventListener('mouseup', (e) => {
           cityAId: dragStartOwnCity.id,
           cityBId: destCity.id,
           curve,
-          timeSinceSpawnAtoB: TRADE_ROUTE_SPAWN_INTERVAL, // konwój wyrusza od razu, w obie strony
-          timeSinceSpawnBtoA: TRADE_ROUTE_SPAWN_INTERVAL,
+          // konwój wyrusza od razu, w obie strony — interwał każdego
+          // kierunku wg poziomu jego miasta-źródła (patrz CITY_LEVELS)
+          timeSinceSpawnAtoB: CITY_LEVELS[dragStartOwnCity.level].spawnInterval,
+          timeSinceSpawnBtoA: CITY_LEVELS[destCity.level].spawnInterval,
         });
         if (selectedCity) buildCityRoutesList(selectedCity);
       }
@@ -2099,16 +2163,21 @@ function spawnRouteConvoy(route, direction) {
 
 // Odlicza interwał wysyłki OSOBNO dla każdego kierunku każdego szlaku —
 // szlak pozostaje aktywny nawet po utracie konwoju (patrz
-// updateConvoyCaptures), po interwale i tak wyruszy kolejny.
+// updateConvoyCaptures), po interwale i tak wyruszy kolejny. Interwał
+// każdego kierunku zależy od poziomu miasta-ŹRÓDŁA tego kierunku
+// (CITY_LEVELS) — ulepszenie miasta przyspiesza tylko konwoje wysyłane z
+// niego, nie te przychodzące z drugiej strony szlaku.
 function updateTradeRoutes(dt) {
   for (const route of tradeRoutes) {
     route.timeSinceSpawnAtoB += dt;
     route.timeSinceSpawnBtoA += dt;
-    if (route.timeSinceSpawnAtoB >= TRADE_ROUTE_SPAWN_INTERVAL) {
+    const cityA = CITIES.find(c => c.id === route.cityAId);
+    const cityB = CITIES.find(c => c.id === route.cityBId);
+    if (cityA && route.timeSinceSpawnAtoB >= CITY_LEVELS[cityA.level].spawnInterval) {
       route.timeSinceSpawnAtoB = 0;
       spawnRouteConvoy(route, 'AtoB');
     }
-    if (route.timeSinceSpawnBtoA >= TRADE_ROUTE_SPAWN_INTERVAL) {
+    if (cityB && route.timeSinceSpawnBtoA >= CITY_LEVELS[cityB.level].spawnInterval) {
       route.timeSinceSpawnBtoA = 0;
       spawnRouteConvoy(route, 'BtoA');
     }
@@ -2219,11 +2288,19 @@ function updateEconomy(dt) {
   }
 
   for (const city of CITIES) {
-    if (city.queue.length === 0) continue;
-    city.queue[0].remainingTime -= dt;
-    if (city.queue[0].remainingTime <= 0) {
-      const { type } = city.queue.shift();
-      spawnUnit(type, city.col, city.row, city.owner);
+    if (city.queue.length > 0) {
+      city.queue[0].remainingTime -= dt;
+      if (city.queue[0].remainingTime <= 0) {
+        const { type } = city.queue.shift();
+        spawnUnit(type, city.col, city.row, city.owner);
+      }
+    }
+    if (city.upgradeRemaining > 0) {
+      city.upgradeRemaining -= dt;
+      if (city.upgradeRemaining <= 0) {
+        city.level += 1;
+        city.upgradeRemaining = 0;
+      }
     }
   }
 }
@@ -2424,8 +2501,13 @@ function drawMap() {
 // Cienkie, półprzezroczyste linie w kolorze właściciela — subtelne, żeby
 // nie zaśmiecały mapy. Zaznaczony szlak (do usunięcia) dostaje dodatkową
 // białą przerywaną nakładkę, ten sam wzorzec co pierścień zaznaczenia miasta.
+// Domyślnie niewidoczne — pokazujemy wyłącznie szlaki zaznaczonego miasta
+// (mapa ma pozostać czytelna, patrz CLAUDE.md); można zaznaczyć tylko
+// własne miasto, więc to naturalnie ukrywa też szlaki przeciwnika.
 function drawTradeRoutes() {
+  if (!selectedCity) return;
   for (const route of tradeRoutes) {
+    if (route.cityAId !== selectedCity.id && route.cityBId !== selectedCity.id) continue;
     const pts = route.curve;
     if (pts.length < 2) continue;
     ctx.strokeStyle = PLAYERS[route.owner].color;
@@ -2490,6 +2572,18 @@ function drawCities() {
     ctx.arc(c.x, c.y, CITY_MARKER_RADIUS * 0.35, 0, Math.PI * 2);
     ctx.fillStyle = '#7a5230';
     ctx.fill();
+
+    // Wskaźnik poziomu — rząd kropek pod markerem, liczba = city.level.
+    // Widoczny ZAWSZE, także dla miast wroga — gracz musi widzieć, które
+    // miasta (swoje i cudze) są rozwinięte.
+    const levelDotSpacing = 6, levelDotRadius = 2;
+    const levelDotsWidth = (city.level - 1) * levelDotSpacing;
+    for (let i = 0; i < city.level; i++) {
+      ctx.beginPath();
+      ctx.arc(c.x - levelDotsWidth / 2 + i * levelDotSpacing, c.y + CITY_MARKER_RADIUS + 6, levelDotRadius, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+    }
 
     if (selectedCity === city) {
       ctx.beginPath();
