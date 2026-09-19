@@ -120,23 +120,34 @@ const MORALE_RECOVER_THRESHOLD = 55; // złamana jednostka wraca pod kontrolę d
 const MORALE_WARNING_THRESHOLD = 25; // migotanie ostrzegawcze poniżej tego progu (jeszcze nie złamana)
 const MORALE_PROTECTION_DURATION = 15; // s okresu ochronnego po powrocie z paniki — złamanie zablokowane, morale nadal może spadać
 
-// Utrata morale — złagodzona z powrotem do ~połowy poprzednich wartości
-// (miały się łamać rzadziej: mocno osłabiona i otoczona jednostka łamie
-// się często, ale nie zawsze; walcząca równo — prawie nigdy)
-const MORALE_LOSS_PER_DAMAGE = 0.4; // na punkt obrażeń otrzymanych w tej klatce
-const MORALE_LOW_HP_LOSS_MULTIPLIER = 2.0; // dodatkowa utrata skalowana brakującym % HP po ciosie
+// Utrata morale — waga czynników przebudowana tak, żeby uczciwe starcie
+// 1 na 1 (bez przewagi, flanki, okrążenia) rozstrzygały obrażenia, NIE
+// psychika: sam fakt otrzymania obrażeń (MORALE_LOSS_PER_DAMAGE) ma być
+// minimalny. Cztery czynniki poniżej są NIEZALEŻNYMI, DODAJĄCYMI SIĘ
+// źródłami straty (nie mnożnikami jednej bazy) — patrz updateMorale.
+const MORALE_LOSS_PER_DAMAGE = 0.05; // na punkt obrażeń otrzymanych w tej klatce — celowo znikome, jedyny czynnik działający w uczciwym 1v1
+// Niskie HP NIE jest samodzielną przyczyną złamania — wzmacnia WYŁĄCZNIE
+// czynniki sytuacyjne niżej (przewaga/flanka/tył/okrążenie), nigdy samą
+// utratę HP powyżej.
+const MORALE_LOW_HP_AMPLIFIER = 2.0; // mnożnik 1..3x zależnie od brakującego % HP, patrz updateMorale
+// Flanka/tył — NIEZALEŻNY, ciągły koszt (nie mnożnik straty z obrażeń):
+// silny czynnik sytuacyjny, liczy się sam fakt trafienia z tego kierunku,
+// niezależnie od tego, ile obrażeń akurat przeszło. Tył mocniejszy niż flanka.
+const MORALE_FLANK_HIT_LOSS_PER_SECOND = 8;
+const MORALE_REAR_HIT_LOSS_PER_SECOND = 14;
 // Przewaga liczebna rośnie KWADRATOWO z liczbą dodatkowych napastników
-// wręcz (patrz updateMorale: (extra^2) * ta stała) — 2 wrogów zauważalnie,
-// 3-4 bardzo szybko, nie proporcjonalnie
-const MORALE_OUTNUMBERED_LOSS_PER_SECOND = 5;
-// Okrążenie (napastnicy rozstawieni z wielu stron, nie skupieni po
-// jednej) mnoży stratę z przewagi liczebnej dodatkowo — patrz isEncircled.
-// Ten mnożnik zostaje mocny celowo — okrążenie ma być NAJSILNIEJSZYM
-// czynnikiem łamiącym morale.
+// wręcz (patrz updateMorale: (extra^2) * ta stała) — realny efekt dopiero
+// od jasnej przewagi 2:1 (extra=1), 3:1+ bardzo szybko, nie proporcjonalnie
+const MORALE_OUTNUMBERED_LOSS_PER_SECOND = 4;
+// Okrążenie (napastnicy — melee i ostrzał razem — rozstawieni z wielu
+// stron, nie skupieni po jednej, patrz isEncircled) to NAJSILNIEJSZY,
+// NIEZALEŻNY czynnik — dolicza się OSOBNO do przewagi liczebnej, bo może
+// wystąpić nawet bez wyraźnej przewagi (2 atakujących z przeciwnych stron
+// to już i przewaga 2:1, i okrążenie jednocześnie — oba koszty się sumują).
 const MORALE_ENCIRCLEMENT_ANGLE_THRESHOLD_DEG = 120; // rozstaw kątowy napastników uznawany za okrążenie
-const MORALE_ENCIRCLEMENT_LOSS_MULTIPLIER = 2.0;
-const MORALE_PUSHED_LOSS_PER_SECOND = 6; // gdy jednostka przegrywa porównanie napierania jako cel
-const MORALE_ALLY_DEATH_LOSS = 15; // stała utrata, gdy sojusznik ginie w promieniu
+const MORALE_ENCIRCLEMENT_LOSS_PER_SECOND = 20;
+const MORALE_PUSHED_LOSS_PER_SECOND = 3; // gdy jednostka przegrywa porównanie napierania jako cel
+const MORALE_ALLY_DEATH_LOSS = 8; // stała utrata, gdy sojusznik ginie w promieniu
 const MORALE_ALLY_DEATH_RADIUS = 100; // px
 // Dystansowi wciągnięci w zwarcie (inMeleeLock, patrz resolveCombat)
 // łamią się dużo szybciej — obsługa broni dystansowej nie jest szkolona
@@ -203,9 +214,8 @@ const FLANK_BONUS_DECAY_PER_SECOND = 0.03;
 const REAR_BONUS_START = 0.40;           // +40% na sam początek ataku z tyłu
 const REAR_BONUS_FLOOR = 0.10;           // maleje do +10% i tam zostaje
 const REAR_BONUS_DECAY_PER_SECOND = 0.04;
-const MORALE_FLANK_HIT_LOSS_MULTIPLIER = 1.5; // dodatkowy mnożnik spadku morale z trafienia w tej klatce, jeśli NAJGORSZE trafienie było z flanki
-const MORALE_REAR_HIT_LOSS_MULTIPLIER = 2.0;  // jw., trafienie z tyłu
-const MORALE_MULTI_DIRECTION_HIT_MULTIPLIER = 1.5; // dodatkowy mnożnik, gdy cel trafiony z kilku rozstawionych kątowo kierunków jednocześnie (melee + ostrzał, patrz isEncircled) — osobne od MORALE_ENCIRCLEMENT_LOSS_MULTIPLIER (tamten dotyczy WYŁĄCZNIE przewagi liczebnej w zwarciu)
+// Mnożniki spadku morale za flankę/tył/okrążenie — patrz sekcja MORALE
+// wyżej (MORALE_FLANK_HIT_LOSS_PER_SECOND itd.), to tam żyją te stałe.
 
 // Wizualizacja ostrzegawcza — pulsowanie WYPEŁNIENIA jednostki (nie
 // pierścienia) między kolorem gracza a bielą, wyraźnie odróżnialne od
@@ -251,11 +261,11 @@ const UNIT_TYPES = {
   // nowego przeciwnika (kawaleria zwrotna, działo najwolniejsze) i mnożnik
   // tłumiący bonus przeciwnika za flankowanie (tylko ciężka piechota ma
   // realną odporność — zdyscyplinowana, trudna do zaskoczenia mimo wolnego obrotu).
-  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 4.4, reloadTime: 1.5, projectileSpeed: 300, meleeDamage: 0.5, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.05, turnTimeSeconds: 0.9, flankResistance: 1.0 },
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 7.2, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.7, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05, turnTimeSeconds: 2.5, flankResistance: 1.0 }, // damagePerShot podniesione z 5.6 (+28.6%) — narzędzie przełamania, reloadTime bez zmian
-  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 8.5, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 2, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.2, turnTimeSeconds: 0.7, flankResistance: 1.0 },
-  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 12.8, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 5, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4, turnTimeSeconds: 1.6, flankResistance: 0.6 },
-  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 11.9, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 1, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15, turnTimeSeconds: 0.4, flankResistance: 1.0 },
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 3.52, reloadTime: 1.5, projectileSpeed: 300, meleeDamage: 0.4, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.05, turnTimeSeconds: 0.9, flankResistance: 1.0 }, // obrażenia -20% (5.6 -> 4.4 -> 3.52)
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 5.76, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.56, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05, turnTimeSeconds: 2.5, flankResistance: 1.0 }, // obrażenia -20% (7.2 -> 5.76)
+  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 6.8, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 0.4, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.2, turnTimeSeconds: 0.7, flankResistance: 1.0 }, // obrażenia -20% (8.5 -> 6.8), pushStrength -80% (2 -> 0.4)
+  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 10.24, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 1.0, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4, turnTimeSeconds: 1.6, flankResistance: 0.6 }, // obrażenia -20% (12.8 -> 10.24), pushStrength -80% (5 -> 1.0)
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 9.52, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 0.2, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15, turnTimeSeconds: 0.4, flankResistance: 1.0 }, // obrażenia -20% (11.9 -> 9.52), pushStrength -80% (1 -> 0.2)
   // Bezbronny nosiciel złota (attackRange:0 -> nigdy nie znajdzie celu do
   // ataku; wykluczony z namierzania przez innych — patrz findTargetForUnit/
   // findNearestEnemyInRange — więc nigdy nie ginie w walce, tylko może
@@ -335,7 +345,6 @@ const TERRAIN_MODIFIERS = {
 };
 
 const BASE_SPEED_PX_PER_S = 28.8; // mnożone przez unit.speed i terrain.speedMultiplier (obniżone łącznie o ~50% od bazy — gracz ma zdążyć zareagować na przebieg starcia, przegrupować, wycofać osłabione oddziały)
-const FACING_UPDATE_MIN_MOVE_PX = 0.5; // próg ruchu w klatce, poniżej którego zwrot (facingAngle) nie jest aktualizowany — zapobiega drganiu przy znikomym przesunięciu (patrz updateUnit)
 
 // Zahardkodowana mapa terenu — edytuj ręcznie (0 pole, 1 las, 2 gory,
 // 3 woda, 4 wzgórza). Powiększona o ~50% względem pierwszej wersji
@@ -1538,13 +1547,16 @@ function updateUnit(unit, dt) {
     }
   }
 
-  // Zwrot (facingAngle) z faktycznego przesunięcia tej klatki — próg
-  // zapobiega drganiu zwrotu przy znikomym ruchu (np. rozjeżdżanie się w
-  // resolveCollisions). Brak ruchu → zwrot zostaje bez zmian. W walce
-  // resolveCombat/updateProjectiles NADPISZE to zwrotem w stronę
-  // przeciwnika (patrz komentarz "KRYTYCZNE" przy resolveCombat).
+  // Zwrot (facingAngle) z faktycznego przesunięcia tej klatki — dowolny
+  // realny ruch aktualizuje zwrot (resolveCollisions w ogóle nie woła
+  // updateUnit/nie dotyka facingAngle, więc nie ma tu czego tłumić; przy
+  // progu 0.5px wolne jednostki, np. HEAVY_INFANTRY, poruszają się
+  // ~0.22px/klatkę i zwrot z ruchu praktycznie nigdy by się nie
+  // aktualizował). Brak ruchu → zwrot zostaje bez zmian. W walce
+  // resolveCombat "zaangażowanie" (engagedTargetId) przejmuje sterowanie
+  // zwrotem — patrz komentarz przy spawnUnit.engagedTargetId.
   const movedDist = Math.hypot(unit.x - x0, unit.y - y0);
-  if (movedDist > FACING_UPDATE_MIN_MOVE_PX) {
+  if (movedDist > 0) {
     unit.facingAngle = Math.atan2(unit.y - y0, unit.x - x0);
   }
 }
@@ -1624,7 +1636,6 @@ function resolveCollisions(allUnits) {
 const DEATH_EFFECT_DURATION_MS = 400;
 const DEATH_FADE_DURATION_MS = 500;
 const IMPACT_EFFECT_DURATION_MS = 180;
-const FLANK_HIT_EFFECT_DURATION_MS = 350; // dłużej i wyraźniej niż zwykła iskra (impactEffects) — trafienie z flanki/tyłu ma być natychmiast czytelne
 const HIT_FLASH_DURATION_MS = 100;
 const CANNON_SHAKE_DURATION_MS = 150;
 const CANNON_SHAKE_MAGNITUDE = 2.5;
@@ -1632,7 +1643,6 @@ const CANNON_SHAKE_MAGNITUDE = 2.5;
 let deathEffects = []; // {x, y, color, startTime} — zanikający pierścień w miejscu śmierci
 let dyingUnits = []; // {type, owner, x, y, startTime} — znikająca sylwetka jednostki
 let impactEffects = []; // {x, y, startTime} — iskra w miejscu uderzenia pocisku (trafienie lub pudło)
-let flankHitEffects = []; // {x, y, startTime, category, angle} — wyraźniejszy efekt trafienia z flanki/tyłu (melee lub ostrzał), patrz resolveCombat/updateProjectiles/drawFlankHitEffects
 let currentAttacks = []; // {attacker, target} — tylko starcia melee, do rysowania linii w tej klatce
 let projectiles = []; // {x, y, vx, vy, impactX, impactY, distanceLeft, damage, owner, attackerType, targetUnit}
 
@@ -1789,9 +1799,6 @@ function updateProjectiles(dt, now, pendingDamage, hitCategoryOf, rangedHitAttac
       recordWorstHitCategory(hitCategoryOf, p.targetUnit, category);
       if (!rangedHitAttackersOf.has(p.targetUnit)) rangedHitAttackersOf.set(p.targetUnit, new Set());
       rangedHitAttackersOf.get(p.targetUnit).add(p.shooter);
-      if (category !== 'FRONT') {
-        flankHitEffects.push({ x: p.targetUnit.x, y: p.targetUnit.y, startTime: now, category, angle: attackDirectionAngle });
-      }
       // Zwrot celu NIE jest tu nadpisywany — rządzi nim wyłącznie
       // zaangażowanie w resolveCombat (engagedTargetId/turnRemaining),
       // żeby trafienie pociskiem nie "resetowało" toczącej się flanki.
@@ -1915,34 +1922,48 @@ function updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHit
     for (const s of shooters) allDirectionAttackersOf.get(target).add(s);
   }
 
+  // Cztery NIEZALEŻNE, DODAJĄCE SIĘ źródła straty (nie mnożniki jednej
+  // bazy) — uczciwe 1v1 bez przewagi/flanki/okrążenia ma tylko czynnik 1,
+  // zredukowany niemal do zera; zła sytuacja taktyczna (2-4) dominuje.
+  // Niskie HP (lowHpAmplifier) wzmacnia WYŁĄCZNIE czynniki 2-4, nigdy
+  // samą utratę HP w czynniku 1 — patrz komentarz przy MORALE_LOW_HP_AMPLIFIER.
   for (const u of allUnits) {
     if (u.hp <= 0) continue;
     const cfg = UNIT_TYPES[u.type];
+    const hpFraction = Math.max(0, u.hp / cfg.maxHp);
+    const lowHpAmplifier = 1 + MORALE_LOW_HP_AMPLIFIER * (1 - hpFraction);
 
-    // obrażenia otrzymane w tej klatce — im niższe hp PO ciosie, tym większa strata
+    // 1. Sama utrata HP — celowo znikoma, jedyny czynnik w uczciwym 1v1
     const dmgTaken = pendingDamage.get(u) || 0;
     if (dmgTaken > 0) {
-      const hpFraction = Math.max(0, u.hp / cfg.maxHp);
-      let lossFromDamage = dmgTaken * MORALE_LOSS_PER_DAMAGE * (1 + MORALE_LOW_HP_LOSS_MULTIPLIER * (1 - hpFraction));
-      // trafienie z flanki/tyłu łamie morale mocniej niż to samo trafienie
-      // z frontu — kategoria to NAJGORSZA z (ewentualnie kilku) trafień tej klatce
-      const category = hitCategoryOf.get(u);
-      if (category === 'REAR') lossFromDamage *= MORALE_REAR_HIT_LOSS_MULTIPLIER;
-      else if (category === 'FLANK') lossFromDamage *= MORALE_FLANK_HIT_LOSS_MULTIPLIER;
-      // atak z kilku rozstawionych kątowo kierunków jednocześnie (melee+ostrzał) — dodatkowo
-      const directionSet = allDirectionAttackersOf.get(u);
-      if (directionSet && isEncircled(u, directionSet)) lossFromDamage *= MORALE_MULTI_DIRECTION_HIT_MULTIPLIER;
-      addTo(combatLoss, u, -lossFromDamage / cfg.moraleResistance);
+      addTo(combatLoss, u, -dmgTaken * MORALE_LOSS_PER_DAMAGE / cfg.moraleResistance);
     }
 
-    // przewaga liczebna — kwadratowo z liczbą DODATKOWYCH napastników
-    // ponad pierwszego; okrążenie (rozstaw kątowy) mnoży dodatkowo
+    // 2. Flanka/tył — niezależny, ciągły koszt (NIE mnożnik obrażeń tej
+    // klatki); kategoria to NAJGORSZA z (ewentualnie kilku) trafień tej klatce
+    const category = hitCategoryOf.get(u);
+    if (category === 'REAR') {
+      addTo(combatLoss, u, -MORALE_REAR_HIT_LOSS_PER_SECOND * dt * lowHpAmplifier / cfg.moraleResistance);
+    } else if (category === 'FLANK') {
+      addTo(combatLoss, u, -MORALE_FLANK_HIT_LOSS_PER_SECOND * dt * lowHpAmplifier / cfg.moraleResistance);
+    }
+
+    // 3. Przewaga liczebna w zwarciu — kwadratowo z dodatkowymi
+    // napastnikami ponad pierwszego, realny efekt dopiero od 2:1
     const attackerSet = meleeAttackersOf.get(u);
     if (attackerSet && attackerSet.size > 1) {
       const extra = attackerSet.size - 1;
-      let loss = (extra * extra) * MORALE_OUTNUMBERED_LOSS_PER_SECOND * dt;
-      if (isEncircled(u, attackerSet)) loss *= MORALE_ENCIRCLEMENT_LOSS_MULTIPLIER;
+      const loss = (extra * extra) * MORALE_OUTNUMBERED_LOSS_PER_SECOND * dt * lowHpAmplifier;
       addTo(combatLoss, u, -loss / cfg.moraleResistance);
+    }
+
+    // 4. Okrążenie (melee + ostrzał razem, rozstaw kątowy) — NAJSILNIEJSZY
+    // czynnik, dolicza się OSOBNO do przewagi liczebnej (może wystąpić
+    // nawet bez wyraźnej przewagi liczebnej ogółem w innym sensie, np.
+    // dokładnie 2:1 z przeciwnych stron to i przewaga, i okrążenie naraz)
+    const directionSet = allDirectionAttackersOf.get(u);
+    if (directionSet && isEncircled(u, directionSet)) {
+      addTo(combatLoss, u, -MORALE_ENCIRCLEMENT_LOSS_PER_SECOND * dt * lowHpAmplifier / cfg.moraleResistance);
     }
   }
 
@@ -2187,7 +2208,6 @@ function resolveCombat(allUnits, dt) {
       if (target.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
       pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
       recordWorstHitCategory(hitCategoryOf, target, category);
-      if (category !== 'FRONT') flankHitEffects.push({ x: target.x, y: target.y, startTime: now, category, angle: attackDirectionAngle });
       continue;
     }
 
@@ -2216,7 +2236,6 @@ function resolveCombat(allUnits, dt) {
       if (meleeEnemy.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
       pendingDamage.set(meleeEnemy, (pendingDamage.get(meleeEnemy) || 0) + damage);
       recordWorstHitCategory(hitCategoryOf, meleeEnemy, category);
-      if (category !== 'FRONT') flankHitEffects.push({ x: meleeEnemy.x, y: meleeEnemy.y, startTime: now, category, angle: attackDirectionAngle });
       continue;
     }
 
@@ -3170,34 +3189,6 @@ function drawImpactEffects(now) {
   }
 }
 
-// Trafienie z flanki (pomarańczowy) lub tyłu (czerwony) — klin
-// zorientowany w stronę, z której nadszedł cios, wyraźnie większy i
-// dłużej widoczny niż zwykła iskra (impactEffects), żeby gracz od razu
-// zobaczył, że manewr zadziałał.
-function drawFlankHitEffects(now) {
-  flankHitEffects = flankHitEffects.filter(e => now - e.startTime < FLANK_HIT_EFFECT_DURATION_MS);
-  for (const e of flankHitEffects) {
-    const t = (now - e.startTime) / FLANK_HIT_EFFECT_DURATION_MS;
-    const color = e.category === 'REAR' ? '#ff3b3b' : '#ff9900';
-    const dist = 10 + t * 16;
-    const size = 5 * (1 - t * 0.4);
-    const px = e.x + Math.cos(e.angle) * dist, py = e.y + Math.sin(e.angle) * dist;
-    ctx.save();
-    ctx.translate(px, py);
-    ctx.rotate(e.angle + Math.PI);
-    ctx.globalAlpha = 1 - t;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(size, 0);
-    ctx.lineTo(-size * 0.6, size * 0.6);
-    ctx.lineTo(-size * 0.6, -size * 0.6);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-    ctx.globalAlpha = 1;
-  }
-}
-
 function drawOrderFailEffects(now) {
   orderFailEffects = orderFailEffects.filter(e => now - e.startTime < ORDER_FAIL_EFFECT_DURATION_MS);
   for (const e of orderFailEffects) {
@@ -3395,7 +3386,6 @@ function gameLoop(now) {
   drawAttackLines();
   drawProjectiles();
   drawImpactEffects(now);
-  drawFlankHitEffects(now);
   drawDeathEffects(now);
   drawConvoyArrivalEffects(now);
   drawCaptureAlertEffects(now);
