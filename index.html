@@ -6,12 +6,35 @@
 <style>
   html, body { margin: 0; padding: 0; overflow: hidden; background: #111; }
   canvas { display: block; background: #222; cursor: crosshair; }
-  #hint {
-    position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
-    color: #eee; font: 12px monospace; text-align: center;
-    background: rgba(0,0,0,0.55); padding: 6px 14px; border-radius: 4px;
-    pointer-events: none; line-height: 1.5;
+  #legendToggleBtn {
+    position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+    color: #eee; font: 12px monospace; cursor: pointer;
+    background: rgba(0,0,0,0.7); padding: 8px 6px; border-radius: 4px 0 0 4px;
+    border: 1px solid #555; border-right: none; writing-mode: vertical-rl;
   }
+  #legendToggleBtn:hover { background: rgba(30,30,30,0.85); }
+  #legendPanel {
+    position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+    width: 300px; max-height: 82vh; overflow-y: auto;
+    color: #eee; font: 12px monospace; line-height: 1.5;
+    background: rgba(0,0,0,0.85); padding: 10px 12px; border-radius: 4px 0 0 4px;
+    border: 1px solid #555; border-right: none;
+  }
+  #legendPanel h4 { margin: 10px 0 4px; color: #ffcc66; font-size: 12px; }
+  #legendPanel h4:first-child { margin-top: 0; }
+  #legendPanel .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #legendPanel .swatch { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  @keyframes legendPulseWhite { 0%, 100% { background: #3a7bd5; } 50% { background: #ffffff; } }
+  @keyframes legendPulseLastStand { 0%, 100% { background: #cc1100; } 50% { background: #ff9900; } }
+  .swatch-pulse-warning { animation: legendPulseWhite 1.1s ease-in-out infinite; }
+  .swatch-pulse-laststand { animation: legendPulseLastStand 0.9s ease-in-out infinite; }
+  #unitStatsTooltip {
+    position: fixed; top: 12px; right: 244px; width: 200px; display: none;
+    color: #eee; font: 12px monospace; line-height: 1.6;
+    background: rgba(0,0,0,0.85); padding: 10px; border-radius: 4px;
+    border: 1px solid #555;
+  }
+  #unitStatsTooltip .roleText { color: #ffcc66; }
   #goldPanel {
     position: fixed; top: 12px; left: 12px;
     color: #f4c430; font: bold 14px monospace;
@@ -41,14 +64,41 @@
 </style>
 </head>
 <body>
-<div id="hint">
+<div id="legendToggleBtn">☰ Legenda</div>
+<div id="legendPanel" style="display:none;">
+  <h4>Sterowanie</h4>
   LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
   PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
   przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span>,
   przeciągnięcie z własnego miasta do innego = <span style="color:#2f6fed">SZLAK HANDLOWY</span><br>
   Tab: zmień priorytet celu zaznaczonych jednostek dystansowych (najbliższy / artyleria / ciężkie / najsłabszy) —
   LPM w miasto: zaznacz/panel produkcji i szlaków — Delete: usuń zaznaczony szlak
+
+  <h4>Paski nad jednostką</h4>
+  <div class="row"><span class="swatch" style="background:#4caf50;"></span>Górny pasek: HP (zielony→żółty→czerwony)</div>
+  <div class="row"><span class="swatch" style="background:#4a90d9;"></span>Dolny pasek: morale (niebieski = stabilne, żółty = blisko załamania)</div>
+
+  <h4>Stan jednostki (kolor ciała)</h4>
+  <div class="row"><span class="swatch swatch-pulse-warning"></span>Pulsowanie koloru gracza w biel — blisko załamania morale</div>
+  <div class="row"><span class="swatch" style="background:#ffffff;"></span>Pełna, NIERUCHOMA biel + biały "!" — panika: ucieka, nie słucha rozkazów</div>
+  <div class="row"><span class="swatch swatch-pulse-laststand"></span>Pulsowanie czerwono-pomarańczowe — Last Stand: desperacka obrona, bonus do walki</div>
+
+  <h4>Inne oznaczenia</h4>
+  <div class="row"><span class="swatch" style="background:#ffffff; border-radius:50%;"></span>Biały trójkącik na obwodzie — zwrot jednostki (przód, decyduje o ataku z boku/tyłu)</div>
+  <div class="row"><span class="swatch" style="background:#ffa500;"></span>Pulsująca pomarańczowa obwódka — jednostka dystansowa się rozstawia, jeszcze nie strzela</div>
+  <div class="row"><span class="swatch" style="background:#ff2828;"></span>Przyciemniona ikona + przekreślenie — dystansowa związana walką wręcz, nie strzela</div>
+
+  <h4>Ikony typów jednostek</h4>
+  Łuk = łucznik, lufa+koło = działo, dzida = piechota lekka, dzida+tarcza = piechota ciężka, grot = kawaleria, kwadrat = konwój
+
+  <h4>Teren</h4>
+  <div class="row"><span class="swatch" style="background:#a8c766;"></span>Pole — bez modyfikatorów, teren bazowy</div>
+  <div class="row"><span class="swatch" style="background:#3f6b35;"></span>Las — osłabia dystansowych i kawalerię, przyspiesza lekką piechotę</div>
+  <div class="row"><span class="swatch" style="background:#8a8a8a;"></span>Góry — nieprzechodnie</div>
+  <div class="row"><span class="swatch" style="background:#3a7bd5;"></span>Woda — bardzo wolno, -70% obrażeń, dystansowi nie strzelają</div>
+  <div class="row"><span class="swatch" style="background:#c2a76c;"></span>Wzgórza — spowolnienie zależne od typu, dystansowi +40% zasięgu</div>
 </div>
+<div id="unitStatsTooltip"></div>
 <div id="goldPanel">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)</div>
 <div id="alertBanner" style="display:none;"></div>
 <div id="cityPanel" style="display:none;">
@@ -90,6 +140,14 @@ const REGEN_PER_SECOND = 0.03; // ułamek maxHp na sekundę
 
 // Napieranie w walce wręcz — patrz resolveCombat/resolveCollisions
 const PUSH_ADVANCE_SPEED_PER_STRENGTH = 3; // px/s na punkt pushStrength (obniżone o połowę — miało być powolne i stopniowe)
+// Limit dystansu napierania/pościgu za UCIEKAJĄCYM celem, liczony od
+// chaseAnchorX/Y (pozycja przy nawiązaniu aktualnego zaangażowania) —
+// bez tego napieranie samo się napędza w nieskończoność, bo skracanie
+// dystansu utrzymuje uciekającego wroga wciąż "w zasięgu" (prawdziwy
+// błąd: jednostka bez żadnego rozkazu potrafiła w ten sposób gonić wroga
+// dziesiątki pikseli). ~2,5 kafla — krótki, wyraźny pościg, nie pogoń
+// przez pół mapy.
+const MAX_CHASE_DISTANCE_PX = 80;
 
 // Obrażenia w zwarciu skalowane tym, kto napiera (patrz pushDamageMultiplier)
 const PUSH_WINNING_DAMAGE_MULTIPLIER = 1.0;
@@ -99,7 +157,7 @@ const PUSH_LOSING_DAMAGE_MULTIPLIER = 0.25;
 // Spowolnienie w zwarciu — naprawia "przepychanie się" przez wroga
 // rozkazem ruchu bez realnego stoczenia walki (patrz resolveCombat/updateUnit)
 const MELEE_SLOW_DURATION = 1.5; // s po ostatnim ciosie zadanym/otrzymanym w zwarciu
-const COMBAT_SPEED_MULTIPLIER = 0.3; // mnożnik prędkości w tym oknie
+const COMBAT_SPEED_MULTIPLIER = 0.22; // mnożnik prędkości w tym oknie (obniżone z 0.3 — jednostki mają być trochę wolniejsze podczas walki)
 
 // Bonus "dobijania" dla ostrzału dystansowego — patrz updateProjectiles
 const LOW_HP_THRESHOLD = 0.3; // poniżej tego ułamka maxHp celu
@@ -116,7 +174,7 @@ const LOW_HP_DAMAGE_BONUS = 1.5; // mnożnik obrażeń trafienia pociskiem
 // sojuszników w pobliżu NIC nie kosztuje, tylko tłumi straty z walki.
 // ============================================================
 const MORALE_MAX = 100;
-const MORALE_RECOVER_THRESHOLD = 55; // złamana jednostka wraca pod kontrolę dopiero przy odbudowanym morale (50-60)
+const MORALE_RECOVER_THRESHOLD = 35; // złamana jednostka wraca pod kontrolę dopiero przy odbudowanym morale (obniżone z 55 — panika trwała za długo, próg bliżej MORALE_WARNING_THRESHOLD)
 const MORALE_WARNING_THRESHOLD = 25; // migotanie ostrzegawcze poniżej tego progu (jeszcze nie złamana)
 const MORALE_PROTECTION_DURATION = 15; // s okresu ochronnego po powrocie z paniki — złamanie zablokowane, morale nadal może spadać
 
@@ -129,7 +187,7 @@ const MORALE_LOSS_PER_DAMAGE = 0.05; // na punkt obrażeń otrzymanych w tej kla
 // Niskie HP NIE jest samodzielną przyczyną złamania — wzmacnia WYŁĄCZNIE
 // czynniki sytuacyjne niżej (przewaga/flanka/tył/okrążenie), nigdy samą
 // utratę HP powyżej.
-const MORALE_LOW_HP_AMPLIFIER = 2.0; // mnożnik 1..3x zależnie od brakującego % HP, patrz updateMorale
+const MORALE_LOW_HP_AMPLIFIER = 2.5; // mnożnik 1..3,5x zależnie od brakującego % HP (podniesione z 2.0 — niskie HP ma mocniej wzmacniać złą sytuację), patrz updateMorale
 // Flanka/tył — NIEZALEŻNY, ciągły koszt (nie mnożnik straty z obrażeń):
 // silny czynnik sytuacyjny, liczy się sam fakt trafienia z tego kierunku,
 // niezależnie od tego, ile obrażeń akurat przeszło. Tył mocniejszy niż flanka.
@@ -138,7 +196,7 @@ const MORALE_REAR_HIT_LOSS_PER_SECOND = 14;
 // Przewaga liczebna rośnie KWADRATOWO z liczbą dodatkowych napastników
 // wręcz (patrz updateMorale: (extra^2) * ta stała) — realny efekt dopiero
 // od jasnej przewagi 2:1 (extra=1), 3:1+ bardzo szybko, nie proporcjonalnie
-const MORALE_OUTNUMBERED_LOSS_PER_SECOND = 4;
+const MORALE_OUTNUMBERED_LOSS_PER_SECOND = 1.5; // mocno zredukowane z 4 — sama przewaga liczebna (np. 2 na 1) ma być wyraźnie łagodniejsza, ciężar czynników przesunięty na flankę/tył/okrążenie/niskie HP
 // Okrążenie (napastnicy — melee i ostrzał razem — rozstawieni z wielu
 // stron, nie skupieni po jednej, patrz isEncircled) to NAJSILNIEJSZY,
 // NIEZALEŻNY czynnik — dolicza się OSOBNO do przewagi liczebnej, bo może
@@ -179,8 +237,8 @@ const MORALE_BREAK_CURVE_EXPONENT = 1.5;
 // oddalenia i dłuższego spokoju, zanim ruszy odbudowa morale.
 const PANIC_SPEED_MULTIPLIER = 1.05; // ledwie szybciej niż normalny marsz — ma dać się dogonić
 const PANIC_FLEE_DISTANCE = 250; // px, jak daleko jednostka próbuje uciec jednym rozkazem
-const PANIC_SAFE_DISTANCE = 220; // px od najbliższego wroga uznawane za bezpieczne
-const PANIC_RECOVERY_DELAY = 12; // s nieprzerwanego bezpieczeństwa, zanim ruszy odbudowa morale
+const PANIC_SAFE_DISTANCE = 110; // px od najbliższego wroga uznawane za bezpieczne (-50% — panika trwała zdecydowanie za długo, to człon dominujący czas jej trwania)
+const PANIC_RECOVERY_DELAY = 6; // s nieprzerwanego bezpieczeństwa, zanim ruszy odbudowa morale (-50%)
 const PANIC_MORALE_RECOVER_PER_SECOND = 10; // szybsza niż standardowa — ma dać się uratować niedobitki
 
 // Last Stand — przeciwwaga dla ucieczki: gdy jednostka spełnia warunki
@@ -261,11 +319,11 @@ const UNIT_TYPES = {
   // nowego przeciwnika (kawaleria zwrotna, działo najwolniejsze) i mnożnik
   // tłumiący bonus przeciwnika za flankowanie (tylko ciężka piechota ma
   // realną odporność — zdyscyplinowana, trudna do zaskoczenia mimo wolnego obrotu).
-  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 3.52, reloadTime: 1.5, projectileSpeed: 300, meleeDamage: 0.4, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.05, turnTimeSeconds: 0.9, flankResistance: 1.0 }, // obrażenia -20% (5.6 -> 4.4 -> 3.52)
-  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 5.76, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.56, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.05, turnTimeSeconds: 2.5, flankResistance: 1.0 }, // obrażenia -20% (7.2 -> 5.76)
-  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 6.8, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 0.4, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.2, turnTimeSeconds: 0.7, flankResistance: 1.0 }, // obrażenia -20% (8.5 -> 6.8), pushStrength -80% (2 -> 0.4)
-  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 10.24, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 1.0, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.4, turnTimeSeconds: 1.6, flankResistance: 0.6 }, // obrażenia -20% (12.8 -> 10.24), pushStrength -80% (5 -> 1.0)
-  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 9.52, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 0.2, moraleResistance: 1.0, combatSpeedMultiplier: 0.7, buildTime: 9, lastStandChance: 0.15, turnTimeSeconds: 0.4, flankResistance: 1.0 }, // obrażenia -20% (11.9 -> 9.52), pushStrength -80% (1 -> 0.2)
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 3.52, reloadTime: 1.5, projectileSpeed: 300, meleeDamage: 0.4, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.02, turnTimeSeconds: 0.9, flankResistance: 1.0 }, // obrażenia -20% (5.6 -> 4.4 -> 3.52); lastStandChance obniżone (0.05 -> 0.02, Last Stand ma być rzadki, ~1/15 złamań ogółem)
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 5.76, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.56, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.02, turnTimeSeconds: 2.5, flankResistance: 1.0 }, // obrażenia -20% (7.2 -> 5.76); lastStandChance 0.05 -> 0.02
+  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 6.8, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 0.4, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.08, turnTimeSeconds: 0.7, flankResistance: 1.0 }, // obrażenia -20% (8.5 -> 6.8), pushStrength -80% (2 -> 0.4); lastStandChance 0.2 -> 0.08
+  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 10.24, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 1.0, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.15, turnTimeSeconds: 1.6, flankResistance: 0.6 }, // obrażenia -20% (12.8 -> 10.24), pushStrength -80% (5 -> 1.0); lastStandChance 0.4 -> 0.15
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 9.52, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 0.2, moraleResistance: 1.0, combatSpeedMultiplier: 0.55, buildTime: 9, lastStandChance: 0.06, turnTimeSeconds: 0.4, flankResistance: 1.0 }, // obrażenia -20% (11.9 -> 9.52), pushStrength -80% (1 -> 0.2); lastStandChance 0.15 -> 0.06; combatSpeedMultiplier 0.7 -> 0.55 (trochę wolniejsza w zwarciu, nadal łatwiej się wyrywa niż inne typy)
   // Bezbronny nosiciel złota (attackRange:0 -> nigdy nie znajdzie celu do
   // ataku; wykluczony z namierzania przez innych — patrz findTargetForUnit/
   // findNearestEnemyInRange — więc nigdy nie ginie w walce, tylko może
@@ -562,6 +620,7 @@ function spawnUnit(type, col, row, owner) {
     engagedTargetId: null, // id przeciwnika, z którym jednostka jest aktualnie "związana" (melee albo cel ostrzału) — trwałe, nie przelicza się co klatkę; patrz resolveCombat
     turnRemaining: 0, // s do końca odwracania się w stronę nowego engagedTargetId (facingAngle zamrożone, dopóki > 0) — patrz UNIT_TYPES.turnTimeSeconds
     engagementDuration: 0, // s trwania AKTUALNEGO zaangażowania — im dłużej trwa, tym bardziej zanika bonus za flankowanie/tył (patrz flankBonusFor)
+    chaseAnchorX: null, chaseAnchorY: null, // pozycja w momencie nawiązania AKTUALNEGO zaangażowania — limit dystansu "napierania"/pościgu, patrz MAX_CHASE_DISTANCE_PX w resolveCombat
   });
 }
 
@@ -1079,6 +1138,50 @@ const cityProductionStatusEl = document.getElementById('cityProductionStatus');
 const cityRoutesListEl = document.getElementById('cityRoutesList');
 const closeCityPanelBtnEl = document.getElementById('closeCityPanelBtn');
 const alertBannerEl = document.getElementById('alertBanner');
+const legendToggleBtnEl = document.getElementById('legendToggleBtn');
+const legendPanelEl = document.getElementById('legendPanel');
+const unitStatsTooltipEl = document.getElementById('unitStatsTooltip');
+
+// Zwinięty domyślnie — nie ma zasłaniać mapy, gracz sam go rozwija.
+legendToggleBtnEl.onclick = () => {
+  const collapsed = legendPanelEl.style.display === 'none';
+  legendPanelEl.style.display = collapsed ? 'block' : 'none';
+  legendToggleBtnEl.style.display = collapsed ? 'none' : 'block';
+};
+
+// Krótkie opisy roli — wyłącznie do podglądu w panelu miasta (patrz
+// showUnitStatsTooltip), gracz ma rozumieć za co płaci bez czytania
+// dokumentacji. Nie mylić z komentarzami przy UNIT_TYPES (te są dla
+// programisty, nie dla gracza).
+const UNIT_ROLE_DESCRIPTIONS = {
+  ARCHER: 'Lekki dystans, tani, słaby w zwarciu',
+  CANNON: 'Ciężka artyleria, duży zasięg, bezbronna z bliska',
+  LIGHT_INFANTRY: 'Tania piechota do zapełniania linii',
+  HEAVY_INFANTRY: 'Najsilniejsza w zwarciu, wolna',
+  CAVALRY: 'Szybka, do flankowania i rajdów',
+};
+
+function showUnitStatsTooltip(type) {
+  const cfg = UNIT_TYPES[type];
+  const dmgLine = cfg.ranged
+    ? `Obrażenia: ${cfg.damagePerShot}/strzał (${(cfg.damagePerShot / cfg.reloadTime).toFixed(1)}/s)`
+    : `Obrażenia: ${cfg.damagePerSecond}/s`;
+  const speedPxPerS = Math.round(BASE_SPEED_PX_PER_S * cfg.speed);
+  unitStatsTooltipEl.innerHTML = `
+    <div class="roleText">${type}</div>
+    <div>${UNIT_ROLE_DESCRIPTIONS[type] || ''}</div>
+    <div>HP: ${cfg.maxHp}</div>
+    <div>${dmgLine}</div>
+    <div>Zasięg: ${cfg.attackRange}</div>
+    <div>Prędkość: ${speedPxPerS}px/s</div>
+    <div>Koszt: ${cfg.cost}zł</div>
+    <div>Czas produkcji: ${cfg.buildTime}s</div>
+  `;
+  unitStatsTooltipEl.style.display = 'block';
+}
+function hideUnitStatsTooltip() {
+  unitStatsTooltipEl.style.display = 'none';
+}
 
 // Baner alertów u góry ekranu — widoczny ZAWSZE (nie tylko przy otwartym
 // panelu miasta), np. przy przejęciu/utracie konwoju (patrz
@@ -1123,6 +1226,8 @@ function buildCityPanelButtons(city) {
       city.queue.push({ type, remainingTime: cfg.buildTime });
       updateCityPanelLive();
     };
+    btn.addEventListener('mouseenter', () => showUnitStatsTooltip(type));
+    btn.addEventListener('mouseleave', hideUnitStatsTooltip);
     cityBuildButtonsEl.appendChild(btn);
   }
   buildCityUpgradeSection(city);
@@ -1196,7 +1301,9 @@ function updateCityPanelLive() {
     const next = city.level + 1;
     const cost = CITY_LEVELS[next].upgradeCost;
     const canAfford = gold[city.owner] >= cost;
-    upgradeBtn.textContent = `Ulepsz do poziomu ${next} (${cost}zł, ${CITY_LEVELS[next].upgradeTime}s)`;
+    const curInterval = CITY_LEVELS[city.level].spawnInterval;
+    const nextInterval = CITY_LEVELS[next].spawnInterval;
+    upgradeBtn.textContent = `Poziom ${city.level}→${next}: konwój co ${curInterval}s→${nextInterval}s (koszt ${cost}zł, ${CITY_LEVELS[next].upgradeTime}s)`;
     upgradeBtn.disabled = !canAfford;
     upgradeBtn.title = canAfford ? '' : `Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`;
   }
@@ -1237,6 +1344,7 @@ function showCityPanel(city) {
 function hideCityPanel() {
   selectedCity = null;
   cityPanelEl.style.display = 'none';
+  hideUnitStatsTooltip();
 }
 
 closeCityPanelBtnEl.addEventListener('click', hideCityPanel);
@@ -2161,6 +2269,8 @@ function resolveCombat(allUnits, dt) {
         unit.engagedTargetId = candidate.id;
         unit.engagementDuration = 0;
         unit.turnRemaining = ucfg.turnTimeSeconds;
+        unit.chaseAnchorX = unit.x; // punkt startu pościgu/napierania dla TEGO zaangażowania — patrz MAX_CHASE_DISTANCE_PX
+        unit.chaseAnchorY = unit.y;
       } else {
         unit.engagedTargetId = null;
       }
@@ -2289,9 +2399,21 @@ function resolveCombat(allUnits, dt) {
   // Napieranie: jednostki wręcz (pushStrength>0) powoli suną w stronę
   // celu zamiast stać nieruchomo w zasięgu ataku — o tym, kto faktycznie
   // zyskuje grunt, rozstrzyga ważone resolveCollisions (patrz wyżej).
+  // Rozkaz gracza ma BEZWZGLĘDNY priorytet: jednostka z aktywną,
+  // niedokończoną ścieżką (świeży rozkaz) nigdy nie jest przesuwana tu
+  // automatycznie — w typowej, stacjonarnej walce frontowej path.length
+  // i tak wynosi 0 (jednostka dotarła i stoi), więc to nie wyłącza
+  // zamierzonego, powolnego przesuwania frontu, tylko sytuację "gracz
+  // właśnie wydał nowy rozkaz". Dodatkowo ograniczone do
+  // MAX_CHASE_DISTANCE_PX od chaseAnchorX/Y (patrz spawnUnit / pętla
+  // zaangażowania wyżej) — bez tego napieranie za uciekającym wrogiem
+  // samo się napędza w nieskończoność (prawdziwy zgłoszony błąd pościgu).
   for (const { attacker, target } of attacks) {
+    if (attacker.path.length > 0) continue;
     const pushStrength = effectivePushStrength(attacker);
     if (pushStrength <= 0) continue;
+    const chasedDist = Math.hypot(attacker.x - attacker.chaseAnchorX, attacker.y - attacker.chaseAnchorY);
+    if (chasedDist >= MAX_CHASE_DISTANCE_PX) continue;
     const dx = target.x - attacker.x, dy = target.y - attacker.y;
     const dist = Math.hypot(dx, dy) || 1;
     const step = pushStrength * PUSH_ADVANCE_SPEED_PER_STRENGTH * dt;
