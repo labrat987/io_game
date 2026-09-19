@@ -3610,6 +3610,55 @@ window.BalanceSim = {
       lastStandB: everLastStandB.size,
     };
   },
+
+  // Duel do izolowanego pomiaru ZAŁAMANIA MORALE (routed) — NIE win-rate.
+  // Wszystkie jednostki spawnowane już w zasięgu walki (bez marszu), więc
+  // czas trwania i wynik mierzą WYŁĄCZNIE dynamikę walki/morale, nie
+  // dojście do przeciwnika. attackerAngles: kąty (stopnie, konwencja
+  // atan2: 0=wschód, 90=południe) pozycji atakujących względem obrońcy;
+  // obrońca dostaje facingAngle skierowany dokładnie w stronę PIERWSZEGO
+  // atakującego. Jeden kąt = czyste starcie czołowe (kategoria trafienia
+  // FRONT, brak przewagi liczebnej, brak okrążenia). Kilka rozstawionych
+  // kątów (np. [0,120,240]) = jednoczesna przewaga liczebna I okrążenie
+  // (patrz isEncircled) — dokładnie scenariusz "atak z kilku przeciwnych
+  // kierunków" z opisu zadania.
+  runMoraleDuel({ defenderType, attackerType, attackerAngles, maxSeconds = 200 }) {
+    this.resetWorld();
+    const centerCol = 15, centerRow = 12;
+    spawnUnit(defenderType, centerCol, centerRow, 'P2');
+    const D = units[units.length - 1];
+    const centerX = D.x, centerY = D.y;
+    D.facingAngle = attackerAngles[0] * Math.PI / 180;
+    const dist = 15; // już w zasięgu walki wręcz/ostrzału wszystkich typów
+    for (const angleDeg of attackerAngles) {
+      const rad = angleDeg * Math.PI / 180;
+      spawnUnit(attackerType, centerCol, centerRow, 'P1');
+      const a = units[units.length - 1];
+      a.x = centerX + Math.cos(rad) * dist;
+      a.y = centerY + Math.sin(rad) * dist;
+    }
+
+    let everRouted = false;
+    const dt = 0.05;
+    const maxTicks = Math.ceil(maxSeconds / dt);
+    let tick = 0;
+    for (; tick < maxTicks; tick++) {
+      for (const u of units) updateUnit(u, dt);
+      resolveCollisions(units);
+      units = resolveCombat(units, dt);
+      const stillD = units.find(u => u.id === D.id);
+      if (stillD && stillD.routed) { everRouted = true; tick++; break; } // złamanie = wynik starcia, koniec pomiaru
+      if (!stillD) break; // obrońca zginął
+      if (!units.some(u => u.owner === 'P1')) break; // wszyscy atakujący zginęli
+    }
+    const defenderAlive = units.some(u => u.id === D.id);
+    return {
+      routed: everRouted,
+      defenderDied: !defenderAlive,
+      durationSeconds: tick * dt,
+      timedOut: tick >= maxTicks,
+    };
+  },
 };
 </script>
 </body>

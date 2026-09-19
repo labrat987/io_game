@@ -212,6 +212,40 @@ async function main() {
     console.log(`mieszana ${pct(s.winRateA)} / czysta piechota ${pct(s.winRateB)} / remis ${pct(s.drawRate)}`);
   }
 
+  // 5. Załamania morale — starcia FRONTALNE (1v1, bez przewagi, bez
+  // flanki) vs OKRĄŻENIE (3 atakujących rozstawionych co 120° wokół
+  // obrońcy — jednocześnie przewaga liczebna 3:1 I okrążenie kątowe).
+  // Mierzy WYŁĄCZNIE to, o co prosił użytkownik: % starć kończących się
+  // złamaniem (routed=true w dowolnym momencie starcia) w każdym z dwóch
+  // scenariuszy, oraz średni czas trwania starcia.
+  console.log('\n=== 5/5 Załamania morale: starcia FRONTALNE vs OKRĄŻENIE ===');
+  const MORALE_DUEL_REPEATS = 50;
+  const moraleScenarios = [
+    { defenderType: 'LIGHT_INFANTRY', attackerType: 'LIGHT_INFANTRY' },
+    { defenderType: 'HEAVY_INFANTRY', attackerType: 'HEAVY_INFANTRY' },
+  ];
+  const moraleAngleSets = [
+    ['FRONTALNE (1v1)', [90]],
+    ['OKRĄŻENIE (3 kierunki, 3:1)', [0, 120, 240]],
+  ];
+  const moraleResults = [];
+  for (const { defenderType, attackerType } of moraleScenarios) {
+    for (const [label, angles] of moraleAngleSets) {
+      process.stdout.write(`  ${defenderType} broni się przed ${attackerType}, ${label}... `);
+      const duels = [];
+      for (let i = 0; i < MORALE_DUEL_REPEATS; i++) {
+        duels.push(await page.evaluate((cfg) => window.BalanceSim.runMoraleDuel(cfg), {
+          defenderType, attackerType, attackerAngles: angles, maxSeconds: MAX_SECONDS,
+        }));
+      }
+      const routRate = duels.filter((d) => d.routed).length / duels.length;
+      const avgDuration = mean(duels.map((d) => d.durationSeconds));
+      const timeoutRate = duels.filter((d) => d.timedOut).length / duels.length;
+      moraleResults.push({ defenderType, attackerType, scenario: label, routRate, avgDuration, timeoutRate, n: duels.length });
+      console.log(`załamanie ${pct(routRate)} / śr. czas ${avgDuration.toFixed(1)}s / timeout ${pct(timeoutRate)}`);
+    }
+  }
+
   await browser.close();
   server.close();
 
@@ -280,11 +314,24 @@ async function main() {
     console.log(`${r.name}: mieszana ${pct(r.winRateA)} / czysta piechota ${pct(r.winRateB)} / remis ${pct(r.drawRate)} / śr. obrażenia na jednostkę: mieszana ${r.avgDmgPerUnitA.toFixed(1)}, piechota ${r.avgDmgPerUnitB.toFixed(1)}`);
   }
 
+  console.log('\n--- Załamania morale: starcia FRONTALNE vs OKRĄŻENIE ---');
+  for (const { defenderType, attackerType } of moraleScenarios) {
+    const frontal = moraleResults.find((r) => r.defenderType === defenderType && r.attackerType === attackerType && r.scenario.startsWith('FRONTALNE'));
+    const encircled = moraleResults.find((r) => r.defenderType === defenderType && r.attackerType === attackerType && r.scenario.startsWith('OKRĄŻENIE'));
+    console.log(`${defenderType}: frontalne ${pct(frontal.routRate)} złamań (śr. czas ${frontal.avgDuration.toFixed(1)}s) | okrążenie ${pct(encircled.routRate)} złamań (śr. czas ${encircled.avgDuration.toFixed(1)}s)`);
+  }
+  const overallFrontalRoutRate = mean(moraleResults.filter((r) => r.scenario.startsWith('FRONTALNE')).map((r) => r.routRate));
+  const overallEncircledRoutRate = mean(moraleResults.filter((r) => r.scenario.startsWith('OKRĄŻENIE')).map((r) => r.routRate));
+  const overallDuelDuration = mean(moraleResults.map((r) => r.avgDuration));
+  console.log(`\nŚredni czas trwania starcia (wszystkie duele): ${overallDuelDuration.toFixed(1)}s`);
+  console.log(`Średni % starć FRONTALNYCH kończących się załamaniem morale: ${pct(overallFrontalRoutRate)} (oczekiwane: bardzo niski)`);
+  console.log(`Średni % starć z OKRĄŻENIEM kończących się załamaniem morale: ${pct(overallEncircledRoutRate)} (oczekiwane: wyraźnie wyższy)`);
+
   console.log('\n--- Błędy konsoli w trakcie symulacji ---');
   console.log(consoleErrors.length ? JSON.stringify(consoleErrors) : '(brak)');
 
   console.log('\n--- Surowe dane (równoliczne, równokosztowe, mieszane) dla dalszej analizy ---');
-  console.log(JSON.stringify({ equalCount, equalCost, terrainResults, mixedResults, flankResults }, null, 2));
+  console.log(JSON.stringify({ equalCount, equalCost, terrainResults, mixedResults, flankResults, moraleResults }, null, 2));
 }
 
 main().catch((err) => { console.error(err); process.exit(1); });
