@@ -54,6 +54,7 @@
 <div id="cityPanel" style="display:none;">
   <div id="cityPanelTitle"></div>
   <div id="cityUpgradeSection"></div>
+  <div id="cityConvoyStatus"></div>
   <div id="cityQueueList"></div>
   <div id="cityBuildButtons"></div>
   <div id="cityProductionStatus" style="color:#ff8844; min-height: 1.4em;"></div>
@@ -243,7 +244,7 @@ const UNIT_TYPES = {
   // ataku; wykluczony z namierzania przez innych — patrz findTargetForUnit/
   // findNearestEnemyInRange — więc nigdy nie ginie w walce, tylko może
   // zostać przejęty, patrz updateConvoyCaptures). Wysyłany automatycznie
-  // przez szlaki handlowe (spawnRouteConvoy), bez kosztu — brak pola
+  // przez szlaki handlowe (spawnCityConvoy), bez kosztu — brak pola
   // `cost`. Nigdy nie walczy, więc lastStandChance: 0 (nie dotyczy, ale
   // pole zawsze obecne dla spójności).
   CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, collisionRadius: 4, drawRadius: 3, pushStrength: 0, moraleResistance: 1.0, lastStandChance: 0 }, // drawRadius zmniejszony (był 5) — wyraźnie mniejszy niż jednostki bojowe (6-8); collisionRadius bez zmian, to wyłącznie redukcja wizualna
@@ -372,30 +373,36 @@ const CITIES = [
   { id: 'p2_b', col: 35, row: 21, owner: 'P2' },
   { id: 'p2_c', col: 35, row: 0,  owner: 'P2' },
 ];
-for (const city of CITIES) { city.queue = []; city.level = 1; city.upgradeRemaining = 0; } // queue: {type, remainingTime}; level 1-3, upgradeRemaining: s pozostałe do końca trwającego ulepszenia (0 = brak)
+for (const city of CITIES) { city.queue = []; city.level = 1; city.upgradeRemaining = 0; city.timeSinceLastConvoy = 0; } // queue: {type, remainingTime}; level 1-5, upgradeRemaining: s do końca trwającego ulepszenia (0 = brak); timeSinceLastConvoy: patrz CITY_LEVELS/updateTradeRoutes — tyka TYLKO gdy miasto ma ≥1 szlak
 
 const STARTING_GOLD = 250; // starcza na kilka jednostek na start
 const CITY_BASE_INCOME_PER_SECOND = 0.15; // mały, stały dochód z posiadanego miasta — trickle, szlaki handlowe są głównym źródłem zysku
 const CITY_QUEUE_MAX_LENGTH = 5; // maks. liczba jednostek w kolejce produkcji jednego miasta naraz
 
 // Szlaki handlowe — trwałe trasy rysowane przez gracza (patrz gest
-// TRADE_ROUTE w mousedown/mousemove/mouseup), po których automatycznie i
-// cyklicznie kursują konwoje w obie strony (patrz updateTradeRoutes).
+// TRADE_ROUTE w mousedown/mousemove/mouseup). To MIASTO, nie szlak, jest
+// jednostką ekonomii (wzorem OpenFront.io): każde miasto ma WŁASNY,
+// niezależny licznik (patrz updateTradeRoutes/spawnCityConvoy) i wysyła
+// konwój co CITY_LEVELS[level].spawnInterval, losując przy każdej
+// wysyłce JEDEN spośród swoich szlaków (o ile ma więcej niż jeden).
+// Dodatkowe szlaki dają więc tylko wybór kierunku, NIE więcej konwojów
+// ani wyższy dochód — bez limitu ich liczby i bez malejącego zysku.
 const TRADE_ROUTE_GOLD_PER_100PX = 15; // zysk za dostarczony konwój, na 100px długości narysowanego szlaku
 
 // Poziomy miast (1 = start, CITY_LEVEL_MAX = maks.). upgradeCost/upgradeTime
-// to koszt złota i czas ulepszenia DO danego poziomu (poziom 1 nie ma kosztu
-// — startowy). spawnInterval: sekundy między konwojami wyruszającymi Z
-// miasta na tym poziomie, liczone OSOBNO dla każdego kierunku wg poziomu
-// miasta-ŹRÓDŁA tego kierunku (patrz updateTradeRoutes) — ulepszenie miasta
-// przyspiesza tylko konwoje wysyłane Z NIEGO, nie te przychodzące z drugiej
-// strony. Poziom 1 celowo wolniejszy niż dawne płaskie 60s — konwój ma być
-// wydarzeniem, nie stałym strumieniem; poziom 3 odzyskuje dawne tempo.
-const CITY_LEVEL_MAX = 3;
+// to koszt złota i czas ulepszenia DO danego poziomu (poziom 1 nie ma
+// kosztu — startowy). spawnInterval: sekundy między KOLEJNYMI konwojami
+// wysyłanymi z miasta na tym poziomie (city.timeSinceLastConvoy, patrz
+// updateTradeRoutes) — niezależnie od liczby szlaków miasta. Koszty
+// dobrane tak, żeby każdy poziom zwracał się w ~10 minut przychodu z
+// TEGO miasta przy szlaku średniej długości (patrz wyliczenie w raporcie).
+const CITY_LEVEL_MAX = 5;
 const CITY_LEVELS = {
-  1: { upgradeCost: 0,   upgradeTime: 0,  spawnInterval: 150 },
-  2: { upgradeCost: 300, upgradeTime: 40, spawnInterval: 100 },
-  3: { upgradeCost: 700, upgradeTime: 80, spawnInterval: 60  },
+  1: { upgradeCost: 0,    upgradeTime: 0,  spawnInterval: 30 },
+  2: { upgradeCost: 300,  upgradeTime: 20, spawnInterval: 25 },
+  3: { upgradeCost: 450,  upgradeTime: 30, spawnInterval: 20 },
+  4: { upgradeCost: 750,  upgradeTime: 45, spawnInterval: 15 },
+  5: { upgradeCost: 1500, upgradeTime: 70, spawnInterval: 10 },
 };
 
 // Przechwytywanie konwojów — zamiast ginąć w walce (konwoje są całkowicie
@@ -486,9 +493,10 @@ let gold = { P1: STARTING_GOLD, P2: STARTING_GOLD };
 let goldRate = { P1: 0, P2: 0 }; // wygładzony (EMA) wskaźnik do UI — jedyne realne źródło (konwoje) jest skokowe, nie ciągłe
 let selectedCity = null;
 
-// Szlaki handlowe — patrz sekcja CONFIG (TRADE_ROUTE_*) i gest w
-// mousedown/mousemove/mouseup, updateTradeRoutes/spawnRouteConvoy.
-let tradeRoutes = []; // {id, owner, cityAId, cityBId, curve:[{x,y}], timeSinceSpawnAtoB, timeSinceSpawnBtoA}
+// Szlaki handlowe — patrz sekcja CONFIG (TRADE_ROUTE_*, CITY_LEVELS) i
+// gest w mousedown/mousemove/mouseup, updateTradeRoutes/spawnCityConvoy.
+// Czysto geometryczne — licznik wysyłki żyje na mieście (city.timeSinceLastConvoy), nie tutaj.
+let tradeRoutes = []; // {id, owner, cityAId, cityBId, curve:[{x,y}]}
 let nextTradeRouteId = 1;
 let selectedTradeRoute = null; // do usunięcia klawiszem Delete/Backspace albo przyciskiem w panelu
 let dragStartOwnCity = null; // własne miasto, na którym zaczęto PPM przeciągnięcie — rozstrzyga TRADE_ROUTE vs ROUTE/FRONT
@@ -1036,6 +1044,7 @@ const goldRateTextEl = document.getElementById('goldRateText');
 const cityPanelEl = document.getElementById('cityPanel');
 const cityPanelTitleEl = document.getElementById('cityPanelTitle');
 const cityUpgradeSectionEl = document.getElementById('cityUpgradeSection');
+const cityConvoyStatusEl = document.getElementById('cityConvoyStatus');
 const cityQueueListEl = document.getElementById('cityQueueList');
 const cityBuildButtonsEl = document.getElementById('cityBuildButtons');
 const cityProductionStatusEl = document.getElementById('cityProductionStatus');
@@ -1163,6 +1172,10 @@ function updateCityPanelLive() {
     upgradeBtn.disabled = !canAfford;
     upgradeBtn.title = canAfford ? '' : `Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`;
   }
+  const hasRoute = tradeRoutes.some(r => r.cityAId === city.id || r.cityBId === city.id);
+  cityConvoyStatusEl.textContent = hasRoute
+    ? `Następny konwój za: ${Math.max(0, CITY_LEVELS[city.level].spawnInterval - city.timeSinceLastConvoy).toFixed(1)}s`
+    : 'Brak szlaków — licznik konwojów zatrzymany';
   cityQueueListEl.innerHTML = city.queue.length
     ? `${city.queue.length}/${CITY_QUEUE_MAX_LENGTH} — ` + city.queue.map((q, i) => `${i === 0 ? 'Buduje' : 'W kolejce'}: ${q.type} (${q.remainingTime.toFixed(1)}s)`).join('<br>')
     : 'Kolejka pusta';
@@ -1391,6 +1404,11 @@ window.addEventListener('mouseup', (e) => {
           if (selectedTradeRoute === tradeRoutes[oldIdx]) selectedTradeRoute = null;
           tradeRoutes.splice(oldIdx, 1);
         }
+        // Czysto geometryczny opis — żadnego licznika tutaj. Licznik
+        // wysyłki żyje na MIEŚCIE (city.timeSinceLastConvoy), którego to
+        // utworzenie/usunięcie/zmiana szlaku NIGDY nie dotyka (patrz
+        // updateTradeRoutes) — zabezpieczenie przed exploitem odświeżania
+        // konwojów przerysowywaniem tras.
         const curve = simplifyCurve(rawStrokePoints, 6);
         tradeRoutes.push({
           id: nextTradeRouteId++,
@@ -1398,10 +1416,6 @@ window.addEventListener('mouseup', (e) => {
           cityAId: dragStartOwnCity.id,
           cityBId: destCity.id,
           curve,
-          // konwój wyrusza od razu, w obie strony — interwał każdego
-          // kierunku wg poziomu jego miasta-źródła (patrz CITY_LEVELS)
-          timeSinceSpawnAtoB: CITY_LEVELS[dragStartOwnCity.level].spawnInterval,
-          timeSinceSpawnBtoA: CITY_LEVELS[destCity.level].spawnInterval,
         });
         if (selectedCity) buildCityRoutesList(selectedCity);
       }
@@ -1551,6 +1565,9 @@ function resolveCollisions(allUnits) {
   for (let i = 0; i < allUnits.length; i++) {
     for (let j = i + 1; j < allUnits.length; j++) {
       const a = allUnits[i], b = allUnits[j];
+      // Konwoje przenikają przez wszystko — siebie nawzajem i jednostki
+      // bojowe (nie rzutują siły, nie mają czego bronić fizycznym zderzeniem).
+      if (a.type === 'CONVOY' || b.type === 'CONVOY') continue;
       const minDist = UNIT_TYPES[a.type].collisionRadius + UNIT_TYPES[b.type].collisionRadius;
       const dx = b.x - a.x, dy = b.y - a.y;
       const dist = Math.hypot(dx, dy);
@@ -2246,50 +2263,46 @@ let convoyArrivalEffects = []; // {x, y, startTime} — krótki żółty rozbły
 const CONVOY_ARRIVAL_EFFECT_DURATION_MS = 300;
 const CONVOY_ARRIVAL_RADIUS = 24; // px od środka miasta uznawane za "dotarł"
 
-// Wysyła jeden konwój wzdłuż narysowanej krzywej szlaku (kierunek 'AtoB'
-// albo 'BtoA') — reużywa buildRoutePath/finalizePath, DOKŁADNIE ten sam
-// pipeline co TRASA dla jednostek, więc konwój podąża po krzywej, nie po
-// najkrótszej drodze. Wołane cyklicznie przez updateTradeRoutes, bez
-// udziału gracza i bez żadnego kosztu (ekonomia jest wyłącznie przychodowa).
-function spawnRouteConvoy(route, direction) {
-  const cityA = CITIES.find(c => c.id === route.cityAId);
-  const cityB = CITIES.find(c => c.id === route.cityBId);
-  if (!cityA || !cityB) return;
-  const originCity = direction === 'AtoB' ? cityA : cityB;
-  const destCity = direction === 'AtoB' ? cityB : cityA;
-  const curve = direction === 'AtoB' ? route.curve : [...route.curve].reverse();
-  spawnUnit('CONVOY', originCity.col, originCity.row, route.owner);
+// Wysyła jeden konwój Z danego miasta, losując JEDEN z jego szlaków (o
+// ile ma więcej niż jeden) — więcej szlaków daje więcej możliwych
+// kierunków, NIGDY więcej konwojów. Reużywa buildRoutePath/finalizePath,
+// DOKŁADNIE ten sam pipeline co TRASA dla jednostek, więc konwój podąża
+// po krzywej, nie po najkrótszej drodze. Wołane cyklicznie przez
+// updateTradeRoutes, bez udziału gracza i bez żadnego kosztu.
+function spawnCityConvoy(city) {
+  const cityRoutes = tradeRoutes.filter(r => r.cityAId === city.id || r.cityBId === city.id);
+  if (cityRoutes.length === 0) return;
+  const route = cityRoutes[Math.floor(Math.random() * cityRoutes.length)];
+  const destCityId = route.cityAId === city.id ? route.cityBId : route.cityAId;
+  const destCity = CITIES.find(c => c.id === destCityId);
+  if (!destCity) return;
+  const curve = route.cityAId === city.id ? route.curve : [...route.curve].reverse();
+  spawnUnit('CONVOY', city.col, city.row, city.owner);
   const convoy = units[units.length - 1];
   convoy.targetCityId = destCity.id;
   convoy.tradeRouteId = route.id;
   convoy.captureProgress = 0;
   convoy.capturingOwner = null;
   convoy.captureCount = 0;
-  const origin = cityCenter(originCity), dest = cityCenter(destCity);
+  const origin = cityCenter(city), dest = cityCenter(destCity);
   convoy.goldValue = Math.hypot(dest.x - origin.x, dest.y - origin.y) / 100 * TRADE_ROUTE_GOLD_PER_100PX;
   const rawPath = buildRoutePath(convoy, curve);
   if (rawPath !== null) convoy.path = finalizePath(convoy, rawPath);
 }
 
-// Odlicza interwał wysyłki OSOBNO dla każdego kierunku każdego szlaku —
-// szlak pozostaje aktywny nawet po utracie konwoju (patrz
-// updateConvoyCaptures), po interwale i tak wyruszy kolejny. Interwał
-// każdego kierunku zależy od poziomu miasta-ŹRÓDŁA tego kierunku
-// (CITY_LEVELS) — ulepszenie miasta przyspiesza tylko konwoje wysyłane z
-// niego, nie te przychodzące z drugiej strony szlaku.
+// To MIASTO ma licznik, nie szlak (patrz CONFIG) — tyka WYŁĄCZNIE gdy
+// miasto ma ≥1 szlak (jakikolwiek), inaczej zamrożony (nie zeruje się,
+// po prostu nie rośnie — "bez szlaku nie odlicza"). Żadna operacja na
+// szlakach (utworzenie/usunięcie/zmiana) nie dotyka tego pola nigdzie
+// indziej w kodzie, więc nie da się go zresetować przerysowaniem trasy.
 function updateTradeRoutes(dt) {
-  for (const route of tradeRoutes) {
-    route.timeSinceSpawnAtoB += dt;
-    route.timeSinceSpawnBtoA += dt;
-    const cityA = CITIES.find(c => c.id === route.cityAId);
-    const cityB = CITIES.find(c => c.id === route.cityBId);
-    if (cityA && route.timeSinceSpawnAtoB >= CITY_LEVELS[cityA.level].spawnInterval) {
-      route.timeSinceSpawnAtoB = 0;
-      spawnRouteConvoy(route, 'AtoB');
-    }
-    if (cityB && route.timeSinceSpawnBtoA >= CITY_LEVELS[cityB.level].spawnInterval) {
-      route.timeSinceSpawnBtoA = 0;
-      spawnRouteConvoy(route, 'BtoA');
+  for (const city of CITIES) {
+    const hasRoute = tradeRoutes.some(r => r.cityAId === city.id || r.cityBId === city.id);
+    if (!hasRoute) continue;
+    city.timeSinceLastConvoy += dt;
+    if (city.timeSinceLastConvoy >= CITY_LEVELS[city.level].spawnInterval) {
+      city.timeSinceLastConvoy = 0;
+      spawnCityConvoy(city);
     }
   }
 }
