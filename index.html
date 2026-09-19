@@ -1,0 +1,4155 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>WarConvoy — prototyp ruchu</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #111; }
+  canvas { display: block; background: #222; cursor: crosshair; }
+  #legendToggleBtn {
+    position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+    color: #eee; font: 12px monospace; cursor: pointer;
+    background: rgba(0,0,0,0.7); padding: 8px 6px; border-radius: 4px 0 0 4px;
+    border: 1px solid #555; border-right: none; writing-mode: vertical-rl;
+  }
+  #legendToggleBtn:hover { background: rgba(30,30,30,0.85); }
+  #legendPanel {
+    position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+    width: 300px; max-height: 82vh; overflow-y: auto;
+    color: #eee; font: 12px monospace; line-height: 1.5;
+    background: rgba(0,0,0,0.85); padding: 10px 12px; border-radius: 4px 0 0 4px;
+    border: 1px solid #555; border-right: none;
+  }
+  #legendPanel h4 { margin: 10px 0 4px; color: #ffcc66; font-size: 12px; }
+  #legendPanel h4:first-child { margin-top: 0; }
+  #legendPanel .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #legendPanel .swatch { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  @keyframes legendPulseWhite { 0%, 100% { background: #3a7bd5; } 50% { background: #ffffff; } }
+  @keyframes legendPulseLastStand { 0%, 100% { background: #cc1100; } 50% { background: #ff9900; } }
+  .swatch-pulse-warning { animation: legendPulseWhite 1.1s ease-in-out infinite; }
+  .swatch-pulse-laststand { animation: legendPulseLastStand 0.9s ease-in-out infinite; }
+  #unitStatsTooltip {
+    position: fixed; top: 12px; right: 244px; width: 200px; display: none;
+    color: #eee; font: 12px monospace; line-height: 1.6;
+    background: rgba(0,0,0,0.85); padding: 10px; border-radius: 4px;
+    border: 1px solid #555;
+  }
+  #unitStatsTooltip .roleText { color: #ffcc66; }
+  #goldPanel {
+    position: fixed; top: 12px; left: 12px;
+    color: #f4c430; font: bold 14px monospace;
+    background: rgba(0,0,0,0.55); padding: 6px 14px; border-radius: 4px;
+    pointer-events: none;
+  }
+  #cityPanel {
+    position: fixed; top: 12px; right: 12px; width: 220px;
+    color: #eee; font: 12px monospace;
+    background: rgba(0,0,0,0.8); padding: 10px; border-radius: 4px;
+    line-height: 1.6;
+  }
+  #cityPanel button {
+    display: block; width: 100%; margin: 3px 0; font: 11px monospace;
+    background: #333; color: #eee; border: 1px solid #555; border-radius: 3px;
+    padding: 4px; cursor: pointer; text-align: left;
+  }
+  #cityPanel button:disabled { color: #777; cursor: not-allowed; }
+  #cityPanel button:hover:not(:disabled) { background: #444; }
+  #cityRoutesList button { width: auto; display: inline-block; margin-left: 6px; }
+  #alertBanner {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    color: #ffcc66; font: bold 13px monospace;
+    background: rgba(0,0,0,0.8); padding: 6px 16px; border-radius: 4px;
+    pointer-events: none;
+  }
+  #gameOverOverlay {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.9); color: #eee; font: 14px monospace; z-index: 100;
+  }
+  #gameOverOverlay > div { background: rgba(20,20,20,0.9); padding: 24px 32px; border-radius: 6px; border: 1px solid #555; text-align: center; }
+  #gameOverOverlay h2 { color: #ffcc66; margin: 0 0 12px; }
+  #gameOverOverlay table { margin: 12px auto 0; border-collapse: collapse; }
+  #gameOverOverlay td, #gameOverOverlay th { padding: 3px 12px; text-align: right; }
+  #gameOverOverlay th { color: #ffcc66; }
+  #gameOverOverlay td:first-child, #gameOverOverlay th:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<div id="legendToggleBtn">☰ Legenda</div>
+<div id="legendPanel" style="display:none;">
+  <h4>Sterowanie</h4>
+  LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
+  PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
+  przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span>,
+  przeciągnięcie z własnego miasta do innego = <span style="color:#2f6fed">SZLAK HANDLOWY</span><br>
+  Tab: zmień priorytet celu zaznaczonych jednostek dystansowych (najbliższy / artyleria / ciężkie / najsłabszy) —
+  LPM w miasto: zaznacz/panel produkcji i szlaków — Delete: usuń zaznaczony szlak
+
+  <h4>Paski nad jednostką</h4>
+  <div class="row"><span class="swatch" style="background:#4caf50;"></span>Górny pasek: HP (zielony→żółty→czerwony)</div>
+  <div class="row"><span class="swatch" style="background:#4a90d9;"></span>Dolny pasek: morale (niebieski = stabilne, żółty = blisko załamania)</div>
+
+  <h4>Stan jednostki (kolor ciała)</h4>
+  <div class="row"><span class="swatch swatch-pulse-warning"></span>Pulsowanie koloru gracza w biel — blisko załamania morale</div>
+  <div class="row"><span class="swatch" style="background:#ffffff;"></span>Pełna, NIERUCHOMA biel + biały "!" — panika: ucieka, nie słucha rozkazów</div>
+  <div class="row"><span class="swatch swatch-pulse-laststand"></span>Pulsowanie czerwono-pomarańczowe — Last Stand: desperacka obrona, bonus do walki</div>
+
+  <h4>Inne oznaczenia</h4>
+  <div class="row"><span class="swatch" style="background:#ffffff; border-radius:50%;"></span>Biały trójkącik na obwodzie — zwrot jednostki (przód, decyduje o ataku z boku/tyłu)</div>
+  <div class="row"><span class="swatch" style="background:#ffa500;"></span>Pulsująca pomarańczowa obwódka — jednostka dystansowa się rozstawia, jeszcze nie strzela</div>
+  <div class="row"><span class="swatch" style="background:#ff2828;"></span>Przyciemniona ikona + przekreślenie — dystansowa związana walką wręcz, nie strzela</div>
+
+  <h4>Ikony typów jednostek</h4>
+  Łuk = łucznik, lufa+koło = działo, dzida = piechota lekka, dzida+tarcza = piechota ciężka, grot = kawaleria, kwadrat = konwój
+
+  <h4>Miasta</h4>
+  <div class="row"><span class="swatch" style="background:#f4c430; opacity:0.5;"></span>Delikatny okrąg w kolorze właściciela — strefa obronna: -25% obrażeń i wolniejsza utrata morale dla obrońcy, obecność obrońcy blokuje przejęcie</div>
+  <div class="row"><span class="swatch" style="background:#ff5533;"></span>Pasek nad miastem w kolorze atakującego — postęp przejmowania (okupacja bez obrońcy w strefie)</div>
+
+  <h4>Teren</h4>
+  <div class="row"><span class="swatch" style="background:#a8c766;"></span>Pole — bez modyfikatorów, teren bazowy</div>
+  <div class="row"><span class="swatch" style="background:#3f6b35;"></span>Las — osłabia dystansowych i kawalerię, przyspiesza lekką piechotę</div>
+  <div class="row"><span class="swatch" style="background:#8a8a8a;"></span>Góry — nieprzechodnie</div>
+  <div class="row"><span class="swatch" style="background:#3a7bd5;"></span>Woda — bardzo wolno, -70% obrażeń, dystansowi nie strzelają</div>
+  <div class="row"><span class="swatch" style="background:#c2a76c;"></span>Wzgórza — spowolnienie zależne od typu, dystansowi +40% zasięgu</div>
+</div>
+<div id="unitStatsTooltip"></div>
+<div id="goldPanel">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)<span id="lastCityBadge" style="display:none; color:#ffcc66;"><br>⚠ OSTATNIE MIASTO — wzmocniony dochód</span></div>
+<div id="alertBanner" style="display:none;"></div>
+<div id="gameOverOverlay" style="display:none;"></div>
+<div id="cityPanel" style="display:none;">
+  <div id="cityPanelTitle"></div>
+  <div id="cityUpgradeSection"></div>
+  <div id="cityConvoyStatus"></div>
+  <div id="cityQueueList"></div>
+  <div id="cityBuildButtons"></div>
+  <div id="cityProductionStatus" style="color:#ff8844; min-height: 1.4em;"></div>
+  <div id="cityRoutesList"></div>
+  <button id="closeCityPanelBtn">Zamknij</button>
+</div>
+<canvas id="game"></canvas>
+<script>
+'use strict';
+
+// ============================================================
+// CONFIG — wszystkie statystyki jednostek i terenu w jednym miejscu
+// ============================================================
+const TILE_SIZE = 32;
+
+const TERRAIN = {
+  0: { name: 'FIELD',    passable: true,  speedMultiplier: 1.0,  color: '#a8c766' },
+  1: { name: 'FOREST',   passable: true,  speedMultiplier: 0.5,  color: '#3f6b35' },
+  2: { name: 'MOUNTAIN', passable: false, speedMultiplier: 0,    color: '#8a8a8a' },
+  3: { name: 'WATER',    passable: true,  speedMultiplier: 0.15, color: '#3a7bd5', pathCost: 20 },
+  4: { name: 'HILLS',    passable: true,  speedMultiplier: 1.0,  color: '#c2a76c' }, // podnóża gór — kara prędkości w całości w TERRAIN_MODIFIERS.<TYP>.HILLS.speedMultiplier, zróżnicowana per typ jednostki (kawaleria/działa najsilniej, lekka piechota najsłabiej)
+};
+
+// Obrażenia za sekundę stania na wodzie — wymaga systemu HP, którego
+// jeszcze nie ma; na razie stała niewywoływana nigdzie w kodzie
+const WATER_DAMAGE_PER_SECOND = 0;
+
+// Regeneracja poza walką — patrz resolveCombat. Docelowo szybsza przy
+// własnych miastach i wolniejsza blisko frontu (patrz CLAUDE.md, sekcja
+// Ekonomia) — to modyfikator tej bazy, jeszcze niezaimplementowany.
+const OUT_OF_COMBAT_DELAY = 12; // s bez zadania/otrzymania obrażeń, zanim ruszy regeneracja (>2x najdłuższe przeładowanie, żeby pojedyncze pudło nie otwierało okna regeneracji w trakcie ostrzału)
+const REGEN_PER_SECOND = 0.03; // ułamek maxHp na sekundę
+
+// Napieranie w walce wręcz — patrz resolveCombat/resolveCollisions
+const PUSH_ADVANCE_SPEED_PER_STRENGTH = 3; // px/s na punkt pushStrength (obniżone o połowę — miało być powolne i stopniowe)
+// Limit dystansu napierania/pościgu za UCIEKAJĄCYM celem, liczony od
+// chaseAnchorX/Y (pozycja przy nawiązaniu aktualnego zaangażowania) —
+// bez tego napieranie samo się napędza w nieskończoność, bo skracanie
+// dystansu utrzymuje uciekającego wroga wciąż "w zasięgu" (prawdziwy
+// błąd: jednostka bez żadnego rozkazu potrafiła w ten sposób gonić wroga
+// dziesiątki pikseli). ~2,5 kafla — krótki, wyraźny pościg, nie pogoń
+// przez pół mapy.
+const MAX_CHASE_DISTANCE_PX = 80;
+
+// Obrażenia w zwarciu skalowane tym, kto napiera (patrz pushDamageMultiplier)
+const PUSH_WINNING_DAMAGE_MULTIPLIER = 1.0;
+const PUSH_STALEMATE_DAMAGE_MULTIPLIER = 0.5;
+const PUSH_LOSING_DAMAGE_MULTIPLIER = 0.25;
+
+// Spowolnienie w zwarciu — naprawia "przepychanie się" przez wroga
+// rozkazem ruchu bez realnego stoczenia walki (patrz resolveCombat/updateUnit)
+const MELEE_SLOW_DURATION = 1.5; // s po ostatnim ciosie zadanym/otrzymanym w zwarciu
+const COMBAT_SPEED_MULTIPLIER = 0.22; // mnożnik prędkości w tym oknie (obniżone z 0.3 — jednostki mają być trochę wolniejsze podczas walki)
+
+// Bonus "dobijania" dla ostrzału dystansowego — patrz updateProjectiles
+const LOW_HP_THRESHOLD = 0.3; // poniżej tego ułamka maxHp celu
+const LOW_HP_DAMAGE_BONUS = 1.5; // mnożnik obrażeń trafienia pociskiem
+
+// ============================================================
+// MORALE — patrz updateMorale. Osobny pasek od HP: jednostka może być
+// zdrowa, ale złamana psychicznie (otoczona, przetrzebiona), albo ranna,
+// ale twarda (weterani w zwartym szyku). Utrata jest CZASOWA — po
+// ucieczce na bezpieczny dystans jednostka wraca pod kontrolę (patrz
+// CLAUDE.md: trwała utrata wzmacniałaby snowball i byłaby frustrująca).
+// Spadek WYŁĄCZNIE od realnych czynników bojowych (obrażenia, przewaga
+// liczebna/okrążenie, spychanie, śmierć sojusznika) — sama nieobecność
+// sojuszników w pobliżu NIC nie kosztuje, tylko tłumi straty z walki.
+// ============================================================
+const MORALE_MAX = 100;
+const MORALE_RECOVER_THRESHOLD = 35; // złamana jednostka wraca pod kontrolę dopiero przy odbudowanym morale (obniżone z 55 — panika trwała za długo, próg bliżej MORALE_WARNING_THRESHOLD)
+const MORALE_WARNING_THRESHOLD = 25; // migotanie ostrzegawcze poniżej tego progu (jeszcze nie złamana)
+const MORALE_PROTECTION_DURATION = 15; // s okresu ochronnego po powrocie z paniki — złamanie zablokowane, morale nadal może spadać
+
+// Utrata morale — waga czynników przebudowana tak, żeby uczciwe starcie
+// 1 na 1 (bez przewagi, flanki, okrążenia) rozstrzygały obrażenia, NIE
+// psychika: sam fakt otrzymania obrażeń (MORALE_LOSS_PER_DAMAGE) ma być
+// minimalny. Cztery czynniki poniżej są NIEZALEŻNYMI, DODAJĄCYMI SIĘ
+// źródłami straty (nie mnożnikami jednej bazy) — patrz updateMorale.
+const MORALE_LOSS_PER_DAMAGE = 0.05; // na punkt obrażeń otrzymanych w tej klatce — celowo znikome, jedyny czynnik działający w uczciwym 1v1
+// Niskie HP NIE jest samodzielną przyczyną złamania — wzmacnia WYŁĄCZNIE
+// czynniki sytuacyjne niżej (przewaga/flanka/tył/okrążenie), nigdy samą
+// utratę HP powyżej.
+const MORALE_LOW_HP_AMPLIFIER = 2.5; // mnożnik 1..3,5x zależnie od brakującego % HP (podniesione z 2.0 — niskie HP ma mocniej wzmacniać złą sytuację), patrz updateMorale
+// Flanka/tył — NIEZALEŻNY, ciągły koszt (nie mnożnik straty z obrażeń):
+// silny czynnik sytuacyjny, liczy się sam fakt trafienia z tego kierunku,
+// niezależnie od tego, ile obrażeń akurat przeszło. Tył mocniejszy niż flanka.
+const MORALE_FLANK_HIT_LOSS_PER_SECOND = 8;
+const MORALE_REAR_HIT_LOSS_PER_SECOND = 14;
+// Przewaga liczebna rośnie KWADRATOWO z liczbą dodatkowych napastników
+// wręcz (patrz updateMorale: (extra^2) * ta stała) — realny efekt dopiero
+// od jasnej przewagi 2:1 (extra=1), 3:1+ bardzo szybko, nie proporcjonalnie
+const MORALE_OUTNUMBERED_LOSS_PER_SECOND = 1.5; // mocno zredukowane z 4 — sama przewaga liczebna (np. 2 na 1) ma być wyraźnie łagodniejsza, ciężar czynników przesunięty na flankę/tył/okrążenie/niskie HP
+// Okrążenie (napastnicy — melee i ostrzał razem — rozstawieni z wielu
+// stron, nie skupieni po jednej, patrz isEncircled) to NAJSILNIEJSZY,
+// NIEZALEŻNY czynnik — dolicza się OSOBNO do przewagi liczebnej, bo może
+// wystąpić nawet bez wyraźnej przewagi (2 atakujących z przeciwnych stron
+// to już i przewaga 2:1, i okrążenie jednocześnie — oba koszty się sumują).
+const MORALE_ENCIRCLEMENT_ANGLE_THRESHOLD_DEG = 120; // rozstaw kątowy napastników uznawany za okrążenie
+const MORALE_ENCIRCLEMENT_LOSS_PER_SECOND = 20;
+const MORALE_PUSHED_LOSS_PER_SECOND = 3; // gdy jednostka przegrywa porównanie napierania jako cel
+const MORALE_ALLY_DEATH_LOSS = 8; // stała utrata, gdy sojusznik ginie w promieniu
+const MORALE_ALLY_DEATH_RADIUS = 100; // px
+// Dystansowi wciągnięci w zwarcie (inMeleeLock, patrz resolveCombat)
+// łamią się dużo szybciej — obsługa broni dystansowej nie jest szkolona
+// do walki wręcz
+const MORALE_MELEE_LOCK_LOSS_MULTIPLIER = 2.5;
+
+// Wzrost morale (tylko gdy jednostka NIE jest złamana — patrz updateMorale).
+// Sojusznicy w pobliżu NIE dodają morale — tylko tłumią straty z tej
+// klatki (patrz MORALE_ALLY_PRESENCE_DAMPING_PER_ALLY), dokładnie jak
+// regeneracja HP: zablokowana, dopóki trwa walka
+const MORALE_REGEN_PER_SECOND = 4; // poza walką (reużywa timeSinceCombat>=OUT_OF_COMBAT_DELAY)
+const MORALE_ALLY_PRESENCE_RADIUS = 80; // px, promień liczenia sojuszników (spójność oddziału)
+const MORALE_ALLY_PRESENCE_CAP = 6; // maks. liczonych sojuszników — bez tego wielki blok dawałby absurdalne tempo
+const MORALE_ALLY_PRESENCE_DAMPING_PER_ALLY = 0.08; // redukcja strat z tej klatki na sojusznika w pobliżu
+const MORALE_ALLY_PRESENCE_MAX_DAMPING = 0.4; // maks. redukcja strat, nawet w wielkim bloku
+const MORALE_WINNING_PUSH_BONUS_PER_SECOND = 5; // gdy jednostka napiera i wygrywa starcie
+
+// Załamanie — zamiast twardego progu 0, rosnące z każdą sekundą
+// prawdopodobieństwo poniżej progu ostrzegawczego (patrz updateMorale) —
+// dwa identyczne starcia mogą skończyć się różnie, ale przy morale
+// bliskim zeru złamanie jest bardzo prawdopodobne. Szansa złagodzona o
+// połowę względem poprzedniej wersji.
+const MORALE_BREAK_MIN_CHANCE_PER_SECOND = 0.015; // przy progu ostrzegawczym — niewielka szansa
+const MORALE_BREAK_MAX_CHANCE_PER_SECOND = 0.35; // przy morale=0 — spora, NIGDY 100%
+const MORALE_BREAK_CURVE_EXPONENT = 1.5;
+
+// Ucieczka — ma być odczuwalną, długą stratą, nie chwilowym potknięciem:
+// ucieka niemal z normalną prędkością (da się dogonić), wymaga większego
+// oddalenia i dłuższego spokoju, zanim ruszy odbudowa morale.
+const PANIC_SPEED_MULTIPLIER = 1.05; // ledwie szybciej niż normalny marsz — ma dać się dogonić
+const PANIC_FLEE_DISTANCE = 250; // px, jak daleko jednostka próbuje uciec jednym rozkazem
+const PANIC_SAFE_DISTANCE = 110; // px od najbliższego wroga uznawane za bezpieczne (-50% — panika trwała zdecydowanie za długo, to człon dominujący czas jej trwania)
+const PANIC_RECOVERY_DELAY = 6; // s nieprzerwanego bezpieczeństwa, zanim ruszy odbudowa morale (-50%)
+const PANIC_MORALE_RECOVER_PER_SECOND = 10; // szybsza niż standardowa — ma dać się uratować niedobitki
+
+// Last Stand — przeciwwaga dla ucieczki: gdy jednostka spełnia warunki
+// złamania, zamiast paniki jest szansa (per typ, patrz UNIT_TYPES.
+// lastStandChance) na desperacką obronę zamiast odwrotu. Ograniczony czas
+// trwania — bez limitu opłacałoby się celowo doprowadzać jednostki do
+// desperacji. Jednostka w Last Stand nie może się złamać przez czas
+// trwania efektu.
+const LAST_STAND_DURATION = 12; // s
+const LAST_STAND_DAMAGE_BONUS_MULTIPLIER = 1.4; // +40% zadawanych obrażeń
+const LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER = 0.75; // -25% otrzymywanych obrażeń
+const LAST_STAND_PULSE_SPEED = 0.01; // rad/ms — stałe tempo pulsu, w odróżnieniu od skalowanego bieli
+const LAST_STAND_PULSE_COLOR_A = '#cc1100'; // czerwony
+const LAST_STAND_PULSE_COLOR_B = '#ff9900'; // pomarańczowy
+
+// Zwrot jednostki i ataki z flanki/tyłu (patrz facingAngle, resolveCombat,
+// updateProjectiles, updateMorale) — kąt liczony między zwrotem CELU a
+// kierunkiem, z którego nadszedł cios (0° = w twarz, 180° = w plecy).
+const FLANK_SIDE_ANGLE_DEG = 60;   // 60-120° od zwrotu celu = flanka
+const FLANK_REAR_ANGLE_DEG = 120;  // powyżej 120° = tył
+
+// Bonus za flankowanie/tył NIE jest stałym mnożnikiem — maleje z czasem
+// trwania AKTUALNEGO zaangażowania celu (unit.engagementDuration, patrz
+// resolveCombat) od START do FLOOR, gdzie zostaje: oddział z czasem
+// "adaptuje się" do walki na kilka frontów, ale nigdy w pełni (podłoga >
+// 0). Tył zaczyna WYŻEJ i kończy WYŻEJ niż flanka — trudniej się bronić
+// przed ciosem w plecy niż w bok. Patrz flankBonusFor.
+const FLANK_BONUS_START = 0.25;          // +25% na sam początek flankowania
+const FLANK_BONUS_FLOOR = 0.06;          // maleje do +6% i tam zostaje
+const FLANK_BONUS_DECAY_PER_SECOND = 0.03;
+const REAR_BONUS_START = 0.40;           // +40% na sam początek ataku z tyłu
+const REAR_BONUS_FLOOR = 0.10;           // maleje do +10% i tam zostaje
+const REAR_BONUS_DECAY_PER_SECOND = 0.04;
+// Mnożniki spadku morale za flankę/tył/okrążenie — patrz sekcja MORALE
+// wyżej (MORALE_FLANK_HIT_LOSS_PER_SECOND itd.), to tam żyją te stałe.
+
+// Wizualizacja ostrzegawcza — pulsowanie WYPEŁNIENIA jednostki (nie
+// pierścienia) między kolorem gracza a bielą, wyraźnie odróżnialne od
+// stałej pełnej bieli jednostki złamanej (routed) i od pulsu Last Stand
+// (czerwono-pomarańczowy). Szybkość i amplituda rosną, im bliżej złamania.
+const MORALE_PULSE_MIN_SPEED = 0.003; // rad/ms przy progu ostrzegawczym
+const MORALE_PULSE_MAX_SPEED = 0.012; // rad/ms przy morale bliskim zeru
+const MORALE_PULSE_MIN_AMPLITUDE = 0.3; // udział bieli w szczycie pulsu przy progu
+const MORALE_PULSE_MAX_AMPLITUDE = 0.85; // udział bieli w szczycie pulsu bliżej złamania
+
+// Kolor jednostki = gracz (nie typ) — typ rozróżniany promieniem (drawRadius)
+const PLAYERS = {
+  P1: { color: '#2f6fed' },
+  P2: { color: '#e63946' },
+};
+const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
+
+// cost na razie nigdzie nieużywany (brak ekonomii) — zaślepka pod przyszły balans.
+// ranged:true = model salw (damagePerShot/reloadTime/projectileSpeed/
+// meleeDamage, patrz sekcja WALKA), ranged:false = ciągłe obrażenia (damagePerSecond).
+// speed ×0.5 i maxHp ×2 względem poprzedniej wersji (spowolnienie gry +
+// wydłużenie starć do ~15-25s, jedna dźwignia zamiast dublowania z
+// obrażeniami — patrz CLAUDE.md/podsumowanie tury). pushStrength: 0 =
+// jednostka nie napiera w walce wręcz (dotyczy obu dystansowych).
+// Obrażenia obniżone o kolejne 15% (starcia mają trwać dłużej, dać czas
+// na reakcję — przegrupowanie, odwrót osłabionych, wsparcie).
+const UNIT_TYPES = {
+  // Dystansowi to wsparcie piechoty, nie samodzielna siła: osłabiona siła
+  // ognia, wolniejsze przeładowanie, kruche HP, bezbronni z bliska,
+  // accuracy = promień rozrzutu (px) na pełnym attackRange, rośnie
+  // liniowo z dystansem (patrz resolveCombat) — celowo mały: dystansowi
+  // mają trafiać niemal zawsze, chybienie to rzadki wyjątek na max.
+  // zasięgu, nie reguła (realizm dowodzenia — skutek ma być przewidywalny).
+  // Bez minRange — bliskość wroga sama w sobie NIE blokuje ostrzału,
+  // liczy się wyłącznie faktyczne związanie walką wręcz (patrz
+  // resolveCombat: meleeAttackersOf).
+  // lastStandChance: szansa na desperacką obronę ZAMIAST ucieczki w
+  // chwili złamania (patrz updateMorale/Last Stand) — najwyższa u ciężkiej
+  // piechoty (walczy do końca), najniższa u dystansowych (nieszkoleni do
+  // beznadziejnej obrony wręcz, wolą (próbować) uciec).
+  // turnTimeSeconds/flankResistance — patrz flankowanie (resolveCombat,
+  // spawnUnit.engagedTargetId): czas potrzebny na odwrócenie się w stronę
+  // nowego przeciwnika (kawaleria zwrotna, działo najwolniejsze) i mnożnik
+  // tłumiący bonus przeciwnika za flankowanie (tylko ciężka piechota ma
+  // realną odporność — zdyscyplinowana, trudna do zaskoczenia mimo wolnego obrotu).
+  ARCHER:         { ranged: true,  maxHp: 112, damagePerShot: 3.52, reloadTime: 1.5, projectileSpeed: 300, meleeDamage: 0.4, accuracy: 6.5, attackRange: 90,  speed: 0.6,  cost: 50, collisionRadius: 6, drawRadius: 7, pushStrength: 0, setupTime: 0.5, moraleResistance: 0.5, buildTime: 8, lastStandChance: 0.02, turnTimeSeconds: 0.9, flankResistance: 1.0 }, // obrażenia -20% (5.6 -> 4.4 -> 3.52); lastStandChance obniżone (0.05 -> 0.02, Last Stand ma być rzadki, ~1/15 złamań ogółem)
+  CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 5.76, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.56, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.02, turnTimeSeconds: 2.5, flankResistance: 1.0 }, // obrażenia -20% (7.2 -> 5.76); lastStandChance 0.05 -> 0.02
+  LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 6.8, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 0.4, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.08, turnTimeSeconds: 0.7, flankResistance: 1.0 }, // obrażenia -20% (8.5 -> 6.8), pushStrength -80% (2 -> 0.4); lastStandChance 0.2 -> 0.08
+  HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 10.24, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 1.0, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.15, turnTimeSeconds: 1.6, flankResistance: 0.6 }, // obrażenia -20% (12.8 -> 10.24), pushStrength -80% (5 -> 1.0); lastStandChance 0.4 -> 0.15
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 9.52, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 0.2, moraleResistance: 1.0, combatSpeedMultiplier: 0.55, buildTime: 9, lastStandChance: 0.06, turnTimeSeconds: 0.4, flankResistance: 1.0 }, // obrażenia -20% (11.9 -> 9.52), pushStrength -80% (1 -> 0.2); lastStandChance 0.15 -> 0.06; combatSpeedMultiplier 0.7 -> 0.55 (trochę wolniejsza w zwarciu, nadal łatwiej się wyrywa niż inne typy)
+  // Bezbronny nosiciel złota (attackRange:0 -> nigdy nie znajdzie celu do
+  // ataku; wykluczony z namierzania przez innych — patrz findTargetForUnit/
+  // findNearestEnemyInRange — więc nigdy nie ginie w walce, tylko może
+  // zostać przejęty, patrz updateConvoyCaptures). Wysyłany automatycznie
+  // przez szlaki handlowe (spawnCityConvoy), bez kosztu — brak pola
+  // `cost`. Nigdy nie walczy, więc lastStandChance: 0 (nie dotyczy, ale
+  // pole zawsze obecne dla spójności).
+  CONVOY:         { ranged: false, damagePerSecond: 0, maxHp: 30, attackRange: 0, speed: 0.4, collisionRadius: 4, drawRadius: 3, pushStrength: 0, moraleResistance: 1.0, lastStandChance: 0, turnTimeSeconds: 1.0, flankResistance: 1.0 }, // drawRadius zmniejszony (był 5) — wyraźnie mniejszy niż jednostki bojowe (6-8); collisionRadius bez zmian, to wyłącznie redukcja wizualna; turnTimeSeconds/flankResistance nieistotne, konwój nigdy nie walczy
+};
+
+// Mnożniki per (typ jednostki × teren) — główna oś balansu terenowego.
+// Cztery wymiary: speedMultiplier (prędkość ruchu, mnoży się z bazowym
+// TERRAIN.speedMultiplier — patrz updateUnit), damageMultiplier
+// (obrażenia ZADAWANE stojąc na tym terenie — patrz attackerDamageMultiplier),
+// rangeMultiplier (zasięg ataku dystansowego — patrz effectiveAttackRange),
+// pushMultiplier (siła napierania w zwarciu — patrz effectivePushStrength).
+// Wypisane w pełni (bez wzorca "wszystko=1 + nadpisania"), żeby cała
+// tabela była czytelna na pierwszy rzut oka. Pogrubione w komentarzu obok
+// = odstępstwo od neutralnego 1.
+const TERRAIN_MODIFIERS = {
+  // Dystansowi: las utrudnia ostrzał i skraca zasięg (gęstwina zasłania
+  // pole widzenia), wzgórza dają bonus do zasięgu (wyższa pozycja), woda
+  // drastycznie obniża obrażenia (i tak nie strzelają na wodzie — patrz
+  // onWater w resolveCombat).
+  ARCHER: {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 0.5, rangeMultiplier: 0.6, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.65, damageMultiplier: 1,   rangeMultiplier: 1.4, pushMultiplier: 1 }, // podnóża: -35%
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1,   pushMultiplier: 1 },
+  },
+  CANNON: {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 0.5, rangeMultiplier: 0.6, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.45, damageMultiplier: 1,   rangeMultiplier: 1.4, pushMultiplier: 1 }, // podnóża: -55% (najsilniej spowolnione, razem z kawalerią)
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1,   rangeMultiplier: 1,   pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1,   pushMultiplier: 1 },
+  },
+  // Piechota lekka: las to jej naturalne środowisko — speedMultiplier 2.0
+  // ZNOSI bazową karę terenu lasu (0.5, patrz TERRAIN.FOREST), więc netto
+  // porusza się tam z normalną prędkością, bez kar bojowych.
+  LIGHT_INFANTRY: {
+    FIELD:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 2.0, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.8, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 }, // podnóża: -20% (najsłabiej spowolniona)
+    MOUNTAIN: { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1,   damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
+  },
+  // Piechota ciężka: referencyjna, w pełni skuteczna na otwartym polu,
+  // bez szczególnych premii/kar terenowych poza wodą.
+  HEAVY_INFANTRY: {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 0.6, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 }, // podnóża: -40%
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
+  },
+  // Kawaleria: referencyjna na otwartym polu, ale las ją neutralizuje —
+  // mocno spowolniona (netto z bazową karą terenu 0.5 daje 0.25) i traci
+  // większość siły napierania (ciasnota drzew, brak miejsca na szarżę).
+  CAVALRY: {
+    FIELD:    { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 0.5, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 0.4 },
+    HILLS:    { speedMultiplier: 0.45, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 }, // podnóża: -55% (najsilniej spowolniona, razem z działami — traci swój atut szybkości)
+    MOUNTAIN: { speedMultiplier: 1,   damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1,   damageMultiplier: 0.3, rangeMultiplier: 1, pushMultiplier: 1 },
+  },
+  // Konwój nigdy nie walczy ani nie napiera — tylko bazowy modyfikator
+  // prędkości terenu (patrz TERRAIN) go dotyczy, stąd same neutralne 1.
+  CONVOY: {
+    FIELD:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    FOREST:   { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    HILLS:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    MOUNTAIN: { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+    WATER:    { speedMultiplier: 1, damageMultiplier: 1, rangeMultiplier: 1, pushMultiplier: 1 },
+  },
+};
+
+const BASE_SPEED_PX_PER_S = 28.8; // mnożone przez unit.speed i terrain.speedMultiplier (obniżone łącznie o ~50% od bazy — gracz ma zdążyć zareagować na przebieg starcia, przegrupować, wycofać osłabione oddziały)
+
+// Zahardkodowana mapa terenu — edytuj ręcznie (0 pole, 1 las, 2 gory,
+// 3 woda, 4 wzgórza). Powiększona o ~50% względem pierwszej wersji
+// prototypu (skalowanie nearest-neighbor zachowujące układ terenu),
+// wzgórza dogenerowane automatycznie jako podnóża gór (każdy kafel pola
+// stykający się z górą).
+const MAP_DATA = [
+  [0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,4,2,2,2,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,4,4,4,2,2,2,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,1,1,1,0,1,1,1,1,1,0,0,4,4,2,2,2,2,2,2,4,4,4,3,3,3,3,3,0,0,0,0,0,0,0],
+  [0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,4,2,2,2,2,2,2,2,2,2,4,3,3,3,3,3,3,3,3,0,0,0,0],
+  [0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,4,2,2,2,2,2,2,2,2,2,4,3,3,3,3,3,3,3,3,0,0,0,0],
+  [0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,4,2,2,2,2,2,2,2,4,4,4,0,0,3,3,3,3,3,3,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,2,2,2,2,2,4,4,0,0,0,0,0,3,3,3,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,2,2,2,2,2,4,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0],
+  [0,0,1,1,1,0,0,0,0,0,1,1,1,0,0,0,4,4,4,4,4,4,4,0,0,1,1,1,0,0,0,4,4,4,4,4,0,0],
+  [0,0,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,4,2,2,2,4,0,0],
+  [0,0,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,4,2,2,2,4,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,3,3,3,0,0,0,0,1,1,0,0,0,4,2,2,2,4,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,0,0,4,4,4,4,4,0,0],
+  [0,0,0,0,4,4,4,4,4,0,0,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,4,2,2,2,4,4,4,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0],
+  [0,0,0,0,4,2,2,2,2,2,4,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0],
+  [0,0,0,0,4,2,2,2,2,2,4,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0],
+  [0,0,0,0,4,4,4,2,2,2,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,4,4,4,4,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+];
+const MAP_COLS = MAP_DATA[0].length;
+const MAP_ROWS = MAP_DATA.length;
+
+// ============================================================
+// EKONOMIA — miasta, szlaki handlowe, złoto, produkcja, przejmowanie
+// miast (okupacja czasowa, patrz CITY_CAPTURE_*/updateCityCaptures).
+// Bez bandytów, pełnego terytorium i limitów zaopatrzenia (patrz
+// CLAUDE.md, sekcja Kolejność budowy). Gospodarka jest wyłącznie
+// przychodowa — jednostki nie kosztują nic na sekundę, jedyny wydatek
+// to jednorazowy koszt produkcji.
+// ============================================================
+const CITY_SIZE_TILES = 1; // miasto zajmuje dokładnie jeden kafel
+// Zahardkodowane pozycje (jak MAP_DATA) — (col,row) to kafel miasta.
+// Własność ZMIENNA — patrz CITY_CAPTURE_*/updateCityCaptures.
+const CITIES = [
+  { id: 'p1_a', col: 0,  row: 21, owner: 'P1' },
+  { id: 'p1_b', col: 8,  row: 21, owner: 'P1' },
+  { id: 'p1_c', col: 0,  row: 0,  owner: 'P1' },
+  { id: 'p2_a', col: 27, row: 21, owner: 'P2' },
+  { id: 'p2_b', col: 35, row: 21, owner: 'P2' },
+  { id: 'p2_c', col: 35, row: 0,  owner: 'P2' },
+];
+for (const city of CITIES) { city.queue = []; city.level = 1; city.upgradeRemaining = 0; city.timeSinceLastConvoy = 0; city.siegeProgress = 0; city.besiegingOwner = null; } // queue: {type, remainingTime}; level 1-5, upgradeRemaining: s do końca trwającego ulepszenia (0 = brak); timeSinceLastConvoy: patrz CITY_LEVELS/updateTradeRoutes — tyka TYLKO gdy miasto ma ≥1 szlak; siegeProgress/besiegingOwner: patrz updateCityCaptures
+
+const STARTING_GOLD = 250; // starcza na kilka jednostek na start
+const CITY_BASE_INCOME_PER_SECOND = 0.15; // mały, stały dochód z posiadanego miasta — trickle, szlaki handlowe są głównym źródłem zysku
+const CITY_QUEUE_MAX_LENGTH = 5; // maks. liczba jednostek w kolejce produkcji jednego miasta naraz
+
+// Przejmowanie miast — okupacja czasowa (patrz updateCityCaptures), NIE
+// mylić z CONVOY_CAPTURE_* niżej (osobny, wcześniejszy mechanizm —
+// bandyckie przejmowanie KONWOJÓW, nie miast).
+const CITY_ZONE_RADIUS = 35; // px — strefa obronna/blokady przejęcia/leczenia wokół miasta (obniżone z 45 — nie ma boostować aż tylu jednostek naraz), ~3x jednostka, ~1.1 kafla, wyraźnie mniejsza niż odległość między miastami (256px+)
+const CITY_CAPTURE_TIME = 12; // s — czas przejęcia z DOKŁADNIE jednym atakującym w strefie, zero obrońców
+const CITY_CAPTURE_REGRESS_PER_SECOND = 2; // s postępu odejmowane/s, gdy obrońca wróci do strefy LUB atakujący ją opuści — stopniowo, nie od razu
+const CITY_CAPTURE_ATTACKER_BONUS_PER_UNIT = 0.3; // +30% tempa oblężenia za każdą kolejną jednostkę atakującą w strefie ponad pierwszą
+const CITY_CAPTURE_MAX_ATTACKER_MULTIPLIER = 3; // rozsądny limit — masowe stado nie przejmuje miasta błyskawicznie
+const CITY_DEFENSE_REDUCTION_RATIO = 0.25; // obrońcy WE WŁASNEJ strefie: -25% obrażeń otrzymanych, -25% straty morale — obrona ma być realnie łatwiejsza niż zdobycie
+const CITY_LAST_CITY_INCOME_PER_SECOND = 1.5; // "ostatnia szansa": zastępuje płaski przychód, gdy gracz ma DOKŁADNIE jedno miasto
+
+// Szlaki handlowe — trwałe trasy rysowane przez gracza (patrz gest
+// TRADE_ROUTE w mousedown/mousemove/mouseup). To MIASTO, nie szlak, jest
+// jednostką ekonomii (wzorem OpenFront.io): każde miasto ma WŁASNY,
+// niezależny licznik (patrz updateTradeRoutes/spawnCityConvoy) i wysyła
+// konwój co CITY_LEVELS[level].spawnInterval, losując przy każdej
+// wysyłce JEDEN spośród swoich szlaków (o ile ma więcej niż jeden).
+// Dodatkowe szlaki dają więc tylko wybór kierunku, NIE więcej konwojów
+// ani wyższy dochód — bez limitu ich liczby i bez malejącego zysku.
+const TRADE_ROUTE_GOLD_PER_100PX = 15; // zysk za dostarczony konwój, na 100px długości narysowanego szlaku
+
+// Poziomy miast (1 = start, CITY_LEVEL_MAX = maks.). upgradeCost/upgradeTime
+// to koszt złota i czas ulepszenia DO danego poziomu (poziom 1 nie ma
+// kosztu — startowy). spawnInterval: sekundy między KOLEJNYMI konwojami
+// wysyłanymi z miasta na tym poziomie (city.timeSinceLastConvoy, patrz
+// updateTradeRoutes) — niezależnie od liczby szlaków miasta. Koszty
+// dobrane tak, żeby każdy poziom zwracał się w ~10 minut przychodu z
+// TEGO miasta przy szlaku średniej długości (patrz wyliczenie w raporcie).
+const CITY_LEVEL_MAX = 5;
+const CITY_LEVELS = {
+  1: { upgradeCost: 0,    upgradeTime: 0,  spawnInterval: 30 },
+  2: { upgradeCost: 300,  upgradeTime: 20, spawnInterval: 25 },
+  3: { upgradeCost: 450,  upgradeTime: 30, spawnInterval: 20 },
+  4: { upgradeCost: 750,  upgradeTime: 45, spawnInterval: 15 },
+  5: { upgradeCost: 1500, upgradeTime: 70, spawnInterval: 10 },
+};
+
+// Przechwytywanie konwojów — zamiast ginąć w walce (konwoje są całkowicie
+// wykluczone z namierzania, patrz findTargetForUnit/findNearestEnemyInRange),
+// konwój zostaje przejęty przez wroga, który spędzi przy nim wystarczająco
+// dużo czasu bez przeszkód ze strony właściciela (patrz updateConvoyCaptures).
+const CONVOY_CAPTURE_RANGE = 40; // px — wróg (i obrońca) musi być w tym promieniu
+const CONVOY_CAPTURE_TIME = 3; // s nieprzerwanej obecności wroga do przejęcia
+const CONVOY_CAPTURE_VALUE_LOSS = 0.25; // ułamek wartości tracony przy KAŻDYM przejęciu, także przy odbiciu — zniechęca do przerzucania się konwojem w nieskończoność
+const CONVOY_CAPTURE_REWARD_RATIO = 0.55; // ułamek wartości, jaki przy dostawie dostaje przejmujący (reszta przepada) — łupienie ma być gorszym interesem niż własny handel
+
+function cityCenter(city) {
+  return { x: (city.col + CITY_SIZE_TILES / 2) * TILE_SIZE, y: (city.row + CITY_SIZE_TILES / 2) * TILE_SIZE };
+}
+
+// Czy jednostka broni WŁASNEGO miasta (w CITY_ZONE_RADIUS od miasta z
+// tym samym owner) — używane zarówno do bonusu obronnego (obrażenia,
+// morale — patrz cityDefenseMultiplier/updateMorale), jak i do blokady
+// przejmowania (patrz updateCityCaptures). Atakujący w TEJ SAMEJ strefie
+// nigdy nie dostaje żadnej ulgi — funkcja patrzy WYŁĄCZNIE na miasta
+// należące do ownera jednostki.
+function isDefendingOwnCityZone(unit) {
+  for (const c of CITIES) {
+    if (c.owner !== unit.owner) continue;
+    const center = cityCenter(c);
+    if (Math.hypot(unit.x - center.x, unit.y - center.y) <= CITY_ZONE_RADIUS) return true;
+  }
+  return false;
+}
+// Mnożnik obrażeń OTRZYMYWANYCH przez cel — obrona ma być realnie
+// łatwiejsza niż zdobycie, żeby pojedyncza jednostka nie mogła przemknąć
+// przez front i zająć niebronionego zaplecza.
+function cityDefenseMultiplier(unit) {
+  return isDefendingOwnCityZone(unit) ? (1 - CITY_DEFENSE_REDUCTION_RATIO) : 1;
+}
+
+// Miejsce WYSTARCZAJĄCE do regeneracji HP — wyłącznie własna strefa
+// miasta (wymusza rotację oddziałów: uszkodzone trzeba wycofać do
+// miasta, świeże zajmują ich miejsce w linii) i nie woda. NIE sprawdza
+// timeSinceCombat/OUT_OF_COMBAT_DELAY — to osobny warunek czasowy,
+// sprawdzany przez wywołujących (patrz resolveCombat/drawHpBar).
+function canRegenerateHere(unit) {
+  if (!isDefendingOwnCityZone(unit)) return false;
+  const tile = worldToTile(unit.x, unit.y);
+  const terrain = terrainAt(tile.col, tile.row);
+  return !terrain || terrain.name !== 'WATER';
+}
+
+// ============================================================
+// STAN GRY
+// ============================================================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Tryb bez renderowania i bez domyślnej armii — do narzędzia testowania
+// balansu (patrz window.BalanceSim na końcu pliku). Zwykłe wczytanie
+// pliku (bez ?headless) działa dokładnie jak dotąd.
+const HEADLESS = new URLSearchParams(location.search).has('headless');
+
+const MAP_WIDTH_PX = MAP_COLS * TILE_SIZE;
+const MAP_HEIGHT_PX = MAP_ROWS * TILE_SIZE;
+
+// Kamera: przewijalna i przybliżalna (pan środkowym przyciskiem, zoom
+// kółkiem do kursora — patrz listenery przy 'wheel'/mousedown niżej).
+// cameraX/cameraY to punkt świata w środku ekranu, cameraZoom to
+// viewScale. Domyślny zoom = "cała mapa w oknie" (jak w poprzedniej,
+// bezkamerowej wersji), z możliwością przybliżenia/oddalenia i
+// przewinięcia — mapa jest teraz większa niż zmieściłaby się z
+// zachowaniem obecnego rozmiaru jednostek, patrz CLAUDE.md/podsumowanie.
+let cameraX = MAP_WIDTH_PX / 2;
+let cameraY = MAP_HEIGHT_PX / 2;
+let cameraZoom = 1; // nadpisywane fit-scale'em zaraz po pierwszym ustaleniu rozmiaru canvasu
+const CAMERA_MAX_ZOOM_MULTIPLIER = 3; // ile razy bliżej niż "cała mapa w oknie" można się przybliżyć
+const CAMERA_ZOOM_STEP = 1.12; // mnożnik zoomu na jeden "krok" kółka myszy
+
+let viewScale = 1;
+let viewOffsetX = 0;
+let viewOffsetY = 0;
+
+function cameraFitScale() {
+  return Math.min(canvas.width / MAP_WIDTH_PX, canvas.height / MAP_HEIGHT_PX);
+}
+// Przycina zoom do [fitScale, fitScale*MAX] (nie da się oddalić bardziej
+// niż "cała mapa naraz") i pozycję kamery tak, żeby nie dało się odjechać
+// w pustkę poza mapą — przy zoomie ≤ fitScale kamera jest zablokowana
+// dokładnie na środku mapy (cała mapa i tak mieści się w oknie).
+function clampCamera() {
+  const fitScale = cameraFitScale();
+  cameraZoom = Math.max(fitScale, Math.min(fitScale * CAMERA_MAX_ZOOM_MULTIPLIER, cameraZoom));
+  const halfW = canvas.width / (2 * cameraZoom);
+  const halfH = canvas.height / (2 * cameraZoom);
+  const minX = Math.min(MAP_WIDTH_PX / 2, halfW), maxX = Math.max(MAP_WIDTH_PX / 2, MAP_WIDTH_PX - halfW);
+  const minY = Math.min(MAP_HEIGHT_PX / 2, halfH), maxY = Math.max(MAP_HEIGHT_PX / 2, MAP_HEIGHT_PX - halfH);
+  cameraX = Math.max(minX, Math.min(maxX, cameraX));
+  cameraY = Math.max(minY, Math.min(maxY, cameraY));
+}
+function updateViewTransform() {
+  viewScale = cameraZoom;
+  viewOffsetX = canvas.width / 2 - cameraX * viewScale;
+  viewOffsetY = canvas.height / 2 - cameraY * viewScale;
+}
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  clampCamera();
+  updateViewTransform();
+}
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+cameraZoom = cameraFitScale(); // start: cała mapa widoczna, jak dotąd
+clampCamera();
+updateViewTransform();
+window.addEventListener('resize', resizeCanvas);
+
+let units = [];
+let debugMode = false; // klawisz D — liczba morale nad każdą jednostką, do balansowania
+let nextUnitId = 1;
+
+// Ekonomia — pomijana w trybie headless (BalanceSim nie spawnuje miast)
+let gold = { P1: STARTING_GOLD, P2: STARTING_GOLD };
+let goldRate = { P1: 0, P2: 0 }; // wygładzony (EMA) wskaźnik do UI — jedyne realne źródło (konwoje) jest skokowe, nie ciągłe
+let selectedCity = null;
+
+// Statystyki meczu — podstawa telemetrii na przyszłość (patrz CLAUDE.md,
+// sekcja Priorytety produktowe). Aktualizowane na bieżąco (nie liczone
+// dopiero na końcu), patrz spawnUnit/resolveCombat/updateEconomy/
+// updateConvoys/updateCityCaptures.
+let stats = {
+  P1: { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 },
+  P2: { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 },
+};
+const matchStartTime = performance.now();
+let gameOver = false;
+
+// Szlaki handlowe — patrz sekcja CONFIG (TRADE_ROUTE_*, CITY_LEVELS) i
+// gest w mousedown/mousemove/mouseup, updateTradeRoutes/spawnCityConvoy.
+// Czysto geometryczne — licznik wysyłki żyje na mieście (city.timeSinceLastConvoy), nie tutaj.
+let tradeRoutes = []; // {id, owner, cityAId, cityBId, curve:[{x,y}]}
+let nextTradeRouteId = 1;
+let selectedTradeRoute = null; // do usunięcia klawiszem Delete/Backspace albo przyciskiem w panelu
+let dragStartOwnCity = null; // własne miasto, na którym zaczęto PPM przeciągnięcie — rozstrzyga TRADE_ROUTE vs ROUTE/FRONT
+
+// Baner alertów (u góry ekranu) — komunikaty widoczne ZAWSZE, niezależnie
+// od otwartego panelu miasta (np. przejęcie/utrata konwoju musi być
+// widoczna natychmiast, patrz updateConvoyCaptures).
+let alerts = []; // {text, until} — kolejka, NIE pojedynczy skalar: "miasto atakowane" i "miasto stracone" mogą wystąpić blisko siebie w czasie
+const ALERT_MAX_STACKED = 3; // limit jednocześnie wyświetlanych linii, żeby baner nie rozrósł się bez końca
+
+function spawnUnit(type, col, row, owner) {
+  const center = tileToWorld(col, row);
+  units.push({
+    id: nextUnitId++,
+    type,
+    owner,
+    x: center.x,
+    y: center.y,
+    path: [],
+    selected: false,
+    hp: UNIT_TYPES[type].maxHp,
+    reloadRemaining: 0, // tylko dla ranged, ale ustawiane zawsze
+    setupRemaining: 0, // tylko dla ranged — czas do końca rozstawienia po zatrzymaniu
+    timeSinceCombat: 0, // s od ostatniego zadania/otrzymania obrażeń — reguluje regenerację
+    timeSinceMeleeCombat: Infinity, // s od ostatniego ciosu w zwarciu (nie ostrzału) — reguluje combatSlow
+    hitFlashUntil: 0, // performance.now() do kiedy rysować błysk trafienia
+    shakeUntil: 0, // performance.now() do kiedy rysować drganie (trafienie z działa)
+    targetPriority: 'NEAREST', // tylko dla ranged — patrz findTargetForUnit, przełączane klawiszem Tab
+    morale: MORALE_MAX,
+    routed: false, // złamana — gracz nie kontroluje, patrz updateMorale/getSelectedUnits
+    timeSafeFromEnemy: 0, // liczy się tylko gdy routed — patrz updateMorale
+    moraleProtectionRemaining: 0, // s ochrony przed ponownym złamaniem po powrocie z paniki — patrz updateMorale
+    lastStand: false, // desperacka obrona zamiast ucieczki — patrz updateMorale/resolveCombat/drawUnits
+    lastStandRemaining: 0, // s do końca efektu Last Stand
+    inMeleeLock: false, // tylko dla ranged — w zwarciu, nie strzela; patrz resolveCombat/drawUnits
+    shotsFired: 0, shotsHit: 0, // tylko dla ranged — diagnostyka celności w trybie debug (klawisz D)
+    facingAngle: 0, // radiany — zwrot jednostki; aktualizowany ruchem w updateUnit, poza tym rządzony "zaangażowaniem" w walce (patrz niżej i resolveCombat)
+    engagedTargetId: null, // id przeciwnika, z którym jednostka jest aktualnie "związana" (melee albo cel ostrzału) — trwałe, nie przelicza się co klatkę; patrz resolveCombat
+    turnRemaining: 0, // s do końca odwracania się w stronę nowego engagedTargetId (facingAngle zamrożone, dopóki > 0) — patrz UNIT_TYPES.turnTimeSeconds
+    engagementDuration: 0, // s trwania AKTUALNEGO zaangażowania — im dłużej trwa, tym bardziej zanika bonus za flankowanie/tył (patrz flankBonusFor)
+    chaseAnchorX: null, chaseAnchorY: null, // pozycja w momencie nawiązania AKTUALNEGO zaangażowania — limit dystansu "napierania"/pościgu, patrz MAX_CHASE_DISTANCE_PX w resolveCombat
+  });
+  // Statystyki meczu — konwój to automat ekonomii, nie "zbudowana
+  // jednostka" w sensie gracza, pomijany.
+  if (type !== 'CONVOY' && stats[owner]) stats[owner].unitsBuilt++;
+}
+
+// Dwie armie po przeciwnych krańcach mapy, na sprawdzonym przechodnim
+// terenie (pole). P1 (niebieski, sterowany) po lewej, P2 (czerwony,
+// statyczny — bez AI) po prawej. Pomijane w trybie headless — narzędzie
+// balansu (window.BalanceSim) spawnuje własne, zdefiniowane scenariuszem armie.
+if (!HEADLESS) {
+  spawnUnit('ARCHER', 1, 8, 'P1');
+  spawnUnit('ARCHER', 2, 8, 'P1');
+  spawnUnit('CANNON', 1, 9, 'P1');
+  spawnUnit('CANNON', 2, 9, 'P1');
+  spawnUnit('LIGHT_INFANTRY', 1, 10, 'P1');
+  spawnUnit('LIGHT_INFANTRY', 2, 10, 'P1');
+  spawnUnit('HEAVY_INFANTRY', 1, 11, 'P1');
+  spawnUnit('HEAVY_INFANTRY', 2, 11, 'P1');
+  spawnUnit('CAVALRY', 1, 12, 'P1');
+  spawnUnit('CAVALRY', 2, 12, 'P1');
+
+  spawnUnit('ARCHER', 22, 8, 'P2');
+  spawnUnit('ARCHER', 23, 8, 'P2');
+  spawnUnit('CANNON', 22, 9, 'P2');
+  spawnUnit('CANNON', 23, 9, 'P2');
+  spawnUnit('LIGHT_INFANTRY', 22, 10, 'P2');
+  spawnUnit('LIGHT_INFANTRY', 23, 10, 'P2');
+  spawnUnit('HEAVY_INFANTRY', 22, 11, 'P2');
+  spawnUnit('HEAVY_INFANTRY', 23, 11, 'P2');
+  spawnUnit('CAVALRY', 22, 12, 'P2');
+  spawnUnit('CAVALRY', 23, 12, 'P2');
+}
+
+// Gest myszy
+let dragMode = null; // 'SELECT' | 'ROUTE' | 'FRONT' | null
+let dragStart = null; // {x,y}
+let dragCurrent = null; // {x,y}
+let rawStrokePoints = []; // dla ROUTE/FRONT
+let lassoPoints = []; // dla SELECT (lasso)
+
+// ============================================================
+// GEOMETRIA SIATKI
+// ============================================================
+function worldToTile(x, y) {
+  return { col: Math.floor(x / TILE_SIZE), row: Math.floor(y / TILE_SIZE) };
+}
+function tileToWorld(col, row) {
+  return { x: col * TILE_SIZE + TILE_SIZE / 2, y: row * TILE_SIZE + TILE_SIZE / 2 };
+}
+function inBounds(col, row) {
+  return col >= 0 && col < MAP_COLS && row >= 0 && row < MAP_ROWS;
+}
+function terrainAt(col, row) {
+  if (!inBounds(col, row)) return null;
+  return TERRAIN[MAP_DATA[row][col]];
+}
+function isPassable(col, row) {
+  const t = terrainAt(col, row);
+  return !!t && t.passable;
+}
+function nearestPassableTile(col, row) {
+  if (isPassable(col, row)) return { col, row };
+  for (let radius = 1; radius < Math.max(MAP_COLS, MAP_ROWS); radius++) {
+    for (let dr = -radius; dr <= radius; dr++) {
+      for (let dc = -radius; dc <= radius; dc++) {
+        if (Math.max(Math.abs(dr), Math.abs(dc)) !== radius) continue;
+        const c = col + dc, r = row + dr;
+        if (inBounds(c, r) && isPassable(c, r)) return { col: c, row: r };
+      }
+    }
+  }
+  return { col, row };
+}
+
+const PATH_CORNER_MARGIN = 8; // px — margines od narożnika przeszkody, mniej niż pół kafla (16px)
+
+// Odsuwa punkt załamania od sąsiednich nieprzechodnich kafli o PATH_CORNER_MARGIN,
+// żeby trasa wyglądała jak omijanie przeszkody, a nie chodzenie po siatce.
+// Bez sąsiadów-przeszkód to no-op (punkt zwrócony bez zmian).
+function offsetFromObstacles(point, marginPx) {
+  const tile = worldToTile(point.x, point.y);
+  let pushX = 0, pushY = 0;
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      if (isPassable(tile.col + dc, tile.row + dr)) continue;
+      const obstacleCenter = tileToWorld(tile.col + dc, tile.row + dr);
+      const dx = point.x - obstacleCenter.x, dy = point.y - obstacleCenter.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      pushX += dx / dist;
+      pushY += dy / dist;
+    }
+  }
+  const mag = Math.hypot(pushX, pushY);
+  if (mag < 1e-6) return point;
+  return { x: point.x + (pushX / mag) * marginPx, y: point.y + (pushY / mag) * marginPx };
+}
+
+// "Cięcie rogów" (Chaikin): zamienia każdy odcinek na dwa punkty w ratio/
+// (1-ratio) jego długości, zachowując pierwszy i ostatni punkt listy bez
+// zmian (pozycja jednostki i dokładny cel gracza nigdy nie są ruszane).
+// Nigdy nie usuwa ani nie pomija punktu — bezpieczne nawet dla ręcznie
+// narysowanej TRASY, tylko zaokrągla zakręty, nie skraca kształtu.
+function chaikinSmooth(points, ratio, iterations) {
+  let pts = points;
+  for (let iter = 0; iter < iterations; iter++) {
+    if (pts.length < 3) break;
+    const next = [pts[0]];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i], p1 = pts[i + 1];
+      next.push({ x: p0.x + (p1.x - p0.x) * ratio, y: p0.y + (p1.y - p0.y) * ratio });
+      next.push({ x: p0.x + (p1.x - p0.x) * (1 - ratio), y: p0.y + (p1.y - p0.y) * (1 - ratio) });
+    }
+    next.push(pts[pts.length - 1]);
+    pts = next;
+  }
+  return pts;
+}
+
+// Ostateczne wygładzenie ścieżki jednostki: dokleja jej bieżącą pozycję,
+// zaokrągla zakręty łukiem (szerszym dla szybkich jednostek, ciaśniejszym
+// dla wolnych), zwraca wynik bez doklejonego punktu startowego.
+function finalizePath(unit, rawPath) {
+  if (rawPath.length === 0) return rawPath;
+  const ratio = Math.max(0.12, Math.min(0.4, 0.1 + UNIT_TYPES[unit.type].speed * 0.2));
+  const withStart = [{ x: unit.x, y: unit.y }, ...rawPath];
+  const rounded = chaikinSmooth(withStart, ratio, 2);
+  return rounded.slice(1);
+}
+
+// ============================================================
+// PATHFINDING (A*)
+// ============================================================
+// Rdzeń A* — zwraca węzeł końcowy (z łańcuchem .parent do odtworzenia
+// ścieżki i .g jako łączny koszt) albo null, gdy trasa nie istnieje.
+// Używane zarówno przez findPath (pełna ścieżka świata), jak i
+// estimatePathCost (sam koszt, do porównywania kandydatów bez liczenia
+// całej wygładzonej trasy — patrz findRouteEntryIndex).
+function runAStarSearch(startTile, end) {
+  const key = (c, r) => r * MAP_COLS + c;
+  const open = new Map(); // key -> node
+  const closed = new Set();
+  const startNode = { col: startTile.col, row: startTile.row, g: 0, h: heuristic(startTile, end), parent: null };
+  startNode.f = startNode.g + startNode.h;
+  open.set(key(startNode.col, startNode.row), startNode);
+
+  const dirs = [
+    [1,0],[-1,0],[0,1],[0,-1],
+    [1,1],[1,-1],[-1,1],[-1,-1],
+  ];
+
+  let iterations = 0;
+  const maxIterations = MAP_COLS * MAP_ROWS * 4;
+
+  while (open.size > 0 && iterations++ < maxIterations) {
+    let currentKey = null, current = null;
+    for (const [k, node] of open) {
+      if (!current || node.f < current.f) { current = node; currentKey = k; }
+    }
+    if (current.col === end.col && current.row === end.row) return current;
+    open.delete(currentKey);
+    closed.add(currentKey);
+
+    for (const [dc, dr] of dirs) {
+      const nc = current.col + dc, nr = current.row + dr;
+      if (!inBounds(nc, nr) || !isPassable(nc, nr)) continue;
+      if (dc !== 0 && dr !== 0) {
+        // zakaz "ścinania rogów" przy przekątnej obok nieprzechodniego terenu
+        if (!isPassable(current.col + dc, current.row) || !isPassable(current.col, current.row + dr)) continue;
+      }
+      const nk = key(nc, nr);
+      if (closed.has(nk)) continue;
+      const destTerrain = terrainAt(nc, nr);
+      const stepCost = ((dc !== 0 && dr !== 0) ? Math.SQRT2 : 1) * (destTerrain.pathCost || 1);
+      const g = current.g + stepCost;
+      const existing = open.get(nk);
+      if (!existing || g < existing.g) {
+        const node = { col: nc, row: nr, g, h: heuristic({col:nc,row:nr}, end), parent: current };
+        node.f = node.g + node.h;
+        open.set(nk, node);
+      }
+    }
+  }
+  return null;
+}
+
+function findPath(startTile, endTile, exactEndPoint) {
+  let end = endTile;
+  let endWasSnapped = false;
+  if (!isPassable(end.col, end.row)) {
+    end = nearestPassableTile(end.col, end.row);
+    endWasSnapped = true;
+  }
+  // Kafel startowy zawsze traktowany jako dostępny — jeśli jednostka mimo
+  // wszystko stoi na nieprzechodnim terenie, ma mieć jak stamtąd wyjść
+  // (sąsiedzi nadal filtrowani normalnie przez isPassable niżej).
+  if (startTile.col === end.col && startTile.row === end.row) {
+    if (exactEndPoint && !endWasSnapped) return [{ x: exactEndPoint.x, y: exactEndPoint.y }];
+    return [];
+  }
+
+  const finalNode = runAStarSearch(startTile, end);
+  if (!finalNode) return null; // brak trasy — odróżnij od trywialnego "już na miejscu" ([])
+
+  const tilePath = [];
+  let n = finalNode;
+  while (n) { tilePath.unshift({ col: n.col, row: n.row }); n = n.parent; }
+  const smoothed = smoothTilePath(tilePath);
+  const worldPoints = smoothed.slice(1).map(t => tileToWorld(t.col, t.row));
+  // margines od narożników przeszkód na punktach pośrednich (nie na
+  // ostatnim, który zaraz i tak może zostać nadpisany dokładnym celem)
+  for (let i = 0; i < worldPoints.length - 1; i++) {
+    worldPoints[i] = offsetFromObstacles(worldPoints[i], PATH_CORNER_MARGIN);
+  }
+  if (exactEndPoint && !endWasSnapped && worldPoints.length > 0) {
+    worldPoints[worldPoints.length - 1] = { x: exactEndPoint.x, y: exactEndPoint.y };
+  } else if (worldPoints.length > 0) {
+    worldPoints[worldPoints.length - 1] = offsetFromObstacles(worldPoints[worldPoints.length - 1], PATH_CORNER_MARGIN);
+  }
+  return worldPoints;
+}
+
+// Sam koszt trasy (bez wygładzania/budowania punktów świata) — do szybkiego
+// porównania wielu kandydatów, patrz findRouteEntryIndex.
+function estimatePathCost(startTile, endTile) {
+  let end = endTile;
+  if (!isPassable(end.col, end.row)) end = nearestPassableTile(end.col, end.row);
+  if (startTile.col === end.col && startTile.row === end.row) return 0;
+  const node = runAStarSearch(startTile, end);
+  return node ? node.g : Infinity;
+}
+function heuristic(a, b) {
+  const dx = a.col - b.col, dy = a.row - b.row;
+  return Math.sqrt(dx*dx + dy*dy);
+}
+
+// Kafel blokuje "skrót" przy wygładzaniu, jeśli jest nieprzechodni ALBO
+// bardzo kosztowny (woda) — inaczej wygładzanie wycięłoby prostą linię
+// przez wodę, ignorując wysoki koszt, który A* świadomie omijał
+function blocksLineOfSight(col, row) {
+  const t = terrainAt(col, row);
+  if (!t || !t.passable) return true;
+  return (t.pathCost || 1) > 1;
+}
+
+// Bresenham po kaflach — sprawdza, czy między a i b jest prosta,
+// nieprzerywana linia (z zakazem ścinania rogów, tak jak w A*)
+function hasLineOfSight(a, b) {
+  let x = a.col, y = a.row;
+  const x1 = b.col, y1 = b.row;
+  const dx = Math.abs(x1 - x), dy = Math.abs(y1 - y);
+  const sx = x < x1 ? 1 : -1;
+  const sy = y < y1 ? 1 : -1;
+  let err = dx - dy;
+
+  while (true) {
+    if (blocksLineOfSight(x, y)) return false;
+    if (x === x1 && y === y1) return true;
+    const e2 = 2 * err;
+    let steppedX = false, steppedY = false;
+    if (e2 > -dy) { err -= dy; x += sx; steppedX = true; }
+    if (e2 < dx) { err += dx; y += sy; steppedY = true; }
+    if (steppedX && steppedY) {
+      if (blocksLineOfSight(x - sx, y) || blocksLineOfSight(x, y - sy)) return false;
+    }
+  }
+}
+
+// "String pulling": z listy kafli ścieżki A* usuwa punkty pośrednie tam,
+// gdzie da się przejść prostą linią — zamienia schodkowy ruch po siatce
+// na naturalne, proste odcinki
+function smoothTilePath(tiles) {
+  if (tiles.length <= 2) return tiles;
+  const result = [tiles[0]];
+  let current = 0;
+  while (current < tiles.length - 1) {
+    let next = current + 1;
+    for (let i = tiles.length - 1; i > current; i--) {
+      if (hasLineOfSight(tiles[current], tiles[i])) { next = i; break; }
+    }
+    result.push(tiles[next]);
+    current = next;
+  }
+  return result;
+}
+
+// ============================================================
+// KRZYWA GESTU — uproszczenie i próbkowanie po długości
+// ============================================================
+function simplifyCurve(points, tolerance) {
+  if (points.length <= 2) return points.slice();
+  return rdp(points, tolerance);
+}
+function rdp(points, tolerance) {
+  let maxDist = 0, index = 0;
+  const [first, last] = [points[0], points[points.length - 1]];
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = perpendicularDistance(points[i], first, last);
+    if (d > maxDist) { maxDist = d; index = i; }
+  }
+  if (maxDist > tolerance) {
+    const left = rdp(points.slice(0, index + 1), tolerance);
+    const right = rdp(points.slice(index), tolerance);
+    return left.slice(0, -1).concat(right);
+  }
+  return [first, last];
+}
+function perpendicularDistance(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  return Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / len;
+}
+function curveLength(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += Math.hypot(points[i].x - points[i-1].x, points[i].y - points[i-1].y);
+  return total;
+}
+function pointAtArcLength(points, dist) {
+  if (points.length === 1) return points[0];
+  let remaining = dist;
+  for (let i = 1; i < points.length; i++) {
+    const segLen = Math.hypot(points[i].x - points[i-1].x, points[i].y - points[i-1].y);
+    if (remaining <= segLen || i === points.length - 1) {
+      const t = segLen === 0 ? 0 : Math.max(0, Math.min(1, remaining / segLen));
+      return { x: points[i-1].x + (points[i].x - points[i-1].x) * t, y: points[i-1].y + (points[i].y - points[i-1].y) * t };
+    }
+    remaining -= segLen;
+  }
+  return points[points.length - 1];
+}
+
+// ============================================================
+// ROZKAZY RUCHU — TRYB A (trasa) / TRYB B (front)
+// ============================================================
+const ORDER_FAIL_EFFECT_DURATION_MS = 700;
+let orderFailEffects = []; // {x, y, startTime} — czerwony "X" gdy rozkaz nie ma jak dojść do celu
+
+// Jednostka w ruchu, której wydano nowy rozkaz TRASA, mogła już minąć
+// początek narysowanej krzywej — bez tego szukałaby drogi z powrotem do
+// startu. Szukamy punktu na krzywej najtańszego do osiągnięcia (koszt A*
+// ważony terenem, nie linia prosta) zamiast zawsze brać punkt 0.
+const ROUTE_ENTRY_SAMPLE_STEP = 3; // co N-ty punkt krzywej jako kandydat (wydajność)
+const ROUTE_ENTRY_MAX_CANDIDATE_DIST = 300; // px, tani wstępny filtr linią prostą przed A*
+const ROUTE_ENTRY_MAX_REASONABLE_COST = 20; // próg kosztu A* — powyżej: cała trasa od początku (świadomy zamiar gracza)
+
+function findRouteEntryIndex(unit, curvePoints) {
+  const indexSet = new Set();
+  for (let i = 0; i < curvePoints.length; i += ROUTE_ENTRY_SAMPLE_STEP) indexSet.add(i);
+  indexSet.add(curvePoints.length - 1);
+  // co-N-ty sampling może ominąć oczywistego kandydata tuż obok jednostki
+  // (krótkie krzywe, niekorzystne wyrównanie kroku) — geometrycznie
+  // najbliższy punkt (tanie, bez A*) jest zawsze dorzucany do kandydatów
+  let nearestIndex = 0, nearestDist = Infinity;
+  for (let i = 0; i < curvePoints.length; i++) {
+    const d = Math.hypot(curvePoints[i].x - unit.x, curvePoints[i].y - unit.y);
+    if (d < nearestDist) { nearestDist = d; nearestIndex = i; }
+  }
+  indexSet.add(nearestIndex);
+  const indices = [...indexSet];
+
+  const startTile = worldToTile(unit.x, unit.y);
+  let bestIndex = 0, bestCost = Infinity;
+  for (const i of indices) {
+    const cp = curvePoints[i];
+    // tani wstępny filtr linią prostą — dopiero ocalałych kandydatów
+    // sprawdzamy pełnym (droższym) A*
+    if (Math.hypot(cp.x - unit.x, cp.y - unit.y) > ROUTE_ENTRY_MAX_CANDIDATE_DIST) continue;
+    const cost = estimatePathCost(startTile, worldToTile(cp.x, cp.y));
+    if (cost < bestCost) { bestCost = cost; bestIndex = i; }
+  }
+  // indeks 0 jest zawsze wśród kandydatów, więc jeśli jednostka nie minęła
+  // jeszcze startu trasy, wygrywa naturalnie — bez specjalnego przypadku.
+  // Gdy nawet najlepszy kandydat jest bardzo drogi (jednostka daleko od
+  // całej krzywej), to świadomy zamiar gracza — cała trasa od początku.
+  if (bestCost > ROUTE_ENTRY_MAX_REASONABLE_COST) return 0;
+  return bestIndex;
+}
+
+function buildRoutePath(unit, curvePoints) {
+  const remainingCurve = curvePoints.slice(findRouteEntryIndex(unit, curvePoints));
+  const fullPath = [];
+  let prevWorld = { x: unit.x, y: unit.y };
+  for (let i = 0; i < remainingCurve.length; i++) {
+    const cp = remainingCurve[i];
+    const isLast = i === remainingCurve.length - 1;
+    const startTile = worldToTile(prevWorld.x, prevWorld.y);
+    const endTile = worldToTile(cp.x, cp.y);
+    const segment = findPath(startTile, endTile, isLast ? cp : undefined);
+    if (segment === null) return null; // odcinek nieosiągalny — cała trasa pada
+    fullPath.push(...segment);
+    // prevWorld musi być RZECZYWISTYM końcem obliczonej ścieżki, nie
+    // surowym punktem krzywej cp — inaczej kolejny odcinek liczy się od
+    // "widmowej" pozycji (np. wewnątrz góry, jeśli cp tam leżał), co
+    // tworzy prostą linię przez przeszkodę między segmentami
+    if (segment.length > 0) prevWorld = segment[segment.length - 1];
+  }
+  return fullPath;
+}
+
+function assignFrontTargets(selectedUnits, curvePoints) {
+  const n = selectedUnits.length;
+  const targets = [];
+  if (n === 1) {
+    targets.push(pointAtArcLength(curvePoints, curveLength(curvePoints) / 2));
+  } else {
+    const total = curveLength(curvePoints);
+    for (let i = 0; i < n; i++) {
+      targets.push(pointAtArcLength(curvePoints, total * (i / (n - 1))));
+    }
+  }
+  // sortuj jednostki i cele wzdłuż kierunku krzywej, żeby trasy się nie krzyżowały
+  const dirStart = curvePoints[0], dirEnd = curvePoints[curvePoints.length - 1];
+  const dx = dirEnd.x - dirStart.x, dy = dirEnd.y - dirStart.y;
+  const proj = (p) => (p.x - dirStart.x) * dx + (p.y - dirStart.y) * dy;
+
+  const unitsSorted = selectedUnits.slice().sort((a, b) => proj(a) - proj(b));
+  const targetsSorted = targets.slice().sort((a, b) => proj(a) - proj(b));
+
+  return unitsSorted.map((u, i) => ({ unit: u, target: targetsSorted[i] }));
+}
+
+// ============================================================
+// KLASYFIKACJA GESTU
+// ============================================================
+const FORMATION_SPACING = 18; // px — odstęp między jednostkami w rozstawieniu grupy
+
+// Zwraca N przesunięć (dx,dy) wokół (0,0): środek + kolejne pierścienie,
+// żeby grupowy rozkaz "idź w punkt" nie kierował wszystkich w ten sam piksel
+function formationOffsets(n, spacing) {
+  const offsets = [{ dx: 0, dy: 0 }];
+  let ring = 1;
+  while (offsets.length < n) {
+    const count = Math.min(n - offsets.length, 6 * ring);
+    const radius = spacing * ring;
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2;
+      offsets.push({ dx: Math.cos(angle) * radius, dy: Math.sin(angle) * radius });
+    }
+    ring++;
+  }
+  return offsets;
+}
+
+function findUnitAt(x, y) {
+  for (let i = units.length - 1; i >= 0; i--) {
+    const u = units[i];
+    const r = UNIT_TYPES[u.type].drawRadius + 3; // margines ułatwiający trafienie
+    if (Math.hypot(u.x - x, u.y - y) <= r) return u;
+  }
+  return null;
+}
+function findCityAt(x, y) {
+  for (const city of CITIES) {
+    const c = cityCenter(city);
+    if (Math.hypot(x - c.x, y - c.y) <= CITY_MARKER_RADIUS + 4) return city; // +4 margines, jak przy jednostkach
+  }
+  return null;
+}
+
+// Odległość punktu od odcinka a-b (rzut na odcinek, przycięty do końców) —
+// używane przez findTradeRouteAt do wykrywania kliknięcia w cienką linię szlaku.
+function pointToSegmentDistance(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = a.x + t * dx, cy = a.y + t * dy;
+  return Math.hypot(p.x - cx, p.y - cy);
+}
+const TRADE_ROUTE_CLICK_TOLERANCE = 8; // px — jak blisko trzeba kliknąć narysowaną krzywą szlaku
+function findTradeRouteAt(x, y) {
+  for (const route of tradeRoutes) {
+    const pts = route.curve;
+    for (let i = 1; i < pts.length; i++) {
+      if (pointToSegmentDistance({ x, y }, pts[i - 1], pts[i]) <= TRADE_ROUTE_CLICK_TOLERANCE) return route;
+    }
+  }
+  return null;
+}
+
+function getSelectedUnits() {
+  // złamana (routed) jednostka ignoruje rozkazy gracza — patrz updateMorale
+  return units.filter(u => u.selected && !u.routed);
+}
+function isOwnUnit(u) {
+  return !!u && u.owner === OWNED_PLAYER;
+}
+
+// Klasyczny ray casting — działa na dowolnym (niedomkniętym) wielokącie,
+// bo pętla zaczyna od pary (ostatni, pierwszy) i tak domyka kształt
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    const intersect = ((yi > point.y) !== (yj > point.y)) &&
+      (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// ============================================================
+// PANEL EKONOMII (HTML, nie canvas) — proste i funkcjonalne, to prototyp
+// ============================================================
+const PRODUCIBLE_TYPES = ['ARCHER', 'CANNON', 'LIGHT_INFANTRY', 'HEAVY_INFANTRY', 'CAVALRY'];
+const goldAmountEl = document.getElementById('goldAmount');
+const goldRateTextEl = document.getElementById('goldRateText');
+const lastCityBadgeEl = document.getElementById('lastCityBadge');
+const cityPanelEl = document.getElementById('cityPanel');
+const cityPanelTitleEl = document.getElementById('cityPanelTitle');
+const cityUpgradeSectionEl = document.getElementById('cityUpgradeSection');
+const cityConvoyStatusEl = document.getElementById('cityConvoyStatus');
+const cityQueueListEl = document.getElementById('cityQueueList');
+const cityBuildButtonsEl = document.getElementById('cityBuildButtons');
+const cityProductionStatusEl = document.getElementById('cityProductionStatus');
+const cityRoutesListEl = document.getElementById('cityRoutesList');
+const closeCityPanelBtnEl = document.getElementById('closeCityPanelBtn');
+const alertBannerEl = document.getElementById('alertBanner');
+const gameOverOverlayEl = document.getElementById('gameOverOverlay');
+const legendToggleBtnEl = document.getElementById('legendToggleBtn');
+const legendPanelEl = document.getElementById('legendPanel');
+const unitStatsTooltipEl = document.getElementById('unitStatsTooltip');
+
+// Zwinięty domyślnie — nie ma zasłaniać mapy, gracz sam go rozwija.
+legendToggleBtnEl.onclick = () => {
+  const collapsed = legendPanelEl.style.display === 'none';
+  legendPanelEl.style.display = collapsed ? 'block' : 'none';
+  legendToggleBtnEl.style.display = collapsed ? 'none' : 'block';
+};
+
+// Krótkie opisy roli — wyłącznie do podglądu w panelu miasta (patrz
+// showUnitStatsTooltip), gracz ma rozumieć za co płaci bez czytania
+// dokumentacji. Nie mylić z komentarzami przy UNIT_TYPES (te są dla
+// programisty, nie dla gracza).
+const UNIT_ROLE_DESCRIPTIONS = {
+  ARCHER: 'Lekki dystans, tani, słaby w zwarciu',
+  CANNON: 'Ciężka artyleria, duży zasięg, bezbronna z bliska',
+  LIGHT_INFANTRY: 'Tania piechota do zapełniania linii',
+  HEAVY_INFANTRY: 'Najsilniejsza w zwarciu, wolna',
+  CAVALRY: 'Szybka, do flankowania i rajdów',
+};
+
+function showUnitStatsTooltip(type) {
+  const cfg = UNIT_TYPES[type];
+  const dmgLine = cfg.ranged
+    ? `Obrażenia: ${cfg.damagePerShot}/strzał (${(cfg.damagePerShot / cfg.reloadTime).toFixed(1)}/s)`
+    : `Obrażenia: ${cfg.damagePerSecond}/s`;
+  const speedPxPerS = Math.round(BASE_SPEED_PX_PER_S * cfg.speed);
+  unitStatsTooltipEl.innerHTML = `
+    <div class="roleText">${type}</div>
+    <div>${UNIT_ROLE_DESCRIPTIONS[type] || ''}</div>
+    <div>HP: ${cfg.maxHp}</div>
+    <div>${dmgLine}</div>
+    <div>Zasięg: ${cfg.attackRange}</div>
+    <div>Prędkość: ${speedPxPerS}px/s</div>
+    <div>Koszt: ${cfg.cost}zł</div>
+    <div>Czas produkcji: ${cfg.buildTime}s</div>
+  `;
+  unitStatsTooltipEl.style.display = 'block';
+}
+function hideUnitStatsTooltip() {
+  unitStatsTooltipEl.style.display = 'none';
+}
+
+// Baner alertów u góry ekranu — widoczny ZAWSZE (nie tylko przy otwartym
+// panelu miasta), np. przy przejęciu/utracie konwoju/miasta (patrz
+// updateConvoyCaptures/updateCityCaptures) albo nieudanym wyznaczeniu
+// szlaku. Kolejka, nie pojedynczy komunikat — dwa zdarzenia (np. "miasto
+// atakowane" i chwilę później "miasto stracone") nie mogą się nawzajem
+// kasować.
+function showAlert(text, durationMs = 3000) {
+  alerts.push({ text, until: performance.now() + durationMs });
+}
+function updateAlertBanner() {
+  const now = performance.now();
+  alerts = alerts.filter(a => now < a.until);
+  if (alerts.length > 0) {
+    alertBannerEl.innerHTML = alerts.slice(-ALERT_MAX_STACKED).map(a => a.text).join('<br>');
+    alertBannerEl.style.display = 'block';
+  } else {
+    alertBannerEl.style.display = 'none';
+  }
+}
+
+function updateGoldPanel() {
+  goldAmountEl.textContent = Math.floor(gold[OWNED_PLAYER]);
+  const rate = goldRate[OWNED_PLAYER];
+  goldRateTextEl.textContent = (rate >= 0 ? '+' : '') + rate.toFixed(1);
+  lastCityBadgeEl.style.display = CITIES.filter(c => c.owner === OWNED_PLAYER).length === 1 ? 'inline' : 'none';
+  if (selectedCity) updateCityPanelLive(); // trzyma kolejkę/koszty aktualne, gdy panel jest otwarty
+  updateAlertBanner();
+}
+
+// Tworzy przyciski produkcji RAZ (przy otwarciu panelu) — NIGDY nie wołane
+// co klatkę. Wcześniej cały panel (łącznie z przyciskami) był budowany od
+// zera w KAŻDEJ klatce, co niszczyło i odtwarzało przycisk, na który
+// gracz właśnie kliknął, zanim przeglądarka zdążyła wysłać zdarzenie
+// 'click' — stąd "przycisk nie reaguje" (potwierdzone: Playwright łapał
+// błąd "element was detached from the DOM" przy próbie kliknięcia).
+function buildCityPanelButtons(city) {
+  cityBuildButtonsEl.innerHTML = '';
+  for (const type of PRODUCIBLE_TYPES) {
+    const cfg = UNIT_TYPES[type];
+    const btn = document.createElement('button');
+    btn.dataset.type = type;
+    btn.onclick = () => { queueProduction(city, type); };
+    btn.addEventListener('mouseenter', () => showUnitStatsTooltip(type));
+    btn.addEventListener('mouseleave', hideUnitStatsTooltip);
+    cityBuildButtonsEl.appendChild(btn);
+  }
+  buildCityUpgradeSection(city);
+  buildCityRoutesList(city);
+}
+
+// Przycisk ulepszenia poziomu miasta — ten sam wzorzec co przyciski
+// produkcji: tworzony RAZ przy otwarciu panelu, treść/disabled mutowane
+// w updateCityPanelLive, nigdy nie przebudowywany co klatkę.
+function buildCityUpgradeSection(city) {
+  cityUpgradeSectionEl.innerHTML = '';
+  const btn = document.createElement('button');
+  btn.onclick = () => { upgradeCity(city); };
+  cityUpgradeSectionEl.appendChild(btn);
+}
+
+// Lista szlaków też budowana od zera tylko przy faktycznej zmianie
+// (otwarcie panelu, dodanie/usunięcie szlaku) — ten sam problem
+// dotyczyłby przycisków "Usuń", gdyby odświeżać co klatkę.
+function buildCityRoutesList(city) {
+  const cityRoutes = tradeRoutes.filter(r => r.cityAId === city.id || r.cityBId === city.id);
+  cityRoutesListEl.innerHTML = '';
+  const header = document.createElement('div');
+  header.textContent = cityRoutes.length
+    ? `Aktywne szlaki: ${cityRoutes.length}`
+    : 'Brak szlaków — narysuj trasę PPM do innego własnego miasta';
+  cityRoutesListEl.appendChild(header);
+  for (const route of cityRoutes) {
+    const otherId = route.cityAId === city.id ? route.cityBId : route.cityAId;
+    const row = document.createElement('div');
+    const label = document.createElement('span');
+    label.textContent = `→ ${otherId} `;
+    const btn = document.createElement('button');
+    btn.textContent = 'Usuń';
+    btn.onclick = () => {
+      tradeRoutes = tradeRoutes.filter(r => r !== route);
+      if (selectedTradeRoute === route) selectedTradeRoute = null;
+      buildCityRoutesList(city);
+    };
+    row.appendChild(label);
+    row.appendChild(btn);
+    cityRoutesListEl.appendChild(row);
+  }
+}
+
+// Wołane co klatkę — aktualizuje WYŁĄCZNIE tekst i disabled/title na już
+// istniejących elementach (tytuł, kolejka to zwykły tekst bez handlerów,
+// bezpieczny do podmiany co klatkę; przyciski produkcji NIGDY nie są tu
+// tworzone na nowo, tylko mutowane w miejscu).
+function updateCityPanelLive() {
+  const city = selectedCity;
+  cityPanelTitleEl.textContent = `Miasto ${city.id} (${city.owner}) — poziom ${city.level}/${CITY_LEVEL_MAX}`;
+  const upgradeBtn = cityUpgradeSectionEl.firstChild;
+  if (city.level >= CITY_LEVEL_MAX) {
+    upgradeBtn.textContent = `Poziom maksymalny (${CITY_LEVEL_MAX})`;
+    upgradeBtn.disabled = true;
+    upgradeBtn.title = '';
+  } else if (city.upgradeRemaining > 0) {
+    upgradeBtn.textContent = `Ulepszanie do poziomu ${city.level + 1}... (${city.upgradeRemaining.toFixed(1)}s)`;
+    upgradeBtn.disabled = true;
+    upgradeBtn.title = '';
+  } else {
+    const next = city.level + 1;
+    const cost = CITY_LEVELS[next].upgradeCost;
+    const canAfford = gold[city.owner] >= cost;
+    const curInterval = CITY_LEVELS[city.level].spawnInterval;
+    const nextInterval = CITY_LEVELS[next].spawnInterval;
+    upgradeBtn.textContent = `Poziom ${city.level}→${next}: konwój co ${curInterval}s→${nextInterval}s (koszt ${cost}zł, ${CITY_LEVELS[next].upgradeTime}s)`;
+    upgradeBtn.disabled = !canAfford;
+    upgradeBtn.title = canAfford ? '' : `Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`;
+  }
+  const hasRoute = tradeRoutes.some(r => r.cityAId === city.id || r.cityBId === city.id);
+  cityConvoyStatusEl.textContent = hasRoute
+    ? `Następny konwój za: ${Math.max(0, CITY_LEVELS[city.level].spawnInterval - city.timeSinceLastConvoy).toFixed(1)}s`
+    : 'Brak szlaków — licznik konwojów zatrzymany';
+  cityQueueListEl.innerHTML = city.queue.length
+    ? `${city.queue.length}/${CITY_QUEUE_MAX_LENGTH} — ` + city.queue.map((q, i) => `${i === 0 ? 'Buduje' : 'W kolejce'}: ${q.type} (${q.remainingTime.toFixed(1)}s)`).join('<br>')
+    : 'Kolejka pusta';
+  const queueFull = city.queue.length >= CITY_QUEUE_MAX_LENGTH;
+  let anyAffordable = false;
+  for (const btn of cityBuildButtonsEl.children) {
+    const cfg = UNIT_TYPES[btn.dataset.type];
+    const canAfford = gold[city.owner] >= cfg.cost;
+    if (canAfford) anyAffordable = true;
+    btn.textContent = `${btn.dataset.type} — ${cfg.cost}zł, ${cfg.buildTime}s`;
+    btn.disabled = !canAfford || queueFull;
+    btn.title = queueFull ? 'Kolejka produkcji pełna'
+      : !canAfford ? `Za mało złota (potrzeba ${cfg.cost}, masz ${Math.floor(gold[city.owner])})`
+      : '';
+  }
+  // Powód, dla którego nie da się teraz nic wyprodukować — widoczny NA
+  // STAŁE, nie tylko po najechaniu myszą na wyłączony przycisk (przycisk
+  // wyłączony nie da się kliknąć, więc alert w onclick nigdy by się nie
+  // pokazał w tym typowym przypadku — patrz buildCityPanelButtons).
+  cityProductionStatusEl.textContent = queueFull ? 'Kolejka produkcji pełna — poczekaj, aż coś się zbuduje'
+    : !anyAffordable ? 'Za mało złota na jakąkolwiek jednostkę'
+    : '';
+}
+
+function showCityPanel(city) {
+  selectedCity = city;
+  cityPanelEl.style.display = 'block';
+  buildCityPanelButtons(city);
+  updateCityPanelLive();
+}
+function hideCityPanel() {
+  selectedCity = null;
+  cityPanelEl.style.display = 'none';
+  hideUnitStatsTooltip();
+}
+
+closeCityPanelBtnEl.addEventListener('click', hideCityPanel);
+
+// ============================================================
+// OBSŁUGA MYSZY
+// ============================================================
+function getMousePos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+  // przelicz ze współrzędnych ekranu na współrzędne mapy tą samą skalą,
+  // której użyto przy rysowaniu (patrz updateViewTransform / gameLoop)
+  return { x: (screenX - viewOffsetX) / viewScale, y: (screenY - viewOffsetY) / viewScale };
+}
+
+let dragButton = null; // 'LEFT' | 'RIGHT' | null
+let dragStartHitSelectedUnit = false; // dla PPM, liczone przy mousedown
+const CLICK_DRAG_THRESHOLD = 5; // px — poniżej tego to klik, nie przeciągnięcie
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Kamera: zoom kółkiem myszy DO KURSORA (ten sam punkt świata zostaje pod
+// kursorem przed i po zmianie), pan środkowym przyciskiem (przycisk 1,
+// dotąd nieużywany — zero konfliktu z LPM/PPM obsługującymi zaznaczanie
+// i rozkazy). Osobny, niezależny stan od dragButton/dragMode poniżej.
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const before = getMousePos(e);
+  cameraZoom *= (e.deltaY < 0 ? CAMERA_ZOOM_STEP : 1 / CAMERA_ZOOM_STEP);
+  clampCamera();
+  updateViewTransform();
+  const after = getMousePos(e);
+  cameraX += before.x - after.x;
+  cameraY += before.y - after.y;
+  clampCamera();
+  updateViewTransform();
+}, { passive: false });
+
+let isPanning = false;
+let panLastScreen = null;
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button === 1) {
+    e.preventDefault();
+    isPanning = true;
+    panLastScreen = { x: e.clientX, y: e.clientY };
+  }
+});
+window.addEventListener('mousemove', (e) => {
+  if (!isPanning) return;
+  const dx = e.clientX - panLastScreen.x, dy = e.clientY - panLastScreen.y;
+  panLastScreen = { x: e.clientX, y: e.clientY };
+  cameraX -= dx / viewScale;
+  cameraY -= dy / viewScale;
+  clampCamera();
+  updateViewTransform();
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 1) isPanning = false;
+});
+
+// Tab cyklicznie zmienia priorytet celu zaznaczonych jednostek dystansowych
+// (jednostki wręcz ignorują — nie mają pojęcia priorytetu celu)
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    for (const u of getSelectedUnits()) {
+      if (!UNIT_TYPES[u.type].ranged) continue;
+      const i = TARGET_PRIORITIES.indexOf(u.targetPriority);
+      u.targetPriority = TARGET_PRIORITIES[(i + 1) % TARGET_PRIORITIES.length];
+    }
+  } else if (e.key === 'd' || e.key === 'D') {
+    // tryb debug — liczba morale nad każdą jednostką, na stałe do balansowania
+    debugMode = !debugMode;
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (selectedTradeRoute) {
+      e.preventDefault();
+      tradeRoutes = tradeRoutes.filter(r => r !== selectedTradeRoute);
+      selectedTradeRoute = null;
+      if (selectedCity) buildCityRoutesList(selectedCity);
+    }
+  }
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  const pos = getMousePos(e);
+  dragStart = pos;
+  dragCurrent = pos;
+  dragMode = null;
+
+  if (e.button === 0) {
+    dragButton = 'LEFT';
+  } else if (e.button === 2) {
+    dragButton = 'RIGHT';
+    const hit = findUnitAt(pos.x, pos.y);
+    dragStartHitSelectedUnit = !!(hit && hit.selected);
+    const cityHit = findCityAt(pos.x, pos.y);
+    dragStartOwnCity = (cityHit && cityHit.owner === OWNED_PLAYER) ? cityHit : null;
+    rawStrokePoints = [pos];
+  } else {
+    dragButton = null;
+  }
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!dragButton) return;
+  const pos = getMousePos(e);
+  dragCurrent = pos;
+
+  if (!dragMode) {
+    const moved = Math.hypot(pos.x - dragStart.x, pos.y - dragStart.y);
+    if (moved <= CLICK_DRAG_THRESHOLD) return;
+    // próg przeciągnięcia przekroczony — dopiero teraz ustalamy tryb gestu
+    if (dragButton === 'LEFT') {
+      dragMode = 'SELECT';
+      lassoPoints = [dragStart];
+    } else if (dragButton === 'RIGHT') {
+      dragMode = dragStartOwnCity ? 'TRADE_ROUTE' : (dragStartHitSelectedUnit ? 'ROUTE' : 'FRONT');
+    }
+  }
+
+  if (dragButton === 'LEFT' && dragMode === 'SELECT') {
+    const last = lassoPoints[lassoPoints.length - 1];
+    if (Math.hypot(pos.x - last.x, pos.y - last.y) > 5) lassoPoints.push(pos);
+  }
+
+  if (dragButton === 'RIGHT' && (dragMode === 'ROUTE' || dragMode === 'FRONT' || dragMode === 'TRADE_ROUTE')) {
+    const last = rawStrokePoints[rawStrokePoints.length - 1];
+    if (Math.hypot(pos.x - last.x, pos.y - last.y) > 6) rawStrokePoints.push(pos);
+  }
+});
+
+// Rozkazy ruchu — wydzielone tak, by AI (patrz window.GameAPI/ai.js) mogło
+// wołać DOKŁADNIE tę samą logikę co gest myszy gracza, na dowolnej liście
+// jednostek (nie tylko getSelectedUnits()). Zachowanie dla gracza bez zmian
+// — te same wywołania, tylko przeniesione z inline kodu handlera.
+function issueMoveOrder(unitList, target) {
+  const offsets = formationOffsets(unitList.length, FORMATION_SPACING);
+  unitList.forEach((u, i) => {
+    const t = { x: target.x + offsets[i].dx, y: target.y + offsets[i].dy };
+    const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(t.x, t.y), t);
+    if (rawPath === null) {
+      orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
+    } else {
+      u.path = finalizePath(u, rawPath);
+    }
+  });
+}
+function issueRouteOrder(unitList, curve) {
+  for (const u of unitList) {
+    const rawPath = buildRoutePath(u, curve);
+    if (rawPath === null) {
+      orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
+    } else {
+      u.path = finalizePath(u, rawPath);
+    }
+  }
+}
+function issueFrontOrder(unitList, curve) {
+  const assignments = assignFrontTargets(unitList, curve);
+  for (const { unit, target } of assignments) {
+    const rawPath = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
+    if (rawPath === null) {
+      orderFailEffects.push({ x: unit.x, y: unit.y, startTime: performance.now() });
+    } else {
+      unit.path = finalizePath(unit, rawPath);
+    }
+  }
+}
+// Tylko dla dystansowych — patrz TARGET_PRIORITIES/handler Tab niżej,
+// który wciąż CYKLUJE dla gracza; AI ustawia wartość wprost, bez cyklu.
+function setTargetPriority(unit, priority) {
+  if (UNIT_TYPES[unit.type].ranged) unit.targetPriority = priority;
+}
+
+// Produkcja/ulepszenie miasta — ta sama logika co przyciski panelu miasta
+// (patrz buildCityPanelButtons/buildCityUpgradeSection), wydzielona żeby
+// AI mogło jej użyć bez klikania DOM. showAlert TYLKO dla własnego miasta
+// gracza — inaczej AI spamowałoby jego baner swoimi brakami złota.
+function queueProduction(city, type) {
+  const cfg = UNIT_TYPES[type];
+  if (city.queue.length >= CITY_QUEUE_MAX_LENGTH) {
+    if (city.owner === OWNED_PLAYER) showAlert('Kolejka produkcji pełna');
+    return false;
+  }
+  if (gold[city.owner] < cfg.cost) {
+    if (city.owner === OWNED_PLAYER) showAlert(`Za mało złota (potrzeba ${cfg.cost}, masz ${Math.floor(gold[city.owner])})`);
+    return false;
+  }
+  gold[city.owner] -= cfg.cost;
+  city.queue.push({ type, remainingTime: cfg.buildTime });
+  if (selectedCity === city) updateCityPanelLive();
+  return true;
+}
+function upgradeCity(city) {
+  const next = city.level + 1;
+  if (next > CITY_LEVEL_MAX || city.upgradeRemaining > 0) return false;
+  const cost = CITY_LEVELS[next].upgradeCost;
+  if (gold[city.owner] < cost) {
+    if (city.owner === OWNED_PLAYER) showAlert(`Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`);
+    return false;
+  }
+  gold[city.owner] -= cost;
+  city.upgradeRemaining = CITY_LEVELS[next].upgradeTime;
+  if (selectedCity === city) updateCityPanelLive();
+  return true;
+}
+// Szlak handlowy między dwoma miastami TEGO SAMEGO właściciela — walidacja
+// wewnątrz; gest myszy w mouseup sam decyduje, czy pokazać komunikat błędu
+// (te komunikaty są specyficzne dla przeciągnięcia, nie dla samej reguły).
+function createTradeRoute(cityFrom, cityTo, owner, curve) {
+  if (!cityFrom || !cityTo || cityFrom === cityTo) return false;
+  if (cityFrom.owner !== owner || cityTo.owner !== owner) return false;
+  const oldIdx = tradeRoutes.findIndex(r =>
+    (r.cityAId === cityFrom.id && r.cityBId === cityTo.id) ||
+    (r.cityAId === cityTo.id && r.cityBId === cityFrom.id));
+  if (oldIdx !== -1) {
+    if (selectedTradeRoute === tradeRoutes[oldIdx]) selectedTradeRoute = null;
+    tradeRoutes.splice(oldIdx, 1);
+  }
+  tradeRoutes.push({ id: nextTradeRouteId++, owner, cityAId: cityFrom.id, cityBId: cityTo.id, curve });
+  if (selectedCity) buildCityRoutesList(selectedCity);
+  return true;
+}
+
+window.addEventListener('mouseup', (e) => {
+  if (!dragButton) return;
+  const pos = getMousePos(e);
+  // dragMode zostaje ustawiony raz, gdy przeciągnięcie przekroczy próg
+  // (patrz mousemove), i już nie wraca do null — bezpieczniejszy test niż
+  // odległość start↔koniec, którą myliłby np. lasso domknięte blisko
+  // punktu startowego (odległość końcowa mała, mimo że to był drag)
+  const wasDrag = dragMode !== null;
+
+  if (dragButton === 'LEFT') {
+    if (wasDrag) {
+      hideCityPanel();
+      for (const u of units) {
+        // konwój nigdy nie łapie się w lasso — jedyny sposób zaznaczenia to bezpośredni klik (findUnitAt, bez zmian)
+        const inLasso = isOwnUnit(u) && u.type !== 'CONVOY' && pointInPolygon(u, lassoPoints);
+        u.selected = e.shiftKey ? (u.selected || inLasso) : inLasso;
+      }
+    } else {
+      const cityHit = findCityAt(pos.x, pos.y);
+      if (cityHit) {
+        if (cityHit.owner === OWNED_PLAYER) {
+          for (const u of units) u.selected = false;
+          selectedTradeRoute = null;
+          showCityPanel(cityHit);
+        } // cudze miasto — nie da się zaznaczyć, bez żadnej akcji
+      } else {
+        hideCityPanel();
+        const hitAny = findUnitAt(pos.x, pos.y);
+        const hit = isOwnUnit(hitAny) ? hitAny : null; // jednostek wroga nie da się zaznaczyć
+        if (hit) {
+          selectedTradeRoute = null;
+          if (e.shiftKey) { hit.selected = !hit.selected; }
+          else { for (const u of units) u.selected = false; hit.selected = true; }
+        } else {
+          // brak jednostki pod kliknięciem — sprawdź, czy to zaznaczenie/usunięcie szlaku
+          const routeHit = findTradeRouteAt(pos.x, pos.y);
+          if (routeHit && routeHit.owner === OWNED_PLAYER) {
+            selectedTradeRoute = routeHit;
+          } else if (!e.shiftKey) {
+            for (const u of units) u.selected = false;
+            selectedTradeRoute = null;
+          }
+        }
+      }
+    }
+  } else if (dragButton === 'RIGHT') {
+    if (dragMode === 'TRADE_ROUTE') {
+      const destCity = findCityAt(pos.x, pos.y);
+      if (!destCity || destCity.owner !== OWNED_PLAYER) {
+        showAlert('Szlak musi kończyć się na własnym mieście');
+      } else if (destCity === dragStartOwnCity) {
+        showAlert('Wybierz inne miasto niż źródłowe');
+      } else {
+        // Jeden szlak na parę miast — nowa trasa zastępuje starą między tą
+        // samą parą (w dowolnej kolejności cityA/cityB), bez potrzeby
+        // ręcznego usuwania. Czysto geometryczny opis — żadnego licznika
+        // tutaj. Licznik wysyłki żyje na MIEŚCIE (city.timeSinceLastConvoy),
+        // którego to utworzenie/usunięcie/zmiana szlaku NIGDY nie dotyka
+        // (patrz updateTradeRoutes) — zabezpieczenie przed exploitem
+        // odświeżania konwojów przerysowywaniem tras.
+        createTradeRoute(dragStartOwnCity, destCity, OWNED_PLAYER, simplifyCurve(rawStrokePoints, 6));
+      }
+    } else {
+      const selected = getSelectedUnits();
+      if (selected.length > 0) {
+        if (!wasDrag) {
+          issueMoveOrder(selected, pos);
+        } else if (dragMode === 'ROUTE') {
+          if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+          issueRouteOrder(selected, simplifyCurve(rawStrokePoints, 6));
+        } else if (dragMode === 'FRONT') {
+          if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+          issueFrontOrder(selected, simplifyCurve(rawStrokePoints, 6));
+        }
+      }
+    }
+  }
+
+  dragButton = null;
+  dragMode = null;
+  dragStart = null;
+  dragCurrent = null;
+  dragStartOwnCity = null;
+  rawStrokePoints = [];
+  lassoPoints = [];
+});
+
+// ============================================================
+// RUCH JEDNOSTEK
+// ============================================================
+function updateUnit(unit, dt) {
+  if (unit.path.length === 0) return;
+  const target = unit.path[0];
+  const tile = worldToTile(unit.x, unit.y);
+  const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
+  // Zabezpieczenie: jeśli jednostka mimo wszystko stoi na nieprzechodnim
+  // kaflu, speedMultiplier=0 zablokowałby ją tam na stałe — pozwól jej
+  // poruszać się z normalną prędkością, żeby mogła zejść na właściwy teren
+  const perTypeSpeedMultiplier = TERRAIN_MODIFIERS[unit.type][terrain.name].speedMultiplier;
+  const effectiveSpeedMultiplier = terrain.passable ? terrain.speedMultiplier * perTypeSpeedMultiplier : 1.0;
+  // złamana jednostka ucieka na adrenalinie (szybciej), nie walczy więc
+  // spowolnienie zwarcia jej nie dotyczy; w zwarciu jednostka ma
+  // faktycznie walczyć, nie przepychać się dalej — część typów (kawaleria)
+  // wychodzi z tego łatwiej niż inne (combatSpeedMultiplier per typ)
+  const meleeSlowMultiplier = UNIT_TYPES[unit.type].combatSpeedMultiplier ?? COMBAT_SPEED_MULTIPLIER;
+  const speedStateMultiplier = unit.routed
+    ? PANIC_SPEED_MULTIPLIER
+    : (unit.timeSinceMeleeCombat < MELEE_SLOW_DURATION ? meleeSlowMultiplier : 1);
+  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier * speedStateMultiplier;
+
+  const x0 = unit.x, y0 = unit.y; // do wyliczenia zwrotu (facingAngle) z faktycznego przesunięcia tej klatki
+  let remaining = speed * dt;
+  while (remaining > 0 && unit.path.length > 0) {
+    const dx = unit.path[0].x - unit.x, dy = unit.path[0].y - unit.y;
+    const dist = Math.hypot(dx, dy);
+    // Punkt ścieżki (pośredni albo ostatni) bywa zajęty przez inną
+    // jednostkę (kolizje) — zamiast wiecznie napierać o dokładny piksel
+    // (co przy kilku jednostkach na wspólnym punkcie przelotowym tworzy
+    // trwały zator), uznajemy "wystarczająco blisko" za dotarcie
+    if (dist <= UNIT_TYPES[unit.type].collisionRadius) {
+      unit.path.shift();
+      if (unit.path.length === 0) break;
+      continue;
+    }
+    if (dist <= remaining) {
+      unit.x = unit.path[0].x;
+      unit.y = unit.path[0].y;
+      unit.path.shift();
+      remaining -= dist;
+    } else {
+      unit.x += (dx / dist) * remaining;
+      unit.y += (dy / dist) * remaining;
+      remaining = 0;
+    }
+  }
+
+  // Zwrot (facingAngle) z faktycznego przesunięcia tej klatki — dowolny
+  // realny ruch aktualizuje zwrot (resolveCollisions w ogóle nie woła
+  // updateUnit/nie dotyka facingAngle, więc nie ma tu czego tłumić; przy
+  // progu 0.5px wolne jednostki, np. HEAVY_INFANTRY, poruszają się
+  // ~0.22px/klatkę i zwrot z ruchu praktycznie nigdy by się nie
+  // aktualizował). Brak ruchu → zwrot zostaje bez zmian. W walce
+  // resolveCombat "zaangażowanie" (engagedTargetId) przejmuje sterowanie
+  // zwrotem — patrz komentarz przy spawnUnit.engagedTargetId.
+  const movedDist = Math.hypot(unit.x - x0, unit.y - y0);
+  if (movedDist > 0) {
+    unit.facingAngle = Math.atan2(unit.y - y0, unit.x - x0);
+  }
+}
+
+const COLLISION_DAMPING = 0.5; // tłumienie rozsuwania — zapobiega drganiu w ciasnej grupie
+
+function tryMove(unit, dx, dy) {
+  const candidate = { x: unit.x + dx, y: unit.y + dy };
+  let tile = worldToTile(candidate.x, candidate.y);
+  if (isPassable(tile.col, tile.row)) {
+    unit.x = candidate.x;
+    unit.y = candidate.y;
+    return;
+  }
+  const onlyX = { x: unit.x + dx, y: unit.y };
+  tile = worldToTile(onlyX.x, onlyX.y);
+  if (isPassable(tile.col, tile.row)) {
+    unit.x = onlyX.x;
+    return;
+  }
+  const onlyY = { x: unit.x, y: unit.y + dy };
+  tile = worldToTile(onlyY.x, onlyY.y);
+  if (isPassable(tile.col, tile.row)) {
+    unit.y = onlyY.y;
+    return;
+  }
+  // żaden kierunek nie prowadzi na przechodni teren — zostaw jednostkę na miejscu
+}
+
+// Rozsuwa nakładające się jednostki (promień kolizji), z ograniczeniem do
+// przechodniego terenu i tłumieniem, żeby ciasna grupa nie drgała.
+// Dla wrogich par o różnym pushStrength odsunięcie jest ważone — silniejszy
+// (wyższy pushStrength) dostaje mniejszą wagę, więc to słabszy jest
+// systematycznie spychany. Sojusznicy i pary bez pushStrength (np. dwóch
+// dystansowych) dzielą odsunięcie po równo jak dotąd.
+function resolveCollisions(allUnits) {
+  for (let i = 0; i < allUnits.length; i++) {
+    for (let j = i + 1; j < allUnits.length; j++) {
+      const a = allUnits[i], b = allUnits[j];
+      // Konwoje przenikają przez wszystko — siebie nawzajem i jednostki
+      // bojowe (nie rzutują siły, nie mają czego bronić fizycznym zderzeniem).
+      if (a.type === 'CONVOY' || b.type === 'CONVOY') continue;
+      const minDist = UNIT_TYPES[a.type].collisionRadius + UNIT_TYPES[b.type].collisionRadius;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist === 0) {
+        const angle = Math.random() * Math.PI * 2;
+        tryMove(a, Math.cos(angle) * -0.5, Math.sin(angle) * -0.5);
+        tryMove(b, Math.cos(angle) * 0.5, Math.sin(angle) * 0.5);
+        continue;
+      }
+      if (dist < minDist) {
+        const overlap = (minDist - dist) * COLLISION_DAMPING;
+        const nx = dx / dist, ny = dy / dist;
+
+        let weightA = 0.5, weightB = 0.5;
+        if (a.owner !== b.owner) {
+          const pA = effectivePushStrength(a), pB = effectivePushStrength(b);
+          const totalPush = pA + pB;
+          if (totalPush > 0) {
+            weightA = pB / totalPush; // silniejszy (wyższe pA) => mniejsza waga => mniej się cofa
+            weightB = pA / totalPush;
+          }
+        }
+
+        tryMove(a, -nx * overlap * weightA, -ny * overlap * weightA);
+        tryMove(b, nx * overlap * weightB, ny * overlap * weightB);
+      }
+    }
+  }
+}
+
+// ============================================================
+// WALKA
+// ============================================================
+const DEATH_EFFECT_DURATION_MS = 400;
+const DEATH_FADE_DURATION_MS = 500;
+const IMPACT_EFFECT_DURATION_MS = 180;
+const HIT_FLASH_DURATION_MS = 100;
+const CANNON_SHAKE_DURATION_MS = 150;
+const CANNON_SHAKE_MAGNITUDE = 2.5;
+
+let deathEffects = []; // {x, y, color, startTime} — zanikający pierścień w miejscu śmierci
+let dyingUnits = []; // {type, owner, x, y, startTime} — znikająca sylwetka jednostki
+let impactEffects = []; // {x, y, startTime} — iskra w miejscu uderzenia pocisku (trafienie lub pudło)
+let currentAttacks = []; // {attacker, target} — tylko starcia melee, do rysowania linii w tej klatce
+let projectiles = []; // {x, y, vx, vy, impactX, impactY, distanceLeft, damage, owner, attackerType, targetUnit}
+
+function findNearestEnemyInRange(unit, allUnits) {
+  const range = UNIT_TYPES[unit.type].attackRange;
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const other of allUnits) {
+    // konwoje nigdy nie są celem ataku — przechwytywane, nie niszczone (patrz updateConvoyCaptures)
+    if (other.owner === unit.owner || other.hp <= 0 || other.type === 'CONVOY') continue;
+    const dist = Math.hypot(other.x - unit.x, other.y - unit.y);
+    if (dist <= range && dist < nearestDist) {
+      nearest = other;
+      nearestDist = dist;
+    }
+  }
+  return nearest;
+}
+
+// Bez ograniczenia zasięgu — używane przez panikę (dystans do bezpiecznej
+// ucieczki, kierunek ucieczki), nie przez zwykłe namierzanie w walce.
+function findNearestEnemyAnyRange(unit, allUnits) {
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const other of allUnits) {
+    // konwój nie jest zagrożeniem — przejeżdżający obok nie powinien liczyć się jako "wróg" dla paniki
+    if (other.owner === unit.owner || other.hp <= 0 || other.type === 'CONVOY') continue;
+    const dist = Math.hypot(other.x - unit.x, other.y - unit.y);
+    if (dist < nearestDist) {
+      nearest = other;
+      nearestDist = dist;
+    }
+  }
+  return { enemy: nearest, dist: nearestDist };
+}
+
+// Priorytety celów dla jednostek dystansowych — przełączane klawiszem Tab
+// (patrz listener na końcu pliku). Jednostki wręcz zawsze biją najbliższego
+// (findNearestEnemyInRange), to dotyczy wyłącznie ranged:true.
+const TARGET_PRIORITIES = ['NEAREST', 'ENEMY_ARTILLERY', 'HEAVY_UNITS', 'WEAKEST'];
+
+function findTargetForUnit(unit, allUnits) {
+  const range = effectiveAttackRange(unit);
+  // konwoje nigdy nie są celem ataku — przechwytywane, nie niszczone (patrz updateConvoyCaptures)
+  const inRange = allUnits.filter(o => o.owner !== unit.owner && o.hp > 0 && o.type !== 'CONVOY'
+    && Math.hypot(o.x - unit.x, o.y - unit.y) <= range);
+  if (inRange.length === 0) return null;
+  const nearest = (list) => list.reduce((best, o) => {
+    const d = Math.hypot(o.x - unit.x, o.y - unit.y);
+    return (!best || d < best.d) ? { o, d } : best;
+  }, null).o;
+
+  if (unit.targetPriority === 'ENEMY_ARTILLERY') {
+    const found = inRange.filter(o => UNIT_TYPES[o.type].ranged);
+    if (found.length) return nearest(found);
+  } else if (unit.targetPriority === 'HEAVY_UNITS') {
+    const found = inRange.filter(o => o.type === 'HEAVY_INFANTRY');
+    if (found.length) return nearest(found);
+  } else if (unit.targetPriority === 'WEAKEST') {
+    return inRange.reduce((best, o) => (!best || o.hp < best.hp) ? o : best, null);
+  }
+  return nearest(inRange); // NEAREST i fallback, gdy brak celu pasującego do priorytetu
+}
+
+// Teren jednostki (bezpieczny fallback na POLE, jak wszędzie indziej —
+// patrz updateUnit/attackerDamageMultiplier).
+function unitTerrain(unit) {
+  const tile = worldToTile(unit.x, unit.y);
+  return terrainAt(tile.col, tile.row) || TERRAIN[0];
+}
+
+// Zasięg ataku dystansowego skalowany terenem (wzgórza = dalej widać i
+// strzela się dalej, las = zasłonięta gęstwina) — patrz TERRAIN_MODIFIERS.
+function effectiveAttackRange(unit) {
+  const terrain = unitTerrain(unit);
+  return UNIT_TYPES[unit.type].attackRange * TERRAIN_MODIFIERS[unit.type][terrain.name].rangeMultiplier;
+}
+
+// Siła napierania w zwarciu skalowana terenem (kawaleria traci impet w
+// lesie — patrz TERRAIN_MODIFIERS) — używane wszędzie tam, gdzie dotąd
+// czytano surowe UNIT_TYPES[x.type].pushStrength dla ŻYWEJ jednostki.
+function effectivePushStrength(unit) {
+  const terrain = unitTerrain(unit);
+  return UNIT_TYPES[unit.type].pushStrength * TERRAIN_MODIFIERS[unit.type][terrain.name].pushMultiplier;
+}
+
+// Kto napiera, ten trafia mocniej — obrażenia w zwarciu skalowane relacją
+// pushStrength atakującego względem celu (patrz resolveCollisions: to samo
+// pushStrength rozstrzyga, kto fizycznie ustępuje pola)
+function pushDamageMultiplier(attacker, target) {
+  const a = effectivePushStrength(attacker), t = effectivePushStrength(target);
+  if (a > t) return PUSH_WINNING_DAMAGE_MULTIPLIER;
+  if (a < t) return PUSH_LOSING_DAMAGE_MULTIPLIER;
+  return PUSH_STALEMATE_DAMAGE_MULTIPLIER;
+}
+
+function attackerDamageMultiplier(attacker) {
+  const terrain = unitTerrain(attacker);
+  return TERRAIN_MODIFIERS[attacker.type][terrain.name].damageMultiplier;
+}
+
+// Porusza lecące pociski i zbiera obrażenia trafień do pendingDamage
+// (BEZ dotykania hp — patrz komentarz KRYTYCZNE niżej). Trafienie/pudło
+// jest już PRZESĄDZONE w chwili strzału (patrz resolveCombat, pole
+// isHit) — tu tylko stosujemy ten wynik. Trafiony pocisk namierza na
+// żywo aktualną pozycję celu (żeby wizualnie faktycznie w niego leciał,
+// nie w miejsce sprzed chwili — stąd nie chybia już samym ruchem celu);
+// spudłowany pocisk leci do stałego punktu z boku, ustalonego przy
+// strzale, niezależnie od tego, co zrobi cel. Trafienie to poza tym
+// WYŁĄCZNIE efekt wizualny (błysk, przy działach drganie) i iskra w
+// miejscu uderzenia — bez fizycznego odrzutu. Wypychanie jednostek ma
+// być skutkiem tylko napierania w zwarciu (pushStrength), nigdy ostrzału.
+function updateProjectiles(dt, now, pendingDamage, hitCategoryOf, rangedHitAttackersOf) {
+  const stillFlying = [];
+  for (const p of projectiles) {
+    if (p.isHit && p.targetUnit.hp > 0) {
+      const dx = p.targetUnit.x - p.x, dy = p.targetUnit.y - p.y;
+      const remaining = Math.hypot(dx, dy) || 1;
+      const speed = Math.hypot(p.vx, p.vy);
+      p.vx = (dx / remaining) * speed;
+      p.vy = (dy / remaining) * speed;
+    }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.distanceLeft -= Math.hypot(p.vx, p.vy) * dt;
+    if (p.distanceLeft > 0) {
+      stillFlying.push(p);
+      continue;
+    }
+
+    const finalX = p.isHit ? p.targetUnit.x : p.impactX;
+    const finalY = p.isHit ? p.targetUnit.y : p.impactY;
+    impactEffects.push({ x: finalX, y: finalY, startTime: now });
+
+    if (p.isHit && p.targetUnit.hp > 0) {
+      // Kierunek, z którego pocisk wszedł w cel — to (p.vx,p.vy) tuż przed
+      // uderzeniem (dla trafień śledzących cel, aktualizowane co klatkę
+      // wyżej), więc jest dokładny nawet jeśli strzelec przemieścił się
+      // podczas lotu. Odwrócone, bo p.vx/vy to kierunek LOTU (strzelec→cel),
+      // a tu potrzebny kierunek cel→strzelec (patrz hitCategory).
+      const attackDirectionAngle = Math.atan2(-p.vy, -p.vx);
+      const category = hitCategory(p.targetUnit.facingAngle, attackDirectionAngle);
+
+      // bonus za dobijanie: sprawdzany na aktualnym hp z tej klatki,
+      // przed jakimkolwiek odjęciem — zgodne z zasadą KRYTYCZNE
+      let dmg = p.damage * flankBonusFor(category, p.targetUnit.engagementDuration, p.targetUnit.type) * cityDefenseMultiplier(p.targetUnit);
+      if (p.targetUnit.hp < UNIT_TYPES[p.targetUnit.type].maxHp * LOW_HP_THRESHOLD) {
+        dmg *= LOW_HP_DAMAGE_BONUS;
+      }
+      // redukcja Last Stand liczona na stanie celu W MOMENCIE TRAFIENIA
+      // (mógł wejść w Last Stand w czasie lotu pocisku), nie w chwili odpalenia
+      if (p.targetUnit.lastStand) dmg *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
+      pendingDamage.set(p.targetUnit, (pendingDamage.get(p.targetUnit) || 0) + dmg);
+      recordWorstHitCategory(hitCategoryOf, p.targetUnit, category);
+      if (!rangedHitAttackersOf.has(p.targetUnit)) rangedHitAttackersOf.set(p.targetUnit, new Set());
+      rangedHitAttackersOf.get(p.targetUnit).add(p.shooter);
+      // Zwrot celu NIE jest tu nadpisywany — rządzi nim wyłącznie
+      // zaangażowanie w resolveCombat (engagedTargetId/turnRemaining),
+      // żeby trafienie pociskiem nie "resetowało" toczącej się flanki.
+
+      p.targetUnit.hitFlashUntil = now + HIT_FLASH_DURATION_MS;
+      if (p.attackerType === 'CANNON') {
+        p.targetUnit.shakeUntil = now + CANNON_SHAKE_DURATION_MS;
+      }
+      p.shooter.shotsHit = (p.shooter.shotsHit || 0) + 1;
+    }
+    // pocisk znika po dotarciu do punktu uderzenia niezależnie od trafienia
+  }
+  projectiles = stillFlying;
+}
+
+// Kategoria trafienia względem zwrotu CELU: 'FRONT' (<60° od zwrotu),
+// 'FLANK' (60-120°), 'REAR' (>120°). attackDirectionAngle to kierunek OD
+// CELU w stronę, z której nadszedł cios (w zwarciu: w stronę atakującego;
+// przy ostrzale: przeciwnie do kierunku lotu pocisku w chwili trafienia).
+function hitCategory(targetFacingAngle, attackDirectionAngle) {
+  let diff = Math.abs(targetFacingAngle - attackDirectionAngle) % (Math.PI * 2);
+  if (diff > Math.PI) diff = Math.PI * 2 - diff;
+  const deg = diff * 180 / Math.PI;
+  if (deg > FLANK_REAR_ANGLE_DEG) return 'REAR';
+  if (deg > FLANK_SIDE_ANGLE_DEG) return 'FLANK';
+  return 'FRONT';
+}
+// Mnożnik obrażeń za flankowanie/tył jako 1+bonus, gdzie bonus maleje
+// liniowo od START do FLOOR wraz z exposureSeconds (patrz komentarz przy
+// FLANK_BONUS_START), tłumiony dodatkowo odpornością CELU
+// (UNIT_TYPES.<TYP>.flankResistance, domyślnie 1 = brak tłumienia).
+function flankBonusFor(category, exposureSeconds, targetType) {
+  let bonus;
+  if (category === 'REAR') bonus = Math.max(REAR_BONUS_FLOOR, REAR_BONUS_START - REAR_BONUS_DECAY_PER_SECOND * exposureSeconds);
+  else if (category === 'FLANK') bonus = Math.max(FLANK_BONUS_FLOOR, FLANK_BONUS_START - FLANK_BONUS_DECAY_PER_SECOND * exposureSeconds);
+  else return 1;
+  return 1 + bonus * (UNIT_TYPES[targetType].flankResistance ?? 1);
+}
+// REAR > FLANK > FRONT — zapamiętuje NAJGORSZĄ kategorię trafienia celu w
+// tej klatce (może być trafiony kilka razy, z różnych stron) — używane
+// przez updateMorale do mnożnika spadku morale.
+const HIT_CATEGORY_SEVERITY = { FRONT: 0, FLANK: 1, REAR: 2 };
+function recordWorstHitCategory(map, unit, category) {
+  const existing = map.get(unit);
+  if (!existing || HIT_CATEGORY_SEVERITY[category] > HIT_CATEGORY_SEVERITY[existing]) {
+    map.set(unit, category);
+  }
+}
+
+// Czy napastnicy wręcz otaczają cel z wielu stron (nie tylko liczba, ale
+// rozstaw kątowy) — okrążenie ma być najsilniejszym czynnikiem łamiącym
+// morale, więc liczy się inaczej niż zwykła przewaga liczebna.
+function isEncircled(target, attackerSet) {
+  if (attackerSet.size < 2) return false;
+  const angles = [...attackerSet]
+    .map(a => Math.atan2(a.y - target.y, a.x - target.x) * 180 / Math.PI)
+    .sort((a, b) => a - b);
+  let maxGap = 0;
+  for (let i = 0; i < angles.length; i++) {
+    let gap = angles[(i + 1) % angles.length] - angles[i];
+    if (gap < 0) gap += 360;
+    if (gap > maxGap) maxGap = gap;
+  }
+  return (360 - maxGap) >= MORALE_ENCIRCLEMENT_ANGLE_THRESHOLD_DEG;
+}
+
+// Morale: osobny pasek od HP. Spada WYŁĄCZNIE od realnych czynników
+// bojowych — obrażeń (mocniej przy niskim HP), przewagi liczebnej we
+// zwarciu (kwadratowo, z dodatkowym mnożnikiem za okrążenie), przegrywania
+// napierania i śmierci sojusznika w pobliżu. Sama nieobecność sojuszników
+// NIC nie kosztuje — obecność tylko tłumi straty z walki tej klatki (patrz
+// dampingFactor niżej), nigdy nie działa w drugą stronę. Rośnie TYLKO poza
+// walką (jak regeneracja HP).
+// Przy niskim morale rośnie z każdą sekundą prawdopodobieństwo załamania
+// (routed) — nigdy pewne, ale przy morale bliskim zeru dość prawdopodobne.
+// Zamiast złamania część jednostek (zależnie od typu) wchodzi w Last Stand
+// — czasowa desperacka obrona zamiast ucieczki (patrz niżej).
+// Złamana jednostka ucieka, nie walczy, gracz jej nie kontroluje — i wraca
+// pod kontrolę dopiero po odzyskaniu bezpiecznego dystansu ORAZ solidnie
+// odbudowanego morale, po czym ma jeszcze okres ochronny przed ponownym
+// złamaniem (patrz CLAUDE.md: utrata jednostek ma być czasowa, nie trwała
+// — inaczej wzmacnia snowball — ale ma być odczuwalna, nie chwilowa).
+function updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHitAttackersOf, dt) {
+  const combatLoss = new Map(); // straty z walki tej klatki — na końcu tłumione obecnością sojuszników
+  const otherDelta = new Map(); // regeneracja/panika/bonus za wygrane napieranie/brak żołdu — BEZ tłumienia
+  const addTo = (map, unit, amount) => map.set(unit, (map.get(unit) || 0) + amount);
+
+  // liczba sojuszników w pobliżu, policzona raz na jednostkę — używana
+  // WYŁĄCZNIE do tłumienia strat bojowych tej klatki (nigdy do ich zadawania)
+  const nearbyAlliesOf = new Map();
+  for (const u of allUnits) {
+    if (u.hp <= 0) continue;
+    let count = 0;
+    for (const other of allUnits) {
+      if (other === u || other.owner !== u.owner || other.hp <= 0) continue;
+      if (Math.hypot(other.x - u.x, other.y - u.y) <= MORALE_ALLY_PRESENCE_RADIUS) {
+        count++;
+        if (count >= MORALE_ALLY_PRESENCE_CAP) break;
+      }
+    }
+    nearbyAlliesOf.set(u, count);
+  }
+
+  // przewaga liczebna w zwarciu: kto atakuje kogo wręcz w tej klatce
+  // (świadomie tylko zwarcie, jak timeSinceMeleeCombat — ostrzał
+  // dystansowy jest już liczony osobno przez same obrażenia)
+  const meleeAttackersOf = new Map(); // target -> Set(attacker)
+  for (const { attacker, target } of attacks) {
+    if (!meleeAttackersOf.has(target)) meleeAttackersOf.set(target, new Set());
+    meleeAttackersOf.get(target).add(attacker);
+  }
+
+  // Atak z kilku kierunków jednocześnie (melee + ostrzał razem) — osobne
+  // od meleeAttackersOf powyżej, który liczy WYŁĄCZNIE przewagę liczebną w
+  // zwarciu (ten mechanizm zostaje nietknięty). Reużywa isEncircled do
+  // sprawdzenia rozstawu kątowego, tylko na szerszym zbiorze napastników.
+  const allDirectionAttackersOf = new Map();
+  for (const [target, set] of meleeAttackersOf) allDirectionAttackersOf.set(target, new Set(set));
+  for (const [target, shooters] of rangedHitAttackersOf) {
+    if (!allDirectionAttackersOf.has(target)) allDirectionAttackersOf.set(target, new Set());
+    for (const s of shooters) allDirectionAttackersOf.get(target).add(s);
+  }
+
+  // Cztery NIEZALEŻNE, DODAJĄCE SIĘ źródła straty (nie mnożniki jednej
+  // bazy) — uczciwe 1v1 bez przewagi/flanki/okrążenia ma tylko czynnik 1,
+  // zredukowany niemal do zera; zła sytuacja taktyczna (2-4) dominuje.
+  // Niskie HP (lowHpAmplifier) wzmacnia WYŁĄCZNIE czynniki 2-4, nigdy
+  // samą utratę HP w czynniku 1 — patrz komentarz przy MORALE_LOW_HP_AMPLIFIER.
+  for (const u of allUnits) {
+    if (u.hp <= 0) continue;
+    const cfg = UNIT_TYPES[u.type];
+    const hpFraction = Math.max(0, u.hp / cfg.maxHp);
+    const lowHpAmplifier = 1 + MORALE_LOW_HP_AMPLIFIER * (1 - hpFraction);
+
+    // 1. Sama utrata HP — celowo znikoma, jedyny czynnik w uczciwym 1v1
+    const dmgTaken = pendingDamage.get(u) || 0;
+    if (dmgTaken > 0) {
+      addTo(combatLoss, u, -dmgTaken * MORALE_LOSS_PER_DAMAGE / cfg.moraleResistance);
+    }
+
+    // 2. Flanka/tył — niezależny, ciągły koszt (NIE mnożnik obrażeń tej
+    // klatki); kategoria to NAJGORSZA z (ewentualnie kilku) trafień tej klatce
+    const category = hitCategoryOf.get(u);
+    if (category === 'REAR') {
+      addTo(combatLoss, u, -MORALE_REAR_HIT_LOSS_PER_SECOND * dt * lowHpAmplifier / cfg.moraleResistance);
+    } else if (category === 'FLANK') {
+      addTo(combatLoss, u, -MORALE_FLANK_HIT_LOSS_PER_SECOND * dt * lowHpAmplifier / cfg.moraleResistance);
+    }
+
+    // 3. Przewaga liczebna w zwarciu — kwadratowo z dodatkowymi
+    // napastnikami ponad pierwszego, realny efekt dopiero od 2:1
+    const attackerSet = meleeAttackersOf.get(u);
+    if (attackerSet && attackerSet.size > 1) {
+      const extra = attackerSet.size - 1;
+      const loss = (extra * extra) * MORALE_OUTNUMBERED_LOSS_PER_SECOND * dt * lowHpAmplifier;
+      addTo(combatLoss, u, -loss / cfg.moraleResistance);
+    }
+
+    // 4. Okrążenie (melee + ostrzał razem, rozstaw kątowy) — NAJSILNIEJSZY
+    // czynnik, dolicza się OSOBNO do przewagi liczebnej (może wystąpić
+    // nawet bez wyraźnej przewagi liczebnej ogółem w innym sensie, np.
+    // dokładnie 2:1 z przeciwnych stron to i przewaga, i okrążenie naraz)
+    const directionSet = allDirectionAttackersOf.get(u);
+    if (directionSet && isEncircled(u, directionSet)) {
+      addTo(combatLoss, u, -MORALE_ENCIRCLEMENT_LOSS_PER_SECOND * dt * lowHpAmplifier / cfg.moraleResistance);
+    }
+  }
+
+  // napieranie: kto wygrywa starcie zyskuje (to zysk — nie ma czego
+  // tłumić), kto jest spychany traci (strata z walki — tłumiona jak reszta)
+  for (const { attacker, target } of attacks) {
+    if (attacker.hp <= 0 || target.hp <= 0) continue;
+    if (pushDamageMultiplier(attacker, target) === PUSH_WINNING_DAMAGE_MULTIPLIER) {
+      addTo(otherDelta, attacker, MORALE_WINNING_PUSH_BONUS_PER_SECOND * dt);
+      addTo(combatLoss, target, -MORALE_PUSHED_LOSS_PER_SECOND * dt / UNIT_TYPES[target.type].moraleResistance);
+    }
+  }
+
+  // śmierć sojusznika w promieniu — w tym wywołaniu allUnits wciąż
+  // zawiera jednostki, które właśnie zginęły w tej klatce (usuwane z
+  // listy dopiero na końcu resolveCombat), więc to zawsze NOWA śmierć
+  for (const dead of allUnits) {
+    if (dead.hp > 0) continue;
+    for (const ally of allUnits) {
+      if (ally === dead || ally.owner !== dead.owner || ally.hp <= 0) continue;
+      const dist = Math.hypot(ally.x - dead.x, ally.y - dead.y);
+      if (dist <= MORALE_ALLY_DEATH_RADIUS) {
+        addTo(combatLoss, ally, -MORALE_ALLY_DEATH_LOSS / UNIT_TYPES[ally.type].moraleResistance);
+      }
+    }
+  }
+
+  for (const u of allUnits) {
+    if (u.hp <= 0) continue;
+
+    if (u.routed) {
+      // odbudowa w panice: JEDYNIE po realnym oddaleniu się od wroga —
+      // celowo bez zwykłego "poza walką"/"sojusznicy w pobliżu" z gałęzi
+      // niżej, żeby zasada była czytelna: trzeba faktycznie uciec
+      const { dist } = findNearestEnemyAnyRange(u, allUnits);
+      if (dist > PANIC_SAFE_DISTANCE) {
+        u.timeSafeFromEnemy += dt;
+      } else {
+        u.timeSafeFromEnemy = 0;
+      }
+      if (u.timeSafeFromEnemy >= PANIC_RECOVERY_DELAY) {
+        addTo(otherDelta, u, PANIC_MORALE_RECOVER_PER_SECOND * dt);
+      }
+    } else {
+      // poza walką — reużywa istniejący licznik z resolveCombat, dokładnie
+      // jak regeneracja HP: zablokowana, dopóki trwa walka
+      if (u.timeSinceCombat >= OUT_OF_COMBAT_DELAY) {
+        addTo(otherDelta, u, MORALE_REGEN_PER_SECOND * dt);
+      }
+    }
+  }
+
+  for (const u of allUnits) {
+    if (u.hp <= 0) continue;
+    const cfg = UNIT_TYPES[u.type];
+
+    // sojusznicy w pobliżu TŁUMIĄ straty z walki tej klatki (nie dodają
+    // morale) — im więcej, tym mniejszy procent strat przechodzi, do
+    // limitu MORALE_ALLY_PRESENCE_MAX_DAMPING
+    const dampingFactor = 1 - Math.min(MORALE_ALLY_PRESENCE_MAX_DAMPING, nearbyAlliesOf.get(u) * MORALE_ALLY_PRESENCE_DAMPING_PER_ALLY);
+    // dystansowi wciągnięci w zwarcie łamią się dużo szybciej
+    const meleeLockPenalty = (cfg.ranged && u.inMeleeLock) ? MORALE_MELEE_LOCK_LOSS_MULTIPLIER : 1;
+    // obrońca WE WŁASNEJ strefie miasta traci morale wolniej — patrz cityDefenseMultiplier
+    const cityDefenseFactor = isDefendingOwnCityZone(u) ? (1 - CITY_DEFENSE_REDUCTION_RATIO) : 1;
+    const dampedCombatLoss = (combatLoss.get(u) || 0) * dampingFactor * meleeLockPenalty * cityDefenseFactor;
+    const delta = dampedCombatLoss + (otherDelta.get(u) || 0);
+    u.morale = Math.max(0, Math.min(MORALE_MAX, u.morale + delta));
+
+    // odliczanie Last Stand — niezależnie od reszty stanu; po wygaśnięciu
+    // jednostka wraca do normalnego stanu i może znów dostać rzut na złamanie
+    if (u.lastStand) {
+      u.lastStandRemaining -= dt;
+      if (u.lastStandRemaining <= 0) { u.lastStand = false; u.lastStandRemaining = 0; }
+    }
+    // odliczanie okresu ochronnego po powrocie z paniki — blokuje TYLKO
+    // rzut na złamanie niżej, morale nadal może swobodnie spadać
+    if (u.moraleProtectionRemaining > 0) {
+      u.moraleProtectionRemaining = Math.max(0, u.moraleProtectionRemaining - dt);
+    }
+
+    if (!u.routed && !u.lastStand && u.moraleProtectionRemaining <= 0 && u.morale < MORALE_WARNING_THRESHOLD) {
+      // element losowy: rosnąca z każdą sekundą szansa złamania, nigdy pewna
+      const t = Math.max(0, Math.min(1, (MORALE_WARNING_THRESHOLD - u.morale) / MORALE_WARNING_THRESHOLD));
+      const chancePerSecond = MORALE_BREAK_MIN_CHANCE_PER_SECOND
+        + (MORALE_BREAK_MAX_CHANCE_PER_SECOND - MORALE_BREAK_MIN_CHANCE_PER_SECOND) * Math.pow(t, MORALE_BREAK_CURVE_EXPONENT);
+      const chanceThisFrame = 1 - Math.pow(1 - chancePerSecond, dt);
+      if (Math.random() < chanceThisFrame) {
+        // zamiast ucieczki, szansa (per typ) na desperacką obronę Last Stand
+        if (Math.random() < cfg.lastStandChance) {
+          u.lastStand = true;
+          u.lastStandRemaining = LAST_STAND_DURATION;
+        } else {
+          u.routed = true;
+          u.path = []; // porzuca stary rozkaz, gracz i tak nią teraz nie kieruje
+          u.timeSafeFromEnemy = 0;
+        }
+      }
+    } else if (u.routed && u.morale >= MORALE_RECOVER_THRESHOLD) {
+      u.routed = false;
+      u.path = []; // pełna, natychmiastowa kontrola z powrotem u gracza
+      u.moraleProtectionRemaining = MORALE_PROTECTION_DURATION; // chwilowa niełamliwość po powrocie
+    }
+  }
+
+  // ucieczka: złamanej jednostce bez aktualnej ścieżki wyznacz nową przez
+  // findPath (dokładnie jak zwykły rozkaz ruchu) — omija góry tak samo,
+  // odtwarzana, gdy dojdzie do celu, a wciąż jest złamana
+  for (const u of allUnits) {
+    if (u.hp <= 0 || !u.routed || u.path.length > 0) continue;
+    const { enemy } = findNearestEnemyAnyRange(u, allUnits);
+    if (!enemy) continue; // brak wroga — nic do ucieczki, i tak liczy się jako bezpiecznie
+    const dx = u.x - enemy.x, dy = u.y - enemy.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const fleeTarget = {
+      x: Math.max(TILE_SIZE / 2, Math.min(MAP_WIDTH_PX - TILE_SIZE / 2, u.x + (dx / len) * PANIC_FLEE_DISTANCE)),
+      y: Math.max(TILE_SIZE / 2, Math.min(MAP_HEIGHT_PX - TILE_SIZE / 2, u.y + (dy / len) * PANIC_FLEE_DISTANCE)),
+    };
+    const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(fleeTarget.x, fleeTarget.y), fleeTarget);
+    if (rawPath !== null) u.path = finalizePath(u, rawPath);
+  }
+}
+
+// KRYTYCZNE: obrażenia liczone jednocześnie dla wszystkich uczestników.
+// Fazy zbierania (trafienia pocisków + nowe starcia w tej klatce) tylko
+// gromadzą obrażenia w pendingDamage (bez dotykania hp!), dopiero na
+// końcu wszystko stosowane naraz — sekwencyjne odejmowanie w pętli po
+// atakujących dawałoby przewagę temu, kto atakuje jako drugi.
+function resolveCombat(allUnits, dt) {
+  const now = performance.now();
+  const unitsById = new Map(allUnits.map(u => [u.id, u])); // do szybkiego odczytu engagedTargetId
+  const pendingDamage = new Map(); // unit -> suma obrażeń w tej klatce
+  const attacks = []; // tylko starcia melee (linia), nie strzały dystansowe
+  const attackersThisFrame = new Set(); // do liczenia timeSinceCombat — kto zadał albo wystrzelił
+  const hitCategoryOf = new Map(); // target -> NAJGORSZA kategoria trafienia w tej klatce ('FRONT'/'FLANK'/'REAR'), patrz recordWorstHitCategory
+  const rangedHitAttackersOf = new Map(); // target -> Set(shooter), tylko realne trafienia pociskiem w tej klatce — do wykrycia ataku z kilku kierunków razem z meleeAttackersOf (patrz updateMorale)
+
+  for (const u of allUnits) {
+    const cfg = UNIT_TYPES[u.type];
+    if (cfg.ranged) u.inMeleeLock = false; // ustawiane z powrotem niżej, jeśli wciąż w zwarciu
+    if (cfg.ranged && u.path.length > 0) {
+      // w ruchu: przerwij rozstawienie i wyczyść przeładowanie — po
+      // ponownym rozstawieniu jednostka jest od razu gotowa do strzału,
+      // bez dodatkowego czekania na stary cykl przeładowania
+      u.setupRemaining = cfg.setupTime;
+      u.reloadRemaining = 0;
+    } else {
+      u.reloadRemaining = Math.max(0, u.reloadRemaining - dt);
+      if (cfg.ranged) u.setupRemaining = Math.max(0, u.setupRemaining - dt);
+    }
+  }
+
+  updateProjectiles(dt, now, pendingDamage, hitCategoryOf, rangedHitAttackersOf);
+
+  // Kto faktycznie atakuje kogo wręcz W TEJ klatce (tylko prawdziwi
+  // wojownicy wręcz, ranged:false) — decyduje, którzy dystansowi są
+  // związani walką i nie mogą strzelać (patrz gałąź ranged niżej).
+  // Liczone PRZED główną pętlą, bo warunek musi być znany w momencie
+  // podejmowania decyzji strzał-czy-zwarcie dla każdej jednostki dystansowej.
+  const meleeAttackersOf = new Map(); // target -> Set(attacker)
+  for (const attacker of allUnits) {
+    if (attacker.hp <= 0 || attacker.routed) continue;
+    if (UNIT_TYPES[attacker.type].ranged) continue;
+    const target = findNearestEnemyInRange(attacker, allUnits);
+    if (!target) continue;
+    if (!meleeAttackersOf.has(target)) meleeAttackersOf.set(target, new Set());
+    meleeAttackersOf.get(target).add(attacker);
+  }
+
+  // Zaangażowanie w walkę — KOGO dana jednostka aktualnie zwalcza (melee
+  // albo cel ostrzału), TRWAŁE między klatkami: nie przelicza się na
+  // nowo, dopóki ten przeciwnik żyje i jest w zasięgu — jednostka "nie
+  // odwraca się, walczy z tym, z kim walczyła" (patrz spawnUnit.
+  // engagedTargetId). Dystansowy wciągnięty w zwarcie ma przeciwnika z
+  // meleeAttackersOf jako WYMUSZONE zaangażowanie, z pierwszeństwem nad
+  // wymarzonym celem ostrzału. Zmiana zaangażowania (także pierwsza, z
+  // null) zeruje engagementDuration i startuje odwracanie (turnRemaining).
+  for (const unit of allUnits) {
+    if (unit.hp <= 0 || unit.routed) { unit.engagedTargetId = null; continue; }
+    const ucfg = UNIT_TYPES[unit.type];
+    let current = unit.engagedTargetId != null ? unitsById.get(unit.engagedTargetId) : null;
+    if (current && current.hp <= 0) current = null;
+
+    const lockedBy = ucfg.ranged ? meleeAttackersOf.get(unit) : null;
+    const forcedEnemy = lockedBy && lockedBy.size > 0 ? [...lockedBy][0] : null;
+
+    if (forcedEnemy) {
+      if (current !== forcedEnemy) current = null; // napastnik w zwarciu ma pierwszeństwo — wymuś przełączenie
+    } else if (current) {
+      const dist = Math.hypot(current.x - unit.x, current.y - unit.y);
+      const maxRange = ucfg.ranged ? effectiveAttackRange(unit) : ucfg.attackRange;
+      if (dist > maxRange) current = null;
+    }
+
+    if (!current) {
+      const candidate = forcedEnemy || (ucfg.ranged ? findTargetForUnit(unit, allUnits) : findNearestEnemyInRange(unit, allUnits));
+      if (candidate) {
+        unit.engagedTargetId = candidate.id;
+        unit.engagementDuration = 0;
+        unit.turnRemaining = ucfg.turnTimeSeconds;
+        unit.chaseAnchorX = unit.x; // punkt startu pościgu/napierania dla TEGO zaangażowania — patrz MAX_CHASE_DISTANCE_PX
+        unit.chaseAnchorY = unit.y;
+      } else {
+        unit.engagedTargetId = null;
+      }
+    }
+  }
+
+  // Odliczanie odwracania i narastanie czasu zaangażowania — facingAngle
+  // zamrożone, dopóki turnRemaining > 0 (jednostka jeszcze się nie
+  // zdążyła obrócić w stronę nowego przeciwnika — to jest okno
+  // zaskoczenia, w którym każdy INNY napastnik z boku/tyłu łapie pełny
+  // bonus flankowania, patrz flankBonusFor).
+  for (const unit of allUnits) {
+    if (unit.hp <= 0 || unit.engagedTargetId == null) continue;
+    const target = unitsById.get(unit.engagedTargetId);
+    if (!target) continue;
+    unit.engagementDuration += dt;
+    if (unit.turnRemaining > 0) unit.turnRemaining = Math.max(0, unit.turnRemaining - dt);
+    if (unit.turnRemaining <= 0) unit.facingAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
+  }
+
+  for (const attacker of allUnits) {
+    // złamana (routed) jednostka przestaje walczyć — patrz updateMorale
+    if (attacker.hp <= 0 || attacker.routed) continue;
+    const cfg = UNIT_TYPES[attacker.type];
+    const dmgMultiplier = attackerDamageMultiplier(attacker);
+    const attackerTile = worldToTile(attacker.x, attacker.y);
+    const attackerTerrain = terrainAt(attackerTile.col, attackerTile.row);
+    const onWater = !!attackerTerrain && attackerTerrain.name === 'WATER';
+
+    if (!cfg.ranged) {
+      // walka wręcz — obrażenia ciągłe, skalowane tym, kto napiera. Cel to
+      // TRWAŁE zaangażowanie (engagedTargetId), nie przeliczane na nowo co
+      // klatkę — patrz pętla wyżej.
+      const target = attacker.engagedTargetId != null ? unitsById.get(attacker.engagedTargetId) : null;
+      if (!target) continue;
+      attacks.push({ attacker, target });
+      attackersThisFrame.add(attacker);
+      // Kąt liczony względem AKTUALNEGO zwrotu celu (patrz pętle
+      // odwracania wyżej — zwrot bywa "zamrożony" przez turnRemaining,
+      // stąd bonus flankowania).
+      const attackDirectionAngle = Math.atan2(attacker.y - target.y, attacker.x - target.x);
+      const category = hitCategory(target.facingAngle, attackDirectionAngle);
+      let damage = cfg.damagePerSecond * dt * dmgMultiplier * pushDamageMultiplier(attacker, target) * flankBonusFor(category, target.engagementDuration, target.type) * cityDefenseMultiplier(target);
+      if (attacker.lastStand) damage *= LAST_STAND_DAMAGE_BONUS_MULTIPLIER;
+      if (target.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
+      pendingDamage.set(target, (pendingDamage.get(target) || 0) + damage);
+      recordWorstHitCategory(hitCategoryOf, target, category);
+      continue;
+    }
+
+    // Dystansowy: bliskość wroga sama w sobie NIE blokuje ostrzału — tylko
+    // faktyczne związanie walką wręcz (ktoś go w TEJ klatce atakuje).
+    // Łucznik może strzelać do wroga stojącego tuż obok, jeśli ten go nie
+    // atakuje (np. walczy z kimś innym).
+    const lockedBy = meleeAttackersOf.get(attacker);
+    if (lockedBy && lockedBy.size > 0) {
+      // związany walką wręcz — bezbronny (pushStrength=0 zawsze przegrywa
+      // porównanie), tylko śladowy atak wręcz na napastnika. Trzyma
+      // rozstawienie "zerwane" przez CAŁY czas zwarcia (odliczanie
+      // setupTime zacznie realnie płynąć dopiero, gdy przestanie być
+      // atakowany — napastnik zginie albo się oderwie). meleeEnemy to
+      // engagedTargetId (pętla wyżej wymusza go na napastnika z lockedBy).
+      const meleeEnemy = unitsById.get(attacker.engagedTargetId);
+      if (!meleeEnemy) continue;
+      attacker.setupRemaining = cfg.setupTime;
+      attacker.inMeleeLock = true;
+      attacks.push({ attacker, target: meleeEnemy });
+      attackersThisFrame.add(attacker);
+      const attackDirectionAngle = Math.atan2(attacker.y - meleeEnemy.y, attacker.x - meleeEnemy.x);
+      const category = hitCategory(meleeEnemy.facingAngle, attackDirectionAngle);
+      let damage = cfg.meleeDamage * dt * dmgMultiplier * pushDamageMultiplier(attacker, meleeEnemy) * flankBonusFor(category, meleeEnemy.engagementDuration, meleeEnemy.type) * cityDefenseMultiplier(meleeEnemy);
+      if (attacker.lastStand) damage *= LAST_STAND_DAMAGE_BONUS_MULTIPLIER;
+      if (meleeEnemy.lastStand) damage *= LAST_STAND_DAMAGE_REDUCTION_MULTIPLIER;
+      pendingDamage.set(meleeEnemy, (pendingDamage.get(meleeEnemy) || 0) + damage);
+      recordWorstHitCategory(hitCategoryOf, meleeEnemy, category);
+      continue;
+    }
+
+    // Cel ostrzału to też TRWAŁE zaangażowanie (engagedTargetId, pętla
+    // wyżej) — dystansowy nie zmienia celu co klatkę, dopóki ten żyje i
+    // jest w zasięgu, co daje sensowną, ciągłą podstawę pod zwrot/odwracanie.
+    const target = attacker.engagedTargetId != null ? unitsById.get(attacker.engagedTargetId) : null;
+    if (!target) continue;
+    const dist = Math.hypot(target.x - attacker.x, target.y - attacker.y);
+    if (!onWater && attacker.reloadRemaining <= 0 && attacker.setupRemaining <= 0) {
+      // dystansowi wymagają rozstawienia — na wodzie nie da się go
+      // rozstawić, więc ostrzał jest zablokowany (śladowy meleeDamage
+      // wyżej, jeśli wróg jest w zwarciu, działa bez zmian)
+      // normalny strzał — obrażenia dopiero przy trafieniu pocisku, nie teraz.
+      // Samo wystrzelenie już liczy się jako "w walce" dla regeneracji.
+      attackersThisFrame.add(attacker);
+      const speed = cfg.projectileSpeed;
+      const vx = (target.x - attacker.x) / dist * speed;
+      const vy = (target.y - attacker.y) / dist * speed;
+      // rozrzut rośnie liniowo z dystansem: z bliska niemal gwarantowane
+      // trafienie, na pełnym attackRange wyraźnie gorsza celność, ale
+      // różnica między dystansem średnim a maksymalnym ma być łagodna, nie
+      // urwista (kwadratowy wzrost dawał zbyt karną krzywą trafień)
+      const distFraction = dist / effectiveAttackRange(attacker);
+      const spreadRadius = cfg.accuracy * distFraction;
+      const missAngle = Math.random() * Math.PI * 2;
+      const missOffset = Math.sqrt(Math.random()) * spreadRadius;
+      const impactX = target.x + Math.cos(missAngle) * missOffset;
+      const impactY = target.y + Math.sin(missAngle) * missOffset;
+      // trafienie/pudło rozstrzygnięte TERAZ, na dystansie w chwili strzału —
+      // inaczej pocisk mierzący w stały punkt zawsze chybia poruszający się
+      // cel niezależnie od celności (patrz updateProjectiles: namierzanie
+      // żywego celu tylko dla strzałów już oznaczonych jako trafione)
+      const isHit = missOffset <= UNIT_TYPES[target.type].collisionRadius;
+      projectiles.push({
+        x: attacker.x, y: attacker.y, vx, vy,
+        impactX, impactY, // używane tylko dla pudła (stały punkt z boku)
+        distanceLeft: dist,
+        damage: cfg.damagePerShot * dmgMultiplier * (attacker.lastStand ? LAST_STAND_DAMAGE_BONUS_MULTIPLIER : 1),
+        owner: attacker.owner,
+        attackerType: attacker.type,
+        targetUnit: target,
+        shooter: attacker, // do liczników trafień w trybie debug
+        isHit,
+      });
+      attacker.reloadRemaining = cfg.reloadTime;
+      attacker.shotsFired = (attacker.shotsFired || 0) + 1;
+    }
+  }
+
+  // Napieranie: jednostki wręcz (pushStrength>0) powoli suną w stronę
+  // celu zamiast stać nieruchomo w zasięgu ataku — o tym, kto faktycznie
+  // zyskuje grunt, rozstrzyga ważone resolveCollisions (patrz wyżej).
+  // Rozkaz gracza ma BEZWZGLĘDNY priorytet: jednostka z aktywną,
+  // niedokończoną ścieżką (świeży rozkaz) nigdy nie jest przesuwana tu
+  // automatycznie — w typowej, stacjonarnej walce frontowej path.length
+  // i tak wynosi 0 (jednostka dotarła i stoi), więc to nie wyłącza
+  // zamierzonego, powolnego przesuwania frontu, tylko sytuację "gracz
+  // właśnie wydał nowy rozkaz". Dodatkowo ograniczone do
+  // MAX_CHASE_DISTANCE_PX od chaseAnchorX/Y (patrz spawnUnit / pętla
+  // zaangażowania wyżej) — bez tego napieranie za uciekającym wrogiem
+  // samo się napędza w nieskończoność (prawdziwy zgłoszony błąd pościgu).
+  for (const { attacker, target } of attacks) {
+    if (attacker.path.length > 0) continue;
+    const pushStrength = effectivePushStrength(attacker);
+    if (pushStrength <= 0) continue;
+    const chasedDist = Math.hypot(attacker.x - attacker.chaseAnchorX, attacker.y - attacker.chaseAnchorY);
+    if (chasedDist >= MAX_CHASE_DISTANCE_PX) continue;
+    const dx = target.x - attacker.x, dy = target.y - attacker.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const step = pushStrength * PUSH_ADVANCE_SPEED_PER_STRENGTH * dt;
+    tryMove(attacker, (dx / dist) * step, (dy / dist) * step);
+  }
+
+  for (const [unit, damage] of pendingDamage) {
+    unit.hp -= damage;
+  }
+
+  // Zegar "poza walką": zresetuj tym, którzy w tej klatce zadali/wystrzelili
+  // albo otrzymali obrażenia; resztę przesuń o dt bliżej progu regeneracji
+  for (const u of allUnits) {
+    if (attackersThisFrame.has(u) || pendingDamage.has(u)) {
+      u.timeSinceCombat = 0;
+    } else {
+      u.timeSinceCombat += dt;
+    }
+  }
+
+  // Osobny zegar zwarcia (nie ostrzału) — napędza spowolnienie w walce
+  // wręcz. `attacks` zawiera wyłącznie starcia wręcz (w tym dystansowych
+  // zmuszonych do zwarcia), nigdy trafień pociskiem.
+  const meleeThisFrame = new Set();
+  for (const { attacker, target } of attacks) {
+    meleeThisFrame.add(attacker);
+    meleeThisFrame.add(target);
+  }
+  for (const u of allUnits) {
+    if (meleeThisFrame.has(u)) {
+      u.timeSinceMeleeCombat = 0;
+    } else {
+      u.timeSinceMeleeCombat += dt;
+    }
+  }
+
+  updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHitAttackersOf, dt);
+
+  const survivors = [];
+  for (const u of allUnits) {
+    if (u.hp <= 0) {
+      deathEffects.push({ x: u.x, y: u.y, color: PLAYERS[u.owner].color, startTime: now });
+      dyingUnits.push({ type: u.type, owner: u.owner, x: u.x, y: u.y, startTime: now });
+      if (stats[u.owner]) stats[u.owner].unitsLost++;
+      continue;
+    }
+    if (u.hp < UNIT_TYPES[u.type].maxHp && u.timeSinceCombat >= OUT_OF_COMBAT_DELAY && canRegenerateHere(u)) {
+      const maxHp = UNIT_TYPES[u.type].maxHp;
+      u.hp = Math.min(maxHp, u.hp + maxHp * REGEN_PER_SECOND * dt);
+    }
+    survivors.push(u);
+  }
+
+  currentAttacks = attacks;
+  return survivors;
+}
+
+// ============================================================
+// EKONOMIA — patrz sekcja CONFIG na początku pliku
+// ============================================================
+let convoyArrivalEffects = []; // {x, y, startTime} — krótki żółty rozbłysk przy udanym dowozie (odróżnia od śmierci w walce)
+const CONVOY_ARRIVAL_EFFECT_DURATION_MS = 300;
+const CONVOY_ARRIVAL_RADIUS = 24; // px od środka miasta uznawane za "dotarł"
+
+// Wysyła jeden konwój Z danego miasta, losując JEDEN z jego szlaków (o
+// ile ma więcej niż jeden) — więcej szlaków daje więcej możliwych
+// kierunków, NIGDY więcej konwojów. Reużywa buildRoutePath/finalizePath,
+// DOKŁADNIE ten sam pipeline co TRASA dla jednostek, więc konwój podąża
+// po krzywej, nie po najkrótszej drodze. Wołane cyklicznie przez
+// updateTradeRoutes, bez udziału gracza i bez żadnego kosztu.
+function spawnCityConvoy(city) {
+  const cityRoutes = tradeRoutes.filter(r => r.cityAId === city.id || r.cityBId === city.id);
+  if (cityRoutes.length === 0) return;
+  const route = cityRoutes[Math.floor(Math.random() * cityRoutes.length)];
+  const destCityId = route.cityAId === city.id ? route.cityBId : route.cityAId;
+  const destCity = CITIES.find(c => c.id === destCityId);
+  if (!destCity) return;
+  const curve = route.cityAId === city.id ? route.curve : [...route.curve].reverse();
+  spawnUnit('CONVOY', city.col, city.row, city.owner);
+  const convoy = units[units.length - 1];
+  convoy.targetCityId = destCity.id;
+  convoy.tradeRouteId = route.id;
+  convoy.captureProgress = 0;
+  convoy.capturingOwner = null;
+  convoy.captureCount = 0;
+  const origin = cityCenter(city), dest = cityCenter(destCity);
+  convoy.goldValue = Math.hypot(dest.x - origin.x, dest.y - origin.y) / 100 * TRADE_ROUTE_GOLD_PER_100PX;
+  const rawPath = buildRoutePath(convoy, curve);
+  if (rawPath !== null) convoy.path = finalizePath(convoy, rawPath);
+}
+
+// To MIASTO ma licznik, nie szlak (patrz CONFIG) — tyka WYŁĄCZNIE gdy
+// miasto ma ≥1 szlak (jakikolwiek), inaczej zamrożony (nie zeruje się,
+// po prostu nie rośnie — "bez szlaku nie odlicza"). Żadna operacja na
+// szlakach (utworzenie/usunięcie/zmiana) nie dotyka tego pola nigdzie
+// indziej w kodzie, więc nie da się go zresetować przerysowaniem trasy.
+function updateTradeRoutes(dt) {
+  for (const city of CITIES) {
+    const hasRoute = tradeRoutes.some(r => r.cityAId === city.id || r.cityBId === city.id);
+    if (!hasRoute) continue;
+    city.timeSinceLastConvoy += dt;
+    if (city.timeSinceLastConvoy >= CITY_LEVELS[city.level].spawnInterval) {
+      city.timeSinceLastConvoy = 0;
+      spawnCityConvoy(city);
+    }
+  }
+}
+
+// Konwoje, które dotarły, znikają i wypłacają złoto — osobno od zwykłej
+// ścieżki śmierci (bez deathEffects, to udany dowóz, nie zniszczenie).
+// Konwój, który był kiedykolwiek przejęty (captureCount>0), dostarcza
+// tylko ułamek wartości (CONVOY_CAPTURE_REWARD_RATIO) — łupienie ma być
+// gorszym interesem niż własny, nigdy nie przejęty handel.
+function updateConvoys(now) {
+  const arrived = new Set();
+  for (const u of units) {
+    if (u.type !== 'CONVOY' || u.hp <= 0) continue;
+    const targetCity = CITIES.find(c => c.id === u.targetCityId);
+    if (!targetCity) continue;
+    const center = cityCenter(targetCity);
+    if (Math.hypot(u.x - center.x, u.y - center.y) <= CONVOY_ARRIVAL_RADIUS) {
+      const payout = u.captureCount > 0 ? u.goldValue * CONVOY_CAPTURE_REWARD_RATIO : u.goldValue;
+      gold[u.owner] += payout;
+      stats[u.owner].goldEarned += payout;
+      convoyArrivalEffects.push({ x: center.x, y: center.y, startTime: now });
+      arrived.add(u.id);
+    }
+  }
+  if (arrived.size > 0) units = units.filter(u => !arrived.has(u.id));
+}
+
+// Przechwytywanie konwojów — wroga jednostka bojowa w CONVOY_CAPTURE_RANGE
+// przez CONVOY_CAPTURE_TIME nieprzerwanej obecności przejmuje konwój
+// zamiast go niszczyć (konwoje są wykluczone z namierzania, patrz
+// findTargetForUnit/findNearestEnemyInRange — nigdy nie trafiają do
+// pendingDamage). Jednostka WŁAŚCICIELA w tym samym promieniu przerywa
+// (zeruje) próbę przejęcia. Każde przejęcie (także odbicie) dewaluuje
+// ładunek o CONVOY_CAPTURE_VALUE_LOSS.
+let captureAlertEffects = []; // {x, y, startTime, color} — pierścień na mapie przy starcie/utracie przejęcia
+const CAPTURE_ALERT_EFFECT_DURATION_MS = 1200;
+function updateConvoyCaptures(dt, now) {
+  for (const u of units) {
+    if (u.type !== 'CONVOY' || u.hp <= 0) continue;
+    let nearestEnemy = null, nearestEnemyDist = Infinity;
+    let ownerNearby = false;
+    for (const other of units) {
+      if (other.type === 'CONVOY' || other.hp <= 0 || other.routed) continue;
+      const dist = Math.hypot(other.x - u.x, other.y - u.y);
+      if (dist > CONVOY_CAPTURE_RANGE) continue;
+      if (other.owner === u.owner) ownerNearby = true;
+      else if (dist < nearestEnemyDist) { nearestEnemy = other; nearestEnemyDist = dist; }
+    }
+
+    if (ownerNearby || !nearestEnemy) {
+      if (u.captureProgress > 0) { u.captureProgress = 0; u.capturingOwner = null; }
+      continue;
+    }
+
+    if (u.capturingOwner !== nearestEnemy.owner) {
+      u.capturingOwner = nearestEnemy.owner;
+      u.captureProgress = 0;
+      if (u.owner === OWNED_PLAYER) {
+        showAlert('Twój konwój jest przejmowany!');
+        captureAlertEffects.push({ x: u.x, y: u.y, startTime: now, color: '#ff8800' });
+      }
+    }
+
+    u.captureProgress += dt;
+    if (u.captureProgress >= CONVOY_CAPTURE_TIME) {
+      const lostOwner = u.owner;
+      const lostValue = u.goldValue;
+      u.goldValue *= (1 - CONVOY_CAPTURE_VALUE_LOSS);
+      u.captureCount += 1;
+      u.owner = nearestEnemy.owner;
+      u.captureProgress = 0;
+      u.capturingOwner = null;
+      u.tradeRouteId = null; // odłączony od oryginalnego szlaku — to teraz łup, nie regularna dostawa
+
+      let nearestCity = null, nearestCityDist = Infinity;
+      for (const c of CITIES) {
+        if (c.owner !== u.owner) continue;
+        const center = cityCenter(c);
+        const d = Math.hypot(center.x - u.x, center.y - u.y);
+        if (d < nearestCityDist) { nearestCity = c; nearestCityDist = d; }
+      }
+      if (nearestCity) {
+        u.targetCityId = nearestCity.id;
+        const dest = cityCenter(nearestCity);
+        const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(dest.x, dest.y), dest);
+        u.path = rawPath !== null ? finalizePath(u, rawPath) : [];
+      }
+
+      if (lostOwner === OWNED_PLAYER) {
+        showAlert(`Utracono konwój na rzecz ${u.owner}! -${Math.round(lostValue)} złota`);
+        captureAlertEffects.push({ x: u.x, y: u.y, startTime: now, color: '#ff2222' });
+      }
+    }
+  }
+}
+
+// Przejmowanie miast — okupacja czasowa (patrz CITY_CAPTURE_*). NIE mylić
+// z updateConvoyCaptures/CONVOY_CAPTURE_* wyżej — osobny, wcześniejszy
+// mechanizm dla konwojów. Licznik (city.siegeProgress) rusza WYŁĄCZNIE
+// gdy w CITY_ZONE_RADIUS nie ma ani jednego obrońcy i jest DOKŁADNIE
+// jeden przeciwny właściciel z jednostkami w strefie (jednoznaczny
+// besiegingOwner); obecność obrońcy albo brak/niejednoznaczność
+// atakujących natychmiast wstrzymuje i stopniowo (nie od razu) cofa
+// postęp. Więcej atakujących przyspiesza, do rozsądnego limitu.
+function updateCityCaptures(dt, now) {
+  for (const city of CITIES) {
+    const center = cityCenter(city);
+    let defenderCount = 0;
+    const attackersByOwner = new Map(); // owner -> liczba jednostek w strefie
+    for (const u of units) {
+      if (u.type === 'CONVOY' || u.hp <= 0 || u.routed) continue;
+      if (Math.hypot(u.x - center.x, u.y - center.y) > CITY_ZONE_RADIUS) continue;
+      if (u.owner === city.owner) { defenderCount++; continue; }
+      attackersByOwner.set(u.owner, (attackersByOwner.get(u.owner) || 0) + 1);
+    }
+
+    const activeSiege = defenderCount === 0 && attackersByOwner.size === 1
+      ? [...attackersByOwner.entries()][0]
+      : null;
+
+    if (activeSiege) {
+      const [besiegerOwner, count] = activeSiege;
+      if (city.besiegingOwner !== besiegerOwner) {
+        city.besiegingOwner = besiegerOwner;
+        city.siegeProgress = 0; // nowe oblężenie (inny atakujący) — nie kontynuuje poprzedniego
+        if (city.owner === OWNED_PLAYER) {
+          showAlert(`Miasto ${city.id} jest atakowane!`);
+          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: PLAYERS[besiegerOwner].color });
+        }
+      }
+      const multiplier = Math.min(1 + (count - 1) * CITY_CAPTURE_ATTACKER_BONUS_PER_UNIT, CITY_CAPTURE_MAX_ATTACKER_MULTIPLIER);
+      city.siegeProgress += dt * multiplier;
+
+      if (city.siegeProgress >= CITY_CAPTURE_TIME) {
+        const oldOwner = city.owner;
+        city.owner = besiegerOwner; // poziom miasta NIE resetowany
+        city.siegeProgress = 0;
+        city.besiegingOwner = null;
+
+        // Szlaki poprzedniego właściciela dotykające tego miasta znikają —
+        // nowy właściciel musi wyznaczyć własne.
+        tradeRoutes = tradeRoutes.filter(r => !((r.cityAId === city.id || r.cityBId === city.id) && r.owner === oldOwner));
+
+        // Konwoje w drodze do przejętego miasta -> najbliższe INNE miasto
+        // tego samego właściciela; brak takiego -> przepadają (ten sam
+        // wzorzec przekierowania co updateConvoyCaptures wyżej).
+        for (const u of units) {
+          if (u.type !== 'CONVOY' || u.targetCityId !== city.id) continue;
+          let nearestCity = null, nearestCityDist = Infinity;
+          for (const c of CITIES) {
+            if (c.owner !== u.owner) continue;
+            const d = Math.hypot(cityCenter(c).x - u.x, cityCenter(c).y - u.y);
+            if (d < nearestCityDist) { nearestCity = c; nearestCityDist = d; }
+          }
+          if (nearestCity) {
+            u.targetCityId = nearestCity.id;
+            const dest = cityCenter(nearestCity);
+            const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(dest.x, dest.y), dest);
+            u.path = rawPath !== null ? finalizePath(u, rawPath) : [];
+          } else {
+            units = units.filter(x => x.id !== u.id);
+          }
+        }
+
+        stats[city.owner].citiesCaptured++;
+        if (oldOwner === OWNED_PLAYER) {
+          showAlert(`Utracono miasto ${city.id}!`);
+          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: '#ff2222' });
+        }
+        if (city.owner === OWNED_PLAYER) {
+          showAlert(`Zdobyto miasto ${city.id}!`);
+          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: '#33ff33' });
+        }
+
+        if (CITIES.filter(c => c.owner === oldOwner).length === 0) {
+          triggerGameOver(city.owner, oldOwner);
+          return; // gra zakończona — reszta miast w tej klatce nieistotna
+        }
+      }
+    } else if (city.siegeProgress > 0) {
+      city.siegeProgress = Math.max(0, city.siegeProgress - CITY_CAPTURE_REGRESS_PER_SECOND * dt);
+      if (city.siegeProgress === 0) city.besiegingOwner = null;
+    }
+  }
+}
+
+// Zamraża symulację (gameLoop przestaje ją aktualizować, ale dorysowuje
+// jeszcze tę klatkę pod overlayem) i pokazuje ekran końca gry ze
+// statystykami meczu — podstawa telemetrii na przyszłość (patrz CLAUDE.md).
+function triggerGameOver(winner, loser) {
+  gameOver = true;
+  const durationSeconds = (performance.now() - matchStartTime) / 1000;
+  gameOverOverlayEl.innerHTML = `
+    <div>
+      <h2>Zwycięstwo: ${winner}</h2>
+      <div>Czas trwania meczu: ${durationSeconds.toFixed(0)}s</div>
+      <table>
+        <tr><th></th><th>${winner}</th><th>${loser}</th></tr>
+        <tr><td>Zbudowane jednostki</td><td>${stats[winner].unitsBuilt}</td><td>${stats[loser].unitsBuilt}</td></tr>
+        <tr><td>Stracone jednostki</td><td>${stats[winner].unitsLost}</td><td>${stats[loser].unitsLost}</td></tr>
+        <tr><td>Przejęte miasta</td><td>${stats[winner].citiesCaptured}</td><td>${stats[loser].citiesCaptured}</td></tr>
+        <tr><td>Zarobione złoto</td><td>${Math.round(stats[winner].goldEarned)}</td><td>${Math.round(stats[loser].goldEarned)}</td></tr>
+      </table>
+    </div>
+  `;
+  gameOverOverlayEl.style.display = 'flex';
+}
+
+// Dochód bazowy z posiadanych miast, tempo dochodu do UI, produkcja
+// jednostek w kolejkach miast. Pomijana w trybie headless (BalanceSim nie
+// spawnuje miast/gold). Gospodarka jest wyłącznie przychodowa — jednostki
+// nie kosztują nic na sekundę.
+function updateEconomy(dt) {
+  for (const owner of ['P1', 'P2']) {
+    const before = gold[owner];
+    // Mechanizm ostatniej szansy: dokładnie jedno miasto -> płaski dochód
+    // zastąpiony wzmocnionym (CITY_LAST_CITY_INCOME_PER_SECOND), znika
+    // natychmiast po odzyskaniu drugiego miasta.
+    const ownedCities = CITIES.filter(c => c.owner === owner).length;
+    const income = ownedCities === 1 ? CITY_LAST_CITY_INCOME_PER_SECOND : ownedCities * CITY_BASE_INCOME_PER_SECOND;
+    gold[owner] += income * dt;
+    stats[owner].goldEarned += income * dt;
+    const rate = (gold[owner] - before) / dt;
+    goldRate[owner] = goldRate[owner] * 0.95 + rate * 0.05;
+  }
+
+  for (const city of CITIES) {
+    if (city.queue.length > 0) {
+      city.queue[0].remainingTime -= dt;
+      if (city.queue[0].remainingTime <= 0) {
+        const { type } = city.queue.shift();
+        spawnUnit(type, city.col, city.row, city.owner);
+      }
+    }
+    if (city.upgradeRemaining > 0) {
+      city.upgradeRemaining -= dt;
+      if (city.upgradeRemaining <= 0) {
+        city.level += 1;
+        city.upgradeRemaining = 0;
+      }
+    }
+  }
+}
+
+// ============================================================
+// RYSOWANIE
+// ============================================================
+
+// ------------------------------------------------------------
+// TEREN ORGANICZNY — siatka (MAP_DATA) zostaje jedynym źródłem prawdy dla
+// pathfindingu i odczytu terenu (worldToTile/terrainAt, A* — zero zmian).
+// Do RYSOWANIA zamieniamy widoczne kwadraty na gładkie, organiczne plamy:
+// marching squares na masce binarnej danego typu terenu + wygładzanie
+// Chaikina. Liczone RAZ przy starcie i cache'owane (mapa się nie zmienia
+// w trakcie gry) — drawMap() tylko wypełnia gotowe kształty, jak wcześniej
+// wypełniała kwadraty, więc zero kosztu w pętli renderowania.
+// ------------------------------------------------------------
+
+// Chaikin: każdą krawędź P-Q zamkniętej łamanej zastępuje dwoma punktami
+// w 1/4 i 3/4 jej długości. Kilka iteracji zaokrągla ostrą łamaną w
+// gładką krzywą — prosta, samodzielna technika, bez zewnętrznych bibliotek.
+function chaikinSmoothClosedLoop(points, iterations) {
+  let pts = points;
+  for (let it = 0; it < iterations; it++) {
+    const next = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[(i + 1) % pts.length];
+      next.push({ x: p.x * 0.75 + q.x * 0.25, y: p.y * 0.75 + q.y * 0.25 });
+      next.push({ x: p.x * 0.25 + q.x * 0.75, y: p.y * 0.25 + q.y * 0.75 });
+    }
+    pts = next;
+  }
+  return pts;
+}
+
+// Marching squares na masce binarnej (maskFn(col,row) -> bool). Próbki
+// SIEDZĄ NA ŚRODKACH kafli (nie na ich rogach!) — to kluczowe dla
+// dopasowania do prawdziwych granic kafli: skok 0→1 między środkami
+// dwóch sąsiednich kafli zawsze wypada dokładnie NA granicy między nimi
+// (dane binarne, cięcie zawsze w połowie odcinka łączącego próbki). Siatka
+// próbek dopełniona o 1 "widmowy" wiersz/kolumnę na każdej krawędzi mapy
+// (powielającą najbliższy prawdziwy kafel), żeby kontur sięgał dokładnie
+// do brzegu mapy, a nie tylko do środków skrajnych kafli. Tabela 16
+// przypadków wyprowadzona tak, by segmenty sąsiednich komórek zawsze
+// stykały się w spójnym kierunku (chodzenie zgodnie z ruchem wskazówek
+// zegara wokół "wnętrza" narożników) — inaczej nie złączyłyby się w pętle.
+function marchingSquaresSegments(cols, rows, maskFn) {
+  const sample = (c, r) => maskFn(Math.max(0, Math.min(cols - 1, c)), Math.max(0, Math.min(rows - 1, r)));
+  const segments = [];
+  for (let cy = -1; cy <= rows - 1; cy++) {
+    for (let cx = -1; cx <= cols - 1; cx++) {
+      const tl = sample(cx, cy), tr = sample(cx + 1, cy);
+      const br = sample(cx + 1, cy + 1), bl = sample(cx, cy + 1);
+      const caseIdx = (tl ? 8 : 0) | (tr ? 4 : 0) | (br ? 2 : 0) | (bl ? 1 : 0);
+      if (caseIdx === 0 || caseIdx === 15) continue;
+      const x0 = (cx + 0.5) * TILE_SIZE, y0 = (cy + 0.5) * TILE_SIZE;
+      const x1 = x0 + TILE_SIZE, y1 = y0 + TILE_SIZE;
+      const top = { x: (x0 + x1) / 2, y: y0 };
+      const bottom = { x: (x0 + x1) / 2, y: y1 };
+      const left = { x: x0, y: (y0 + y1) / 2 };
+      const right = { x: x1, y: (y0 + y1) / 2 };
+      const table = {
+        1:  [[bottom, left]],
+        2:  [[right, bottom]],
+        3:  [[right, left]],
+        4:  [[top, right]],
+        5:  [[top, right], [bottom, left]], // siodło (przekątna) — dwa niezależne segmenty
+        6:  [[top, bottom]],
+        7:  [[top, left]],
+        8:  [[left, top]],
+        9:  [[bottom, top]],
+        10: [[left, top], [right, bottom]], // siodło (druga przekątna)
+        11: [[right, top]],
+        12: [[left, right]],
+        13: [[bottom, right]],
+        14: [[left, bottom]],
+      };
+      for (const seg of table[caseIdx]) segments.push(seg);
+    }
+  }
+  return segments;
+}
+
+// Łączy odcinki w zamknięte pętle dopasowując wspólne końce (klucz po
+// zaokrąglonych współrzędnych — segmenty z marching squares zawsze
+// dokładnie się stykają, więc dopasowanie jest ścisłe, bez tolerancji).
+function chainSegmentsToLoops(segments) {
+  const key = (p) => `${Math.round(p.x)},${Math.round(p.y)}`;
+  const byStart = new Map();
+  for (const seg of segments) {
+    const k = key(seg[0]);
+    if (!byStart.has(k)) byStart.set(k, []);
+    byStart.get(k).push(seg);
+  }
+  const used = new Set();
+  const loops = [];
+  for (const seg of segments) {
+    if (used.has(seg)) continue;
+    const startKey = key(seg[0]);
+    const loop = [seg[0]];
+    let current = seg;
+    let guard = 0;
+    while (guard++ < segments.length + 5) {
+      used.add(current);
+      loop.push(current[1]);
+      if (key(current[1]) === startKey) break; // pętla zamknięta
+      const candidates = byStart.get(key(current[1]));
+      const next = candidates && candidates.find(s => !used.has(s));
+      if (!next) break; // urwana (nie powinno się zdarzyć na spójnej masce)
+      current = next;
+    }
+    if (loop.length > 3) loops.push(loop);
+  }
+  return loops;
+}
+
+// Poszerza maskę o 1 kafel (dla jasnych "brzegów"/"podnóży" pod właściwym
+// kolorem terenu — patrz terrainShapes niżej).
+function dilateMask(maskFn) {
+  const dilated = [];
+  for (let r = 0; r < MAP_ROWS; r++) dilated.push(new Array(MAP_COLS).fill(false));
+  for (let r = 0; r < MAP_ROWS; r++) {
+    for (let c = 0; c < MAP_COLS; c++) {
+      if (!maskFn(c, r)) continue;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const nr = r + dr, nc = c + dc;
+          if (nr >= 0 && nr < MAP_ROWS && nc >= 0 && nc < MAP_COLS) dilated[nr][nc] = true;
+        }
+      }
+    }
+  }
+  return (c, r) => dilated[r][c];
+}
+
+function buildSmoothShapes(maskFn) {
+  const segments = marchingSquaresSegments(MAP_COLS, MAP_ROWS, maskFn);
+  const loops = chainSegmentsToLoops(segments);
+  return loops.map(loop => chaikinSmoothClosedLoop(loop, 3));
+}
+
+function fillShapes(shapes, fillStyle) {
+  ctx.fillStyle = fillStyle;
+  for (const loop of shapes) {
+    ctx.beginPath();
+    ctx.moveTo(loop[0].x, loop[0].y);
+    for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i].x, loop[i].y);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+function strokeShapes(shapes, strokeStyle, lineWidth) {
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  for (const loop of shapes) {
+    ctx.beginPath();
+    ctx.moveTo(loop[0].x, loop[0].y);
+    for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i].x, loop[i].y);
+    ctx.closePath();
+    ctx.stroke();
+  }
+}
+
+// Cache obliczony raz przy starcie — mapa jest statyczna w trakcie gry.
+const terrainShapes = (() => {
+  const isType = (code) => (c, r) => MAP_DATA[r][c] === code;
+  const waterMask = isType(3);
+  const mountainMask = isType(2);
+  return {
+    water: buildSmoothShapes(waterMask),
+    waterHalo: buildSmoothShapes(dilateMask(waterMask)),
+    hills: buildSmoothShapes(isType(4)),
+    forest: buildSmoothShapes(isType(1)),
+    mountain: buildSmoothShapes(mountainMask),
+  };
+})();
+
+// Kolejność: POLE jako pełne tło, potem warstwy od najniższej: jasny brzeg
+// wody -> woda -> wzgórza (= podnóża gór, patrz generowanie MAP_DATA) ->
+// las -> góra (+ wyraźny jasny obrys szczytu dla dodatkowej wyrazistości
+// krawędzi). Wzgórza SĄ prawdziwym terenem otaczającym góry, więc same w
+// sobie już dają "jaśniejszą obwódkę wokół gór" — osobna, czysto
+// dekoracyjna otoczka gór byłaby zbędna i zasłaniałaby ich kolor (dokładnie
+// tam, gdzie leżą wzgórza). Siatka kafli NIE jest rysowana — niewidoczna
+// dla gracza, choć nadal istnieje wewnętrznie dla pathfindingu
+// (MAP_DATA/terrainAt).
+function drawMap() {
+  ctx.fillStyle = TERRAIN[0].color;
+  ctx.fillRect(0, 0, MAP_WIDTH_PX, MAP_HEIGHT_PX);
+  fillShapes(terrainShapes.waterHalo, '#8fd0f5');
+  fillShapes(terrainShapes.water, TERRAIN[3].color);
+  fillShapes(terrainShapes.hills, TERRAIN[4].color);
+  fillShapes(terrainShapes.forest, TERRAIN[1].color);
+  fillShapes(terrainShapes.mountain, TERRAIN[2].color);
+  strokeShapes(terrainShapes.mountain, 'rgba(235,235,225,0.6)', 1.5);
+}
+
+// Cienkie, półprzezroczyste linie w kolorze właściciela — subtelne, żeby
+// nie zaśmiecały mapy. Zaznaczony szlak (do usunięcia) dostaje dodatkową
+// białą przerywaną nakładkę, ten sam wzorzec co pierścień zaznaczenia miasta.
+// Domyślnie niewidoczne — pokazujemy wyłącznie szlaki zaznaczonego miasta
+// (mapa ma pozostać czytelna, patrz CLAUDE.md); można zaznaczyć tylko
+// własne miasto, więc to naturalnie ukrywa też szlaki przeciwnika.
+function drawTradeRoutes() {
+  if (!selectedCity) return;
+  for (const route of tradeRoutes) {
+    if (route.cityAId !== selectedCity.id && route.cityBId !== selectedCity.id) continue;
+    const pts = route.curve;
+    if (pts.length < 2) continue;
+    ctx.strokeStyle = PLAYERS[route.owner].color;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    if (route === selectedTradeRoute) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+// Znacznik na mapie przy starcie/utracie przejęcia konwoju (patrz
+// updateConvoyCaptures) — pomarańczowy pierścień = przejmowanie w toku,
+// czerwony = utracony. Ten sam wzorzec co drawConvoyArrivalEffects.
+function drawCaptureAlertEffects(now) {
+  captureAlertEffects = captureAlertEffects.filter(e => now - e.startTime < CAPTURE_ALERT_EFFECT_DURATION_MS);
+  for (const e of captureAlertEffects) {
+    const t = (now - e.startTime) / CAPTURE_ALERT_EFFECT_DURATION_MS;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, 10 + t * 30, 0, Math.PI * 2);
+    ctx.strokeStyle = e.color;
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Strefa obronna/blokady przejęcia (patrz CITY_ZONE_RADIUS/
+// updateCityCaptures) — delikatna, w kolorze właściciela, żeby było
+// widać zasięg bez zasłaniania mapy. Rysowana ZAWSZE dla obu stron,
+// pod markerem miasta (kolejność wywołań w gameLoop).
+function drawCityDefenseZones() {
+  for (const city of CITIES) {
+    const c = cityCenter(city);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, CITY_ZONE_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = PLAYERS[city.owner].color;
+    ctx.globalAlpha = 0.08;
+    ctx.fill();
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = PLAYERS[city.owner].color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Pasek postępu oblężenia (patrz updateCityCaptures) — ten sam layout co
+// drawCaptureBar, ale NAD markerem (kropki poziomu zajmują miejsce pod
+// spodem) i w kolorze ATAKUJĄCEGO, żeby było od razu widać KTO atakuje.
+// Widoczny bezwarunkowo dla obu stron (drawCities rysuje wszystkie miasta).
+function drawCitySiegeBar(city, c) {
+  if (!city.siegeProgress || city.siegeProgress <= 0 || !city.besiegingOwner) return;
+  const w = 24, h = 4;
+  const x = c.x - w / 2, y = c.y - CITY_MARKER_RADIUS - 10;
+  const ratio = Math.min(1, city.siegeProgress / CITY_CAPTURE_TIME);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = PLAYERS[city.besiegingOwner].color;
+  ctx.fillRect(x, y, w * ratio, h);
+}
+
+// Mały, wyraźny punkt (nie kwadrat na cały kafel) — okrąg w żółtym
+// kolorze z grubą obwódką w kolorze właściciela i drobną kropką w
+// środku, żeby miasto czytało się jak punkt na mapie sztabowej, nie jak
+// zabudowanie zajmujące teren.
+const CITY_MARKER_RADIUS = 10; // px — wyraźnie mniejsze niż kafel (32px)
+function drawCities() {
+  for (const city of CITIES) {
+    const c = cityCenter(city);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, CITY_MARKER_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = '#f4c430';
+    ctx.fill();
+    ctx.strokeStyle = PLAYERS[city.owner].color;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, CITY_MARKER_RADIUS * 0.35, 0, Math.PI * 2);
+    ctx.fillStyle = '#7a5230';
+    ctx.fill();
+
+    // Wskaźnik poziomu — rząd kropek pod markerem, liczba = city.level.
+    // Widoczny ZAWSZE, także dla miast wroga — gracz musi widzieć, które
+    // miasta (swoje i cudze) są rozwinięte.
+    const levelDotSpacing = 6, levelDotRadius = 2;
+    const levelDotsWidth = (city.level - 1) * levelDotSpacing;
+    for (let i = 0; i < city.level; i++) {
+      ctx.beginPath();
+      ctx.arc(c.x - levelDotsWidth / 2 + i * levelDotSpacing, c.y + CITY_MARKER_RADIUS + 6, levelDotRadius, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+    }
+
+    drawCitySiegeBar(city, c);
+
+    if (selectedCity === city) {
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, CITY_MARKER_RADIUS + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = '#00eaff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+}
+
+function drawConvoyArrivalEffects(now) {
+  convoyArrivalEffects = convoyArrivalEffects.filter(e => now - e.startTime < CONVOY_ARRIVAL_EFFECT_DURATION_MS);
+  for (const e of convoyArrivalEffects) {
+    const t = (now - e.startTime) / CONVOY_ARRIVAL_EFFECT_DURATION_MS;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, 10 + t * 20, 0, Math.PI * 2);
+    ctx.strokeStyle = '#f4c430';
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function hpBarColor(ratio) {
+  if (ratio > 0.6) return '#4caf50';
+  if (ratio > 0.3) return '#f4c430';
+  return '#e53935';
+}
+
+// Liniowe mieszanie dwóch kolorów hex (t=0 -> hexA, t=1 -> hexB) — używane
+// do pulsowania wypełnienia jednostki na skraju załamania morale.
+function blendColor(hexA, hexB, t) {
+  const a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16);
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return `rgb(${r},${g},${bl})`;
+}
+
+function drawHpBar(u, cfg, now) {
+  const ratio = Math.max(0, u.hp / cfg.maxHp);
+  if (ratio >= 1) return; // pokazuj tylko przy utraconym HP
+  const w = 18, h = 3;
+  const x = u.x - w / 2, y = u.y - cfg.drawRadius - 8;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = hpBarColor(ratio);
+  ctx.fillRect(x, y, w * ratio, h);
+
+  // regeneruje się? delikatnie pulsująca jasna obwódka, żeby było widać,
+  // które oddziały odzyskują siły — TYLKO we własnej strefie miasta
+  // (patrz canRegenerateHere), zgodnie z tym samym warunkiem co realna
+  // regeneracja w resolveCombat.
+  if (u.timeSinceCombat >= OUT_OF_COMBAT_DELAY && canRegenerateHere(u)) {
+    const pulse = 0.35 + 0.35 * Math.sin(now / 300);
+    ctx.strokeStyle = `rgba(255,255,255,${pulse.toFixed(2)})`;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 1, y - 1, w + 2, h + 2);
+  }
+}
+
+// Pasek morale, tuż pod paskiem HP (bliżej jednostki) — niebieski, gdy
+// jednostka wciąż trzyma nerwy, żółty poniżej progu ostrzegawczego.
+// Osobny od HP celowo: zdrowa jednostka może być psychicznie złamana.
+function drawMoraleBar(u, cfg) {
+  if (u.morale >= MORALE_MAX) return; // pokazuj tylko przy utraconym morale
+  const w = 18, h = 3;
+  const x = u.x - w / 2, y = u.y - cfg.drawRadius - 4;
+  const ratio = Math.max(0, u.morale / MORALE_MAX);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = u.morale >= MORALE_WARNING_THRESHOLD ? '#4a90d9' : '#f4c430';
+  ctx.fillRect(x, y, w * ratio, h);
+}
+
+// Mała strzałka przy jednostce, gdy BIEŻĄCY teren daje jej realny bonus
+// lub karę bojową (obrażenia/zasięg — patrz TERRAIN_MODIFIERS). Celowo
+// ignoruje sam speedMultiplier (samo zwolnienie marszu nie zaśmieca tego
+// wskaźnika) — chodzi o to, żeby gracz rozumiał, DLACZEGO jego łucznicy w
+// lesie są nieskuteczni, nie o każde spowolnienie terenu.
+function drawTerrainEffectIndicator(u, cfg) {
+  const terrain = unitTerrain(u);
+  const mods = TERRAIN_MODIFIERS[u.type][terrain.name];
+  const hasPenalty = mods.damageMultiplier < 1 || mods.rangeMultiplier < 1;
+  const hasBonus = !hasPenalty && (mods.damageMultiplier > 1 || mods.rangeMultiplier > 1);
+  if (!hasPenalty && !hasBonus) return;
+  const bx = u.x + cfg.drawRadius * 0.7, by = u.y + cfg.drawRadius * 0.7;
+  ctx.beginPath();
+  ctx.arc(bx, by, 6, 0, Math.PI * 2);
+  ctx.fillStyle = '#222';
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = hasPenalty ? '#ff4444' : '#44ff44';
+  ctx.beginPath();
+  if (hasPenalty) {
+    ctx.moveTo(bx - 3, by - 2);
+    ctx.lineTo(bx + 3, by - 2);
+    ctx.lineTo(bx, by + 3);
+  } else {
+    ctx.moveTo(bx - 3, by + 2);
+    ctx.lineTo(bx + 3, by + 2);
+    ctx.lineTo(bx, by - 3);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+// Pasek postępu przejęcia konwoju (patrz updateConvoyCaptures) — ten sam
+// layout co drawMoraleBar, żeby obrońca od razu widział, że ma sekundy na
+// reakcję, zanim straci konwój.
+function drawCaptureBar(u, cfg) {
+  if (!u.captureProgress || u.captureProgress <= 0) return;
+  const w = 18, h = 3;
+  const x = u.x - w / 2, y = u.y - cfg.drawRadius - 4;
+  const ratio = Math.min(1, u.captureProgress / CONVOY_CAPTURE_TIME);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#ff3333';
+  ctx.fillRect(x, y, w * ratio, h);
+}
+
+// Prosty biały symbol per typ, rysowany kodem (bez grafik/emoji), żeby
+// odróżnić typy niezależnie od koloru gracza. Rozmiar względny do
+// drawRadius, więc skaluje się razem z jednostką.
+function drawUnitIcon(u, cfg) {
+  const r = cfg.drawRadius;
+  ctx.save();
+  ctx.translate(u.x, u.y);
+  ctx.strokeStyle = '#ffffff';
+  ctx.fillStyle = '#ffffff';
+  ctx.lineWidth = Math.max(1, r * 0.18);
+  ctx.lineCap = 'round';
+
+  if (u.type === 'ARCHER') {
+    const bowR = r * 0.7;
+    const a1 = -Math.PI * 0.35, a2 = Math.PI * 0.35;
+    ctx.beginPath();
+    ctx.arc(0, 0, bowR, a1, a2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a1) * bowR, Math.sin(a1) * bowR);
+    ctx.lineTo(Math.cos(a2) * bowR, Math.sin(a2) * bowR);
+    ctx.stroke();
+  } else if (u.type === 'CANNON') {
+    ctx.save();
+    ctx.rotate(-Math.PI / 4);
+    ctx.fillRect(-r * 0.15, -r * 0.9, r * 0.3, r * 0.9);
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(0, r * 0.35, r * 0.28, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (u.type === 'LIGHT_INFANTRY') {
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 0.75); ctx.lineTo(0, r * 0.6);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.35, -r * 0.15); ctx.lineTo(r * 0.35, -r * 0.15);
+    ctx.stroke();
+  } else if (u.type === 'HEAVY_INFANTRY') {
+    ctx.save();
+    ctx.translate(-r * 0.3, 0);
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 0.7); ctx.lineTo(0, r * 0.55);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.3, -r * 0.1); ctx.lineTo(r * 0.3, -r * 0.1);
+    ctx.stroke();
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(r * 0.35, 0, r * 0.4, -Math.PI * 0.6, Math.PI * 0.6);
+    ctx.stroke();
+  } else if (u.type === 'CAVALRY') {
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.6, -r * 0.5);
+    ctx.lineTo(0, r * 0.6);
+    ctx.lineTo(r * 0.6, -r * 0.5);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawUnits(now) {
+  for (const u of units) {
+    const cfg = UNIT_TYPES[u.type];
+    if (u.path.length > 0) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(u.x, u.y);
+      for (const p of u.path) ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+    }
+
+    const shaking = now < u.shakeUntil;
+    if (shaking) {
+      ctx.save();
+      ctx.translate((Math.random() - 0.5) * CANNON_SHAKE_MAGNITUDE * 2, (Math.random() - 0.5) * CANNON_SHAKE_MAGNITUDE * 2);
+    }
+
+    ctx.beginPath();
+    if (u.type === 'CONVOY') {
+      // konwój: kwadrat, nie koło — jedyna zmiana kształtu bazowego,
+      // odróżnia go na pierwszy rzut oka od walczących jednostek
+      ctx.rect(u.x - cfg.drawRadius, u.y - cfg.drawRadius, cfg.drawRadius * 2, cfg.drawRadius * 2);
+    } else {
+      ctx.arc(u.x, u.y, cfg.drawRadius, 0, Math.PI * 2);
+    }
+    // złamana (routed) jednostka: STAŁA pełna biel niezależnie od gracza —
+    // "już ucieka, nie masz kontroli". Poniżej progu ostrzegawczego, ale
+    // jeszcze nie złamana: PULSUJĄCE wypełnienie między kolorem gracza a
+    // bielą — "zaraz się złamie, zareaguj". Te dwa stany muszą być
+    // wyraźnie różne: jeden nieruchomy, drugi tętniący (patrz blendColor).
+    if (u.routed) {
+      ctx.fillStyle = '#ffffff';
+    } else if (u.lastStand) {
+      // desperacka obrona: puls czerwono-pomarańczowy, jednoznacznie inny
+      // od bieli (ucieczka/ostrzeżenie) i od koloru gracza
+      const blend = 0.5 + 0.5 * Math.sin(now * LAST_STAND_PULSE_SPEED);
+      ctx.fillStyle = blendColor(LAST_STAND_PULSE_COLOR_A, LAST_STAND_PULSE_COLOR_B, blend);
+    } else if (u.morale < MORALE_WARNING_THRESHOLD) {
+      const severity = 1 - Math.max(0, u.morale) / MORALE_WARNING_THRESHOLD; // 0 przy progu, 1 blisko złamania
+      const speed = MORALE_PULSE_MIN_SPEED + (MORALE_PULSE_MAX_SPEED - MORALE_PULSE_MIN_SPEED) * severity;
+      const amplitude = MORALE_PULSE_MIN_AMPLITUDE + (MORALE_PULSE_MAX_AMPLITUDE - MORALE_PULSE_MIN_AMPLITUDE) * severity;
+      const whiteBlend = amplitude * (0.5 + 0.5 * Math.sin(now * speed));
+      ctx.fillStyle = blendColor(PLAYERS[u.owner].color, '#ffffff', whiteBlend);
+    } else {
+      ctx.fillStyle = PLAYERS[u.owner].color;
+    }
+    ctx.fill();
+    if (now < u.hitFlashUntil) {
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    if (cfg.ranged && u.inMeleeLock) {
+      // związana zwarciem artyleria/łucznicy — ikona przygaszona i
+      // przekreślona, gracz musi natychmiast widzieć, że nie strzela
+      ctx.globalAlpha = 0.4;
+      drawUnitIcon(u, cfg);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = 'rgba(255,40,40,0.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(u.x - cfg.drawRadius * 0.7, u.y + cfg.drawRadius * 0.7);
+      ctx.lineTo(u.x + cfg.drawRadius * 0.7, u.y - cfg.drawRadius * 0.7);
+      ctx.stroke();
+    } else {
+      drawUnitIcon(u, cfg);
+    }
+
+    // Zwrot jednostki — mały, subtelny trójkąt na obwodzie koła wskazujący
+    // facingAngle (patrz updateUnit/resolveCombat/updateProjectiles).
+    ctx.save();
+    ctx.translate(u.x + Math.cos(u.facingAngle) * cfg.drawRadius, u.y + Math.sin(u.facingAngle) * cfg.drawRadius);
+    ctx.rotate(u.facingAngle);
+    const facingLen = cfg.drawRadius * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(facingLen * 0.6, 0);
+    ctx.lineTo(-facingLen * 0.35, facingLen * 0.35);
+    ctx.lineTo(-facingLen * 0.35, -facingLen * 0.35);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fill();
+    ctx.restore();
+
+    if (u.selected) {
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, cfg.drawRadius + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = '#00eaff';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+    if (cfg.ranged && u.setupRemaining > 0) {
+      // jeszcze się rozstawia — nie może strzelić, wyraźny (szybszy niż
+      // regeneracja) puls, żeby gracz rozumiał, dlaczego jednostka milczy
+      const pulse = 0.4 + 0.4 * Math.sin(now / 200);
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, cfg.drawRadius + 2, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,165,0,${pulse.toFixed(2)})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    if (shaking) ctx.restore();
+
+    drawHpBar(u, cfg, now);
+    drawMoraleBar(u, cfg);
+    drawCaptureBar(u, cfg);
+    if (debugMode) {
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 2;
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const label = String(Math.round(u.morale));
+      const ly = u.y - cfg.drawRadius - 16;
+      ctx.strokeText(label, u.x, ly);
+      ctx.fillText(label, u.x, ly);
+      if (u.selected && cfg.ranged) {
+        const pct = u.shotsFired > 0 ? Math.round((u.shotsHit / u.shotsFired) * 100) : 0;
+        const shotsLabel = `${u.shotsHit}/${u.shotsFired} (${pct}%)`;
+        const shotsY = ly - 12;
+        ctx.strokeText(shotsLabel, u.x, shotsY);
+        ctx.fillText(shotsLabel, u.x, shotsY);
+      }
+    }
+    if (cfg.ranged && u.targetPriority && u.targetPriority !== 'NEAREST') {
+      const letter = { ENEMY_ARTILLERY: 'A', HEAVY_UNITS: 'H', WEAKEST: 'W' }[u.targetPriority];
+      const bx = u.x + cfg.drawRadius * 0.7, by = u.y - cfg.drawRadius * 0.7;
+      ctx.beginPath();
+      ctx.arc(bx, by, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#222';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 8px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(letter, bx, by + 0.5);
+    }
+    drawTerrainEffectIndicator(u, cfg);
+    if (u.routed) {
+      // znacznik paniki — jednoznaczny sygnał "nie kontrolujesz tej jednostki",
+      // w przeciwnym rogu niż znacznik priorytetu celu, żeby się nie kolidowały
+      const bx = u.x - cfg.drawRadius * 0.7, by = u.y - cfg.drawRadius * 0.7;
+      ctx.beginPath();
+      ctx.arc(bx, by, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#222';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('!', bx, by + 0.5);
+    }
+  }
+}
+
+function drawDyingUnits(now) {
+  dyingUnits = dyingUnits.filter(u => now - u.startTime < DEATH_FADE_DURATION_MS);
+  for (const u of dyingUnits) {
+    const t = (now - u.startTime) / DEATH_FADE_DURATION_MS;
+    const cfg = UNIT_TYPES[u.type];
+    ctx.beginPath();
+    ctx.arc(u.x, u.y, cfg.drawRadius * (1 - t * 0.4), 0, Math.PI * 2);
+    ctx.fillStyle = PLAYERS[u.owner].color;
+    ctx.globalAlpha = 1 - t;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawImpactEffects(now) {
+  impactEffects = impactEffects.filter(e => now - e.startTime < IMPACT_EFFECT_DURATION_MS);
+  for (const e of impactEffects) {
+    const t = (now - e.startTime) / IMPACT_EFFECT_DURATION_MS;
+    const len = 3 + t * 5;
+    ctx.strokeStyle = '#ffffff';
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 4; i++) {
+      const angle = (i / 4) * Math.PI * 2 + Math.PI / 8;
+      ctx.beginPath();
+      ctx.moveTo(e.x + Math.cos(angle) * 2, e.y + Math.sin(angle) * 2);
+      ctx.lineTo(e.x + Math.cos(angle) * len, e.y + Math.sin(angle) * len);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawOrderFailEffects(now) {
+  orderFailEffects = orderFailEffects.filter(e => now - e.startTime < ORDER_FAIL_EFFECT_DURATION_MS);
+  for (const e of orderFailEffects) {
+    const t = (now - e.startTime) / ORDER_FAIL_EFFECT_DURATION_MS;
+    ctx.strokeStyle = '#ff3b3b';
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 2;
+    const r = 6 + t * 6;
+    ctx.beginPath();
+    ctx.moveTo(e.x - r, e.y - r); ctx.lineTo(e.x + r, e.y + r);
+    ctx.moveTo(e.x + r, e.y - r); ctx.lineTo(e.x - r, e.y + r);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawAttackLines() {
+  for (const { attacker, target } of currentAttacks) {
+    ctx.strokeStyle = PLAYERS[attacker.owner].color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(attacker.x, attacker.y);
+    ctx.lineTo(target.x, target.y);
+    ctx.stroke();
+  }
+}
+
+function drawProjectiles() {
+  for (const p of projectiles) {
+    const speed = Math.hypot(p.vx, p.vy) || 1;
+    const trail = 6;
+    const dx = (p.vx / speed) * trail, dy = (p.vy / speed) * trail;
+    ctx.strokeStyle = PLAYERS[p.owner].color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x - dx, p.y - dy);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+  }
+}
+
+function drawDeathEffects(now) {
+  deathEffects = deathEffects.filter(effect => now - effect.startTime < DEATH_EFFECT_DURATION_MS);
+  for (const effect of deathEffects) {
+    const age = now - effect.startTime;
+    const t = age / DEATH_EFFECT_DURATION_MS;
+    ctx.beginPath();
+    ctx.arc(effect.x, effect.y, 6 + t * 14, 0, Math.PI * 2);
+    ctx.strokeStyle = effect.color;
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawGestureFeedback() {
+  if (!dragMode) return;
+
+  if (dragMode === 'SELECT') {
+    if (lassoPoints.length < 2) return;
+    const first = lassoPoints[0], last = lassoPoints[lassoPoints.length - 1];
+
+    // wypełnienie już domkniętego kształtu, żeby było widać objęty obszar
+    ctx.beginPath();
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < lassoPoints.length; i++) ctx.lineTo(lassoPoints[i].x, lassoPoints[i].y);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(80,160,255,0.15)';
+    ctx.fill();
+
+    // narysowana dotąd trasa — ciągła
+    ctx.strokeStyle = 'rgba(80,160,255,0.9)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < lassoPoints.length; i++) ctx.lineTo(lassoPoints[i].x, lassoPoints[i].y);
+    ctx.stroke();
+
+    // domknięcie do punktu startowego — przerywane, pokazuje resztę obszaru
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(first.x, first.y);
+    ctx.setLineDash([4, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    return;
+  }
+
+  const pts = rawStrokePoints;
+  if (pts.length < 2) return;
+
+  if (dragMode === 'ROUTE') {
+    ctx.strokeStyle = '#ffd400';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    drawDirectionArrows(pts, '#ffd400');
+  } else if (dragMode === 'FRONT') {
+    ctx.strokeStyle = '#ff5533';
+    ctx.lineWidth = 4;
+    ctx.setLineDash([10, 6]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    drawFrontTicks(pts, '#ff5533');
+  } else if (dragMode === 'TRADE_ROUTE') {
+    ctx.strokeStyle = PLAYERS[OWNED_PLAYER].color;
+    ctx.globalAlpha = 0.8;
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawDirectionArrows(pts, color) {
+  const spacing = 40;
+  let acc = 0;
+  ctx.fillStyle = color;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i-1], b = pts[i];
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+    acc += segLen;
+    if (acc >= spacing) {
+      acc = 0;
+      const angle = Math.atan2(b.y - a.y, b.x - a.x);
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(angle);
+      ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.lineTo(-8, -4); ctx.lineTo(-8, 4); ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+function drawFrontTicks(pts, color) {
+  const spacing = 30;
+  let acc = 0;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i-1], b = pts[i];
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+    acc += segLen;
+    if (acc >= spacing) {
+      acc = 0;
+      const angle = Math.atan2(b.y - a.y, b.x - a.x) + Math.PI / 2;
+      const tickLen = 10;
+      ctx.beginPath();
+      ctx.moveTo(b.x - Math.cos(angle) * tickLen, b.y - Math.sin(angle) * tickLen);
+      ctx.lineTo(b.x + Math.cos(angle) * tickLen, b.y + Math.sin(angle) * tickLen);
+      ctx.stroke();
+    }
+  }
+}
+
+// ============================================================
+// PĘTLA GRY
+// ============================================================
+// Rejestracja aktualizacji AI (patrz window.GameAPI/ai.js) w pętli gry —
+// wołane raz na klatkę, PO rozstrzygnięciu stanu świata, tak samo jak
+// każda inna funkcja update* niżej. NIE działa w trybie HEADLESS, bo
+// gameLoop w ogóle się tam nie uruchamia (balance-sim.js woła funkcje
+// bezpośrednio) — AI nigdy nie zakłóca testów balansu.
+let aiTickCallbacks = [];
+function onAITick(fn) { aiTickCallbacks.push(fn); }
+
+let lastTime = performance.now();
+function gameLoop(now) {
+  if (gameOver) return; // mecz zakończony — ostatnia klatka zamrożona pod #gameOverOverlay, pętla się nie wznawia
+
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+
+  for (const u of units) updateUnit(u, dt);
+  resolveCollisions(units);
+  units = resolveCombat(units, dt);
+  updateEconomy(dt);
+  updateTradeRoutes(dt);
+  updateConvoys(now);
+  updateConvoyCaptures(dt, now);
+  updateCityCaptures(dt, now);
+  for (const fn of aiTickCallbacks) fn(dt, now);
+  updateGoldPanel();
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.translate(viewOffsetX, viewOffsetY);
+  ctx.scale(viewScale, viewScale);
+  drawMap();
+  drawTradeRoutes();
+  drawCityDefenseZones();
+  drawCities();
+  drawUnits(now);
+  drawDyingUnits(now);
+  drawAttackLines();
+  drawProjectiles();
+  drawImpactEffects(now);
+  drawDeathEffects(now);
+  drawConvoyArrivalEffects(now);
+  drawCaptureAlertEffects(now);
+  drawOrderFailEffects(now);
+  drawGestureFeedback();
+  ctx.restore();
+
+  requestAnimationFrame(gameLoop);
+}
+if (!HEADLESS) requestAnimationFrame(gameLoop);
+
+// ============================================================
+// NARZĘDZIE BALANSU (window.BalanceSim) — wyłącznie do testowania,
+// używane przez balance-sim.js. Woła TYLKO istniejące funkcje gry
+// (spawnUnit/updateUnit/resolveCollisions/resolveCombat/findPath/
+// finalizePath) — żadnej osobnej/zduplikowanej logiki walki, żeby wyniki
+// były miarodajne. Nieaktywne podczas zwykłej rozgrywki (nic go nie woła
+// automatycznie).
+// ============================================================
+window.BalanceSim = {
+  resetWorld() {
+    units = [];
+    projectiles = [];
+    deathEffects = [];
+    dyingUnits = [];
+    impactEffects = [];
+    orderFailEffects = [];
+    currentAttacks = [];
+  },
+
+  // Nadpisuje CAŁĄ mapę jednym terenem — do porównania tego samego
+  // starcia na różnych terenach (patrz balance-sim.js, scenariusz "teren").
+  setUniformTerrain(code) {
+    for (let r = 0; r < MAP_ROWS; r++) {
+      for (let c = 0; c < MAP_COLS; c++) MAP_DATA[r][c] = code;
+    }
+  },
+
+  spawnArmy(composition, owner, col, row) {
+    let placed = 0;
+    for (const { type, count } of composition) {
+      for (let i = 0; i < count; i++) {
+        spawnUnit(type, col + (placed % 5), row + Math.floor(placed / 5), owner);
+        placed++;
+      }
+    }
+  },
+
+  armyCentroid(owner) {
+    const list = units.filter(u => u.owner === owner);
+    if (!list.length) return null;
+    return {
+      x: list.reduce((s, u) => s + u.x, 0) / list.length,
+      y: list.reduce((s, u) => s + u.y, 0) / list.length,
+    };
+  },
+
+  // Jeden rozkaz marszu na dany punkt dla całej armii — dokładnie to,
+  // co zrobiłby gracz rysując FRONT/klik na środek wroga. Dalej wszystko
+  // przejmują te same mechaniki co w normalnej grze.
+  issueAdvanceOrders(owner, target) {
+    if (!target) return;
+    for (const u of units) {
+      if (u.owner !== owner) continue;
+      const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
+      if (rawPath) u.path = finalizePath(u, rawPath);
+    }
+  },
+
+  // Rozgrywa jedno starcie do końca (albo do maxSeconds) i zwraca metryki.
+  // armyA/armyB: [{type, count}]. terrain: 'FIELD'|'FOREST'|'WATER'|null.
+  runBattle({ armyA, armyB, terrain, maxSeconds = 240 }) {
+    this.resetWorld();
+    if (terrain) this.setUniformTerrain({ FIELD: 0, FOREST: 1, WATER: 3 }[terrain]);
+    this.spawnArmy(armyA, 'P1', 2, 6);
+    this.spawnArmy(armyB, 'P2', 24, 6); // przesunięte z 18 — po powiększeniu mapy tam jest teraz góra
+    this.issueAdvanceOrders('P1', this.armyCentroid('P2'));
+    this.issueAdvanceOrders('P2', this.armyCentroid('P1'));
+
+    const startHpA = units.filter(u => u.owner === 'P1').reduce((s, u) => s + u.hp, 0);
+    const startHpB = units.filter(u => u.owner === 'P2').reduce((s, u) => s + u.hp, 0);
+    const startCountA = units.filter(u => u.owner === 'P1').length;
+    const startCountB = units.filter(u => u.owner === 'P2').length;
+    const everRoutedA = new Set(), everRoutedB = new Set();
+    const everLastStandA = new Set(), everLastStandB = new Set();
+
+    const dt = 0.05;
+    const maxTicks = Math.ceil(maxSeconds / dt);
+    let tick = 0;
+    for (; tick < maxTicks; tick++) {
+      for (const u of units) updateUnit(u, dt);
+      resolveCollisions(units);
+      units = resolveCombat(units, dt);
+
+      for (const u of units) {
+        if (u.routed) (u.owner === 'P1' ? everRoutedA : everRoutedB).add(u.id);
+        if (u.lastStand) (u.owner === 'P1' ? everLastStandA : everLastStandB).add(u.id);
+      }
+
+      // co ~10s symulowanego czasu ponów rozkaz marszu na AKTUALNY środek
+      // wroga — bez tego niedobitki daleko od reszty potrafią "zgubić"
+      // cel i sztucznie przeciągać starcie (patrz pole timedOut w wyniku)
+      if (tick > 0 && tick % 200 === 0) {
+        const centroidB = this.armyCentroid('P2');
+        const centroidA = this.armyCentroid('P1');
+        if (centroidB) this.issueAdvanceOrders('P1', centroidB);
+        if (centroidA) this.issueAdvanceOrders('P2', centroidA);
+      }
+
+      const aliveA = units.some(u => u.owner === 'P1');
+      const aliveB = units.some(u => u.owner === 'P2');
+      if (!aliveA || !aliveB) break;
+    }
+
+    const survivorsA = units.filter(u => u.owner === 'P1');
+    const survivorsB = units.filter(u => u.owner === 'P2');
+    const endHpA = survivorsA.reduce((s, u) => s + u.hp, 0);
+    const endHpB = survivorsB.reduce((s, u) => s + u.hp, 0);
+    const winner = survivorsA.length > 0 && survivorsB.length === 0 ? 'A'
+      : survivorsB.length > 0 && survivorsA.length === 0 ? 'B'
+      : 'DRAW';
+
+    return {
+      winner,
+      durationSeconds: tick * dt,
+      timedOut: tick >= maxTicks,
+      survivorsA: survivorsA.length,
+      survivorsB: survivorsB.length,
+      startCountA,
+      startCountB,
+      damageDealtByA: startHpB - endHpB,
+      damageDealtByB: startHpA - endHpA,
+      avgDamagePerUnitA: (startHpB - endHpB) / startCountA,
+      avgDamagePerUnitB: (startHpA - endHpA) / startCountB,
+      routedA: everRoutedA.size,
+      routedB: everRoutedB.size,
+      lastStandA: everLastStandA.size,
+      lastStandB: everLastStandB.size,
+    };
+  },
+
+  // Ustawia zwrot (facingAngle) całej armii danego gracza na stały kąt —
+  // do testu wpływu ataku z flanki/tyłu (patrz runFlankBattle niżej).
+  setFacing(owner, angle) {
+    for (const u of units) if (u.owner === owner) u.facingAngle = angle;
+  },
+
+  // Starcie do izolowanego pomiaru bonusu za flankowanie/atak z tyłu —
+  // czy kawaleria ładująca z boku/tyłu nieruchomej, zwróconej w stałym
+  // kierunku linii obrony (P2, facingAngle=0, BEZ rozkazu marszu — stoi i
+  // walczy w miejscu) rzeczywiście wygrywa częściej niż przy ataku czołowym
+  // (approachAngleDeg=0). approachAngleDeg liczony względem zwrotu
+  // obrońców: 0=czoło, ±90=flanka, 180=tył. Reszta pętli identyczna z
+  // runBattle (celowo skopiowana, nie refaktoryzowana do wspólnej funkcji,
+  // żeby nie ryzykować regresji w już zweryfikowanym runBattle).
+  runFlankBattle({ defenderType, defenderCount, attackerType, attackerCount, approachAngleDeg, maxSeconds = 240 }) {
+    this.resetWorld();
+    const centerCol = 15, centerRow = 12;
+    this.spawnArmy([{ type: defenderType, count: defenderCount }], 'P2', centerCol, centerRow);
+    this.setFacing('P2', 0);
+    const rad = approachAngleDeg * Math.PI / 180;
+    const spawnDist = 10; // kafli
+    const startCol = Math.max(1, Math.min(MAP_COLS - 2, centerCol + Math.round(Math.cos(rad) * spawnDist)));
+    const startRow = Math.max(1, Math.min(MAP_ROWS - 2, centerRow + Math.round(Math.sin(rad) * spawnDist)));
+    this.spawnArmy([{ type: attackerType, count: attackerCount }], 'P1', startCol, startRow);
+    this.issueAdvanceOrders('P1', this.armyCentroid('P2'));
+    // obrońcy BEZ rozkazu marszu — stoją w miejscu, testujemy wyłącznie skutek kąta natarcia
+
+    const startHpA = units.filter(u => u.owner === 'P1').reduce((s, u) => s + u.hp, 0);
+    const startHpB = units.filter(u => u.owner === 'P2').reduce((s, u) => s + u.hp, 0);
+    const startCountA = units.filter(u => u.owner === 'P1').length;
+    const startCountB = units.filter(u => u.owner === 'P2').length;
+    const everRoutedA = new Set(), everRoutedB = new Set();
+    const everLastStandA = new Set(), everLastStandB = new Set();
+
+    const dt = 0.05;
+    const maxTicks = Math.ceil(maxSeconds / dt);
+    let tick = 0;
+    for (; tick < maxTicks; tick++) {
+      for (const u of units) updateUnit(u, dt);
+      resolveCollisions(units);
+      units = resolveCombat(units, dt);
+
+      for (const u of units) {
+        if (u.routed) (u.owner === 'P1' ? everRoutedA : everRoutedB).add(u.id);
+        if (u.lastStand) (u.owner === 'P1' ? everLastStandA : everLastStandB).add(u.id);
+      }
+
+      if (tick > 0 && tick % 200 === 0) {
+        const centroidB = this.armyCentroid('P2');
+        if (centroidB) this.issueAdvanceOrders('P1', centroidB);
+      }
+
+      const aliveA = units.some(u => u.owner === 'P1');
+      const aliveB = units.some(u => u.owner === 'P2');
+      if (!aliveA || !aliveB) break;
+    }
+
+    const survivorsA = units.filter(u => u.owner === 'P1');
+    const survivorsB = units.filter(u => u.owner === 'P2');
+    const endHpA = survivorsA.reduce((s, u) => s + u.hp, 0);
+    const endHpB = survivorsB.reduce((s, u) => s + u.hp, 0);
+    const winner = survivorsA.length > 0 && survivorsB.length === 0 ? 'A'
+      : survivorsB.length > 0 && survivorsA.length === 0 ? 'B'
+      : 'DRAW';
+
+    return {
+      winner,
+      durationSeconds: tick * dt,
+      timedOut: tick >= maxTicks,
+      survivorsA: survivorsA.length,
+      survivorsB: survivorsB.length,
+      startCountA,
+      startCountB,
+      damageDealtByA: startHpB - endHpB,
+      damageDealtByB: startHpA - endHpA,
+      avgDamagePerUnitA: (startHpB - endHpB) / startCountA,
+      avgDamagePerUnitB: (startHpA - endHpA) / startCountB,
+      routedA: everRoutedA.size,
+      routedB: everRoutedB.size,
+      lastStandA: everLastStandA.size,
+      lastStandB: everLastStandB.size,
+    };
+  },
+
+  // Duel do izolowanego pomiaru ZAŁAMANIA MORALE (routed) — NIE win-rate.
+  // Wszystkie jednostki spawnowane już w zasięgu walki (bez marszu), więc
+  // czas trwania i wynik mierzą WYŁĄCZNIE dynamikę walki/morale, nie
+  // dojście do przeciwnika. attackerAngles: kąty (stopnie, konwencja
+  // atan2: 0=wschód, 90=południe) pozycji atakujących względem obrońcy;
+  // obrońca dostaje facingAngle skierowany dokładnie w stronę PIERWSZEGO
+  // atakującego. Jeden kąt = czyste starcie czołowe (kategoria trafienia
+  // FRONT, brak przewagi liczebnej, brak okrążenia). Kilka rozstawionych
+  // kątów (np. [0,120,240]) = jednoczesna przewaga liczebna I okrążenie
+  // (patrz isEncircled) — dokładnie scenariusz "atak z kilku przeciwnych
+  // kierunków" z opisu zadania.
+  runMoraleDuel({ defenderType, attackerType, attackerAngles, maxSeconds = 200 }) {
+    this.resetWorld();
+    const centerCol = 15, centerRow = 12;
+    spawnUnit(defenderType, centerCol, centerRow, 'P2');
+    const D = units[units.length - 1];
+    const centerX = D.x, centerY = D.y;
+    D.facingAngle = attackerAngles[0] * Math.PI / 180;
+    const dist = 15; // już w zasięgu walki wręcz/ostrzału wszystkich typów
+    for (const angleDeg of attackerAngles) {
+      const rad = angleDeg * Math.PI / 180;
+      spawnUnit(attackerType, centerCol, centerRow, 'P1');
+      const a = units[units.length - 1];
+      a.x = centerX + Math.cos(rad) * dist;
+      a.y = centerY + Math.sin(rad) * dist;
+    }
+
+    let everRouted = false;
+    const dt = 0.05;
+    const maxTicks = Math.ceil(maxSeconds / dt);
+    let tick = 0;
+    for (; tick < maxTicks; tick++) {
+      for (const u of units) updateUnit(u, dt);
+      resolveCollisions(units);
+      units = resolveCombat(units, dt);
+      const stillD = units.find(u => u.id === D.id);
+      if (stillD && stillD.routed) { everRouted = true; tick++; break; } // złamanie = wynik starcia, koniec pomiaru
+      if (!stillD) break; // obrońca zginął
+      if (!units.some(u => u.owner === 'P1')) break; // wszyscy atakujący zginęli
+    }
+    const defenderAlive = units.some(u => u.id === D.id);
+    return {
+      routed: everRouted,
+      defenderDied: !defenderAlive,
+      durationSeconds: tick * dt,
+      timedOut: tick >= maxTicks,
+    };
+  },
+
+  // Pomiar zdobycia miasta (patrz updateCityCaptures) — atakujący (P1)
+  // rozstawieni w strefie realnego miasta P2 ('p2_a'), opcjonalnie razem
+  // z obrońcami (P2, defenderCount=0 -> miasto niebronione). Woła
+  // DOKŁADNIE te same funkcje co gameLoop (updateUnit/resolveCollisions/
+  // resolveCombat/updateCityCaptures), więc bonus obronny i tempo
+  // oblężenia liczą się dokładnie jak w prawdziwej grze.
+  runCityCaptureScenario({ attackerType, attackerCount, defenderType, defenderCount = 0, maxSeconds = 300 }) {
+    this.resetWorld();
+    const city = CITIES.find(c => c.id === 'p2_a');
+    city.owner = 'P2';
+    city.siegeProgress = 0;
+    city.besiegingOwner = null;
+    const center = cityCenter(city);
+    // Ciasny klaster (promień 6px, znacznie mniejszy niż attackRange=20)
+    // dla OBU stron wokół tego samego środka — gwarantuje, że KAŻDY
+    // atakujący jest w zasięgu KAŻDEGO obrońcy niezależnie od liczebności
+    // (przy różnych promieniach dla obu grup część jednostek potrafiła
+    // wypaść poza wzajemny zasięg przy małej liczbie obrońców, fałszując
+    // pomiar — więc obie grupy dostają ten sam, ciasny promień).
+    for (let i = 0; i < attackerCount; i++) {
+      spawnUnit(attackerType, city.col, city.row, 'P1');
+      const u = units[units.length - 1];
+      const angle = (i / attackerCount) * Math.PI * 2;
+      u.x = center.x + Math.cos(angle) * 6;
+      u.y = center.y + Math.sin(angle) * 6;
+    }
+    for (let i = 0; i < defenderCount; i++) {
+      spawnUnit(defenderType, city.col, city.row, 'P2');
+      const u = units[units.length - 1];
+      const angle = (i / defenderCount) * Math.PI * 2 + Math.PI / defenderCount;
+      u.x = center.x + Math.cos(angle) * 6;
+      u.y = center.y + Math.sin(angle) * 6;
+    }
+
+    const startAttackers = units.filter(u => u.owner === 'P1').length;
+    const dt = 0.05;
+    const maxTicks = Math.ceil(maxSeconds / dt);
+    let tick = 0;
+    let captured = false;
+    for (; tick < maxTicks; tick++) {
+      for (const u of units) updateUnit(u, dt);
+      resolveCollisions(units);
+      units = resolveCombat(units, dt);
+      updateCityCaptures(dt, tick * dt);
+      if (city.owner === 'P1') { captured = true; tick++; break; }
+      if (!units.some(u => u.owner === 'P1' && u.hp > 0)) break; // wszyscy atakujący pobici — obrona utrzymana
+    }
+    const survivingAttackers = units.filter(u => u.owner === 'P1' && u.hp > 0).length;
+    return {
+      captured,
+      durationSeconds: tick * dt,
+      timedOut: tick >= maxTicks,
+      startAttackers,
+      survivingAttackers,
+      attackerLosses: startAttackers - survivingAttackers,
+    };
+  },
+};
+
+// ============================================================
+// GameAPI — jedyny most między silnikiem a AI przeciwnika (patrz ai.js,
+// wczytywane jako moduł ES tuż niżej). AI komunikuje się z grą WYŁĄCZNIE
+// przez te funkcje — dokładnie te same, których używa gracz (rozkazy
+// ruchu, produkcja, ulepszenia, szlaki) — nigdy bezpośrednio nie mutuje
+// stanu silnika. `units`/`tradeRoutes`/`gameOver` są w tym pliku
+// NADPISYWANE (np. `units = resolveCombat(...)`), więc muszą być
+// udostępnione jako gettery — zwykły alias złapałby jednorazowy,
+// nieaktualizujący się snapshot. `CITIES`/`gold`/`stats`/`PLAYERS`/
+// `UNIT_TYPES`/... to stałe referencje (CITIES to `const`, pozostałe to
+// obiekty mutowane W MIEJSCU, nigdy nie nadpisywane całościowo) —
+// bezpieczne jako zwykłe pola.
+window.GameAPI = {
+  CITIES, PLAYERS, OWNED_PLAYER, UNIT_TYPES, TERRAIN, TERRAIN_MODIFIERS, CITY_LEVELS,
+  TILE_SIZE, MAP_COLS, MAP_ROWS, MAP_WIDTH_PX, MAP_HEIGHT_PX, CITY_ZONE_RADIUS,
+  gold, stats,
+  getUnits: () => units,
+  getTradeRoutes: () => tradeRoutes,
+  isGameOver: () => gameOver,
+  findPath, finalizePath, buildRoutePath, assignFrontTargets, simplifyCurve, formationOffsets,
+  worldToTile, tileToWorld, cityCenter, terrainAt, effectiveAttackRange, isDefendingOwnCityZone,
+  issueMoveOrder, issueRouteOrder, issueFrontOrder, queueProduction, upgradeCity, createTradeRoute, setTargetPriority,
+  onTick: onAITick,
+};
+</script>
+<script type="module" src="ai.js"></script>
+</body>
+</html>
