@@ -35,6 +35,30 @@
   @keyframes legendPulseLastStand { 0%, 100% { background: #cc1100; } 50% { background: #ff9900; } }
   .swatch-pulse-warning { animation: legendPulseWhite 1.1s ease-in-out infinite; }
   .swatch-pulse-laststand { animation: legendPulseLastStand 0.9s ease-in-out infinite; }
+  #aiDifficultyToggleBtn {
+    position: fixed; top: 50%; left: 0; transform: translateY(-50%);
+    color: #eee; font: 12px monospace; cursor: pointer;
+    background: rgba(0,0,0,0.7); padding: 8px 6px; border-radius: 0 4px 4px 0;
+    border: 1px solid #555; border-left: none; writing-mode: vertical-rl;
+  }
+  #aiDifficultyToggleBtn:hover { background: rgba(30,30,30,0.85); }
+  #aiDifficultyPanel {
+    position: fixed; top: 50%; left: 0; transform: translateY(-50%);
+    width: 240px; max-width: min(240px, 80vw);
+    color: #eee; font: 12px monospace; line-height: 1.5;
+    background: rgba(0,0,0,0.85); padding: 10px 12px 10px 28px; border-radius: 0 4px 4px 0;
+    border: 1px solid #555; border-left: none;
+  }
+  #aiDifficultyCloseBtn {
+    position: absolute; top: 4px; left: 6px; width: 20px; height: 20px;
+    color: #eee; font: bold 13px monospace; cursor: pointer;
+    background: rgba(255,255,255,0.08); border: 1px solid #555; border-radius: 3px;
+    line-height: 18px; text-align: center; padding: 0;
+  }
+  #aiDifficultyCloseBtn:hover { background: rgba(255,255,255,0.2); }
+  #aiDifficultyPanel h4 { margin: 0 0 6px; color: #ffcc66; font-size: 12px; }
+  #aiDifficultyPanel label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  #aiDifficultyPanel p { margin: 8px 0 0; color: #aaa; font-size: 11px; line-height: 1.4; }
   #unitStatsTooltip {
     position: fixed; top: 12px; right: 244px; width: 200px; display: none;
     color: #eee; font: 12px monospace; line-height: 1.6;
@@ -114,6 +138,13 @@
 </style>
 </head>
 <body>
+<div id="aiDifficultyToggleBtn">⚙ AI</div>
+<div id="aiDifficultyPanel" style="display:none;">
+  <button id="aiDifficultyCloseBtn" title="Zamknij">✕</button>
+  <h4>Poziom trudności AI</h4>
+  <label><input type="checkbox" id="aiDifficultyHardCheckbox">Trudniejsze AI</label>
+  <p>Domyślnie: dotychczasowe zachowanie AI, bez zmian. Po zaznaczeniu AI lepiej ustawia formacje, chroni artylerię, koncentruje siły przed starciem, dobiera skład armii pod przeciwnika i trzyma większy odwód. Agresja i tempo pozostają takie same — to nie jest silniejszy/oszukujący przeciwnik, tylko sprawniej dowodzony. Można przełączać w dowolnym momencie meczu.</p>
+</div>
 <div id="legendToggleBtn">☰ Legenda</div>
 <div id="legendPanel" style="display:none;">
   <button id="legendCloseBtn" title="Zamknij legendę">✕</button>
@@ -219,9 +250,10 @@ const PUSH_LOSING_DAMAGE_MULTIPLIER = 0.25;
 
 // Spowolnienie w walce — naprawia "przepychanie się" przez wroga rozkazem
 // ruchu bez realnego stoczenia walki (patrz resolveCombat/updateUnit).
-// Wyzwalane przez timeSinceCombat (zadane LUB otrzymane obrażenia —
-// zarówno wręcz, jak i ostrzałem, patrz resolveCombat), nie tylko zwarcie.
-const MELEE_SLOW_DURATION = 1.5; // s po ostatnim ciosie zadanym/otrzymanym
+// Wyzwalane WYŁĄCZNIE przez realny kontakt wręcz (timeSinceMeleeCombat) —
+// bycie ostrzelanym/strzelanie z dystansu świadomie NIE liczy się jako
+// "walka" w tym sensie i nie spowalnia jednostki.
+const MELEE_SLOW_DURATION = 1.5; // s po ostatnim ciosie zadanym/otrzymanym w zwarciu
 const COMBAT_SPEED_MULTIPLIER = 0.12; // mnożnik prędkości w tym oknie (wzmocnione z 0.22 — trudniej przejść przez walczącą linię, walka ma się rozstrzygać, nie omijać marszem)
 
 // Bonus "dobijania" dla ostrzału dystansowego — patrz updateProjectiles
@@ -792,7 +824,8 @@ function spawnUnit(type, col, row, owner) {
     hp: UNIT_TYPES[type].maxHp,
     reloadRemaining: 0, // tylko dla ranged, ale ustawiane zawsze
     setupRemaining: 0, // tylko dla ranged — czas do końca rozstawienia po zatrzymaniu
-    timeSinceCombat: Infinity, // s od ostatniego zadania/otrzymania obrażeń (wręcz LUB ostrzał) — reguluje regenerację ORAZ spowolnienie w walce (patrz updateUnit); Infinity na starcie = jednostka nigdy nie walczyła, nie ma być spowolniona zanim w ogóle zobaczy wroga
+    timeSinceCombat: Infinity, // s od ostatniego zadania/otrzymania obrażeń (wręcz LUB ostrzał) — reguluje WYŁĄCZNIE regenerację (patrz updateUnit); Infinity na starcie = jednostka nigdy nie walczyła
+    timeSinceMeleeCombat: Infinity, // s od ostatniego ciosu w ZWARCIU (nie ostrzału) — reguluje spowolnienie w walce; bycie ostrzelanym/strzelanie NIE liczy się jako "walka" w tym sensie, jednostka pod ostrzałem nie zwalnia
     disengaging: false, // czy najbliższy punkt ścieżki oddala jednostkę od najbliższego wroga — patrz resolveCombat/UNIT_TYPES.disengageSpeed
     hitFlashUntil: 0, // performance.now() do kiedy rysować błysk trafienia
     shakeUntil: 0, // performance.now() do kiedy rysować drganie (trafienie z działa)
@@ -1415,6 +1448,10 @@ const cityRoutesListEl = document.getElementById('cityRoutesList');
 const closeCityPanelBtnEl = document.getElementById('closeCityPanelBtn');
 const alertBannerEl = document.getElementById('alertBanner');
 const gameOverOverlayEl = document.getElementById('gameOverOverlay');
+const aiDifficultyToggleBtnEl = document.getElementById('aiDifficultyToggleBtn');
+const aiDifficultyPanelEl = document.getElementById('aiDifficultyPanel');
+const aiDifficultyCloseBtnEl = document.getElementById('aiDifficultyCloseBtn');
+const aiDifficultyHardCheckboxEl = document.getElementById('aiDifficultyHardCheckbox');
 const legendToggleBtnEl = document.getElementById('legendToggleBtn');
 const legendPanelEl = document.getElementById('legendPanel');
 const legendCloseBtnEl = document.getElementById('legendCloseBtn');
@@ -1442,6 +1479,23 @@ legendToggleBtnEl.onclick = () => {
 legendCloseBtnEl.onclick = () => {
   legendPanelEl.style.display = 'none';
   legendToggleBtnEl.style.display = 'block';
+};
+
+// Zakładka trudności AI — ten sam wzorzec co legenda. Zaznaczenie/odznaczenie
+// checkboxa woła window.setAIDifficulty (eksponowane przez ai.js), które
+// samo decyduje co z tym zrobić — panel nie zna wewnętrznej logiki AI.
+aiDifficultyToggleBtnEl.onclick = () => {
+  aiDifficultyPanelEl.style.display = 'block';
+  aiDifficultyToggleBtnEl.style.display = 'none';
+};
+aiDifficultyCloseBtnEl.onclick = () => {
+  aiDifficultyPanelEl.style.display = 'none';
+  aiDifficultyToggleBtnEl.style.display = 'block';
+};
+aiDifficultyHardCheckboxEl.onchange = () => {
+  if (typeof window.setAIDifficulty === 'function') {
+    window.setAIDifficulty(aiDifficultyHardCheckboxEl.checked ? 'hard' : 'normal');
+  }
 };
 
 // Panel zdarzeń — ten sam wzorzec zakładki co legenda (zwinięty domyślnie,
@@ -2045,9 +2099,10 @@ function updateUnit(unit, dt) {
   const perTypeSpeedMultiplier = TERRAIN_MODIFIERS[unit.type][terrain.name].speedMultiplier;
   const effectiveSpeedMultiplier = terrain.passable ? terrain.speedMultiplier * perTypeSpeedMultiplier : 1.0;
   // złamana jednostka ucieka na adrenalinie (szybciej), nie walczy więc
-  // spowolnienie walki jej nie dotyczy; świeżo w walce (zadała/otrzymała
-  // obrażenia, patrz timeSinceCombat w resolveCombat) jednostka ma
-  // faktycznie ją rozstrzygnąć, nie przepychać się dalej marszem —
+  // spowolnienie walki jej nie dotyczy; świeżo w ZWARCIU (patrz
+  // timeSinceMeleeCombat w resolveCombat — bycie ostrzelanym/strzelanie z
+  // dystansu celowo NIE liczy się jako "walka" w tym sensie) jednostka ma
+  // faktycznie je rozstrzygnąć, nie przepychać się dalej marszem —
   // WYJĄTEK: jednostka aktywnie się wycofująca (unit.disengaging, patrz
   // resolveCombat) korzysta z łagodniejszego disengageSpeed, jeśli typ go
   // ma (dziś tylko kawaleria — "łatwiej się wyrywa")
@@ -2055,7 +2110,7 @@ function updateUnit(unit, dt) {
   const meleeSlowMultiplier = (unit.disengaging && cfg.disengageSpeed != null) ? cfg.disengageSpeed : COMBAT_SPEED_MULTIPLIER;
   const speedStateMultiplier = unit.routed
     ? PANIC_SPEED_MULTIPLIER
-    : (unit.timeSinceCombat < MELEE_SLOW_DURATION ? meleeSlowMultiplier : 1);
+    : (unit.timeSinceMeleeCombat < MELEE_SLOW_DURATION ? meleeSlowMultiplier : 1);
   const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier * speedStateMultiplier;
 
   const x0 = unit.x, y0 = unit.y; // do wyliczenia zwrotu (facingAngle) z faktycznego przesunięcia tej klatki
@@ -2891,7 +2946,10 @@ function resolveCombat(allUnits, dt) {
   }
 
   // Zegar "poza walką": zresetuj tym, którzy w tej klatce zadali/wystrzelili
-  // albo otrzymali obrażenia; resztę przesuń o dt bliżej progu regeneracji
+  // albo otrzymali obrażenia; resztę przesuń o dt bliżej progu regeneracji.
+  // Reguluje WYŁĄCZNIE regenerację HP/morale — ostrzał (dawanie i
+  // otrzymywanie) resetuje TEN licznik, ale nie ma wpływu na prędkość
+  // (patrz timeSinceMeleeCombat niżej, osobny licznik dla spowolnienia).
   for (const u of allUnits) {
     if (attackersThisFrame.has(u) || pendingDamage.has(u)) {
       u.timeSinceCombat = 0;
@@ -2900,15 +2958,34 @@ function resolveCombat(allUnits, dt) {
     }
   }
 
+  // Osobny zegar zwarcia (nie ostrzału) — napędza WYŁĄCZNIE spowolnienie
+  // prędkości w walce (patrz updateUnit). Bycie ostrzelanym/strzelanie z
+  // dystansu celowo NIE liczy się jako "walka" w tym sensie — jednostka
+  // pod ostrzałem nie zwalnia, tylko realny kontakt wręcz to robi.
+  // `attacks` zawiera wyłącznie starcia wręcz (w tym dystansowych
+  // zmuszonych do zwarcia), nigdy trafień pociskiem.
+  const meleeThisFrame = new Set();
+  for (const { attacker, target } of attacks) {
+    meleeThisFrame.add(attacker);
+    meleeThisFrame.add(target);
+  }
+  for (const u of allUnits) {
+    if (meleeThisFrame.has(u)) {
+      u.timeSinceMeleeCombat = 0;
+    } else {
+      u.timeSinceMeleeCombat += dt;
+    }
+  }
+
   // Kierunek ruchu względem najbliższego wroga — potrzebne WYŁĄCZNIE, gdy
-  // jednostka jest świeżo w walce (patrz UNIT_TYPES.disengageSpeed w
+  // jednostka jest świeżo w ZWARCIU (patrz UNIT_TYPES.disengageSpeed w
   // updateUnit). LOKALNY kierunek (iloczyn skalarny wektora do
   // NAJBLIŻSZEGO punktu ścieżki z wektorem "od wroga"), nie odległość do
   // odległego, końcowego punktu trasy — inaczej trasa prowadząca "przez"
   // wroga do dalekiego celu fałszywie wygląda jak oddalanie się, bo
   // sam odległy punkt końcowy jest daleko od wroga.
   for (const u of allUnits) {
-    if (u.hp <= 0 || u.path.length === 0 || u.timeSinceCombat >= MELEE_SLOW_DURATION) { u.disengaging = false; continue; }
+    if (u.hp <= 0 || u.path.length === 0 || u.timeSinceMeleeCombat >= MELEE_SLOW_DURATION) { u.disengaging = false; continue; }
     const { enemy } = findNearestEnemyAnyRange(u, allUnits);
     if (!enemy) { u.disengaging = false; continue; }
     const next = u.path[0];

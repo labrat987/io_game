@@ -76,6 +76,46 @@ const AI_CONFIG = {
 };
 
 // ------------------------------------------------------------
+// Poziom trudności — 'normal' (domyślny: dokładnie dotychczasowe
+// zachowanie, zero zmian) i 'hard' (sprawniejsze dowodzenie: formacje,
+// ochrona artylerii, koncentracja sił przed starciem, kontrowanie
+// widocznego składu wroga, większy odwód — BEZ zmiany agresji, progów
+// faz, commitmentTime, i BEZ żadnych bonusów/oszustw, patrz AI_HARD_CONFIG
+// niżej). Przełączane w dowolnym momencie meczu checkboxem w bocznym
+// panelu (patrz window.setAIDifficulty, wołane z index.html).
+// ------------------------------------------------------------
+let aiDifficulty = 'normal';
+function isHard() { return aiDifficulty === 'hard'; }
+if (typeof window !== 'undefined') {
+  window.setAIDifficulty = (level) => { aiDifficulty = level === 'hard' ? 'hard' : 'normal'; };
+}
+
+// Wartości używane WYŁĄCZNIE w trybie 'hard' — albo nowe parametry nowych
+// zachowań (bez odpowiednika w AI_CONFIG), albo umiarkowana korekta
+// istniejącej wartości (flankAttemptChance, maxArmyCommitmentFraction).
+// Reszta reguł gry zostaje identyczna: ten sam GameAPI, ta sama uczciwa
+// wiedza (patrz komentarz na górze pliku), te same fazy/progi/
+// commitmentTime z AI_CONFIG — hard mode zmienia TYLKO jak sprawnie AI
+// realizuje te same decyzje, nie CO lub JAK CZĘSTO atakuje.
+const AI_HARD_CONFIG = {
+  flankAttemptChance: 0.6, // AI_CONFIG ma 0.3 — flankowanie ma być domyślną taktyką, nie rzadkim wyjątkiem
+  maxArmyCommitmentFraction: 0.60, // AI_CONFIG ma 0.70 — większy stały odwód przy miastach
+  formationSettleRadiusPx: 15, // jednostka uznana za "już na miejscu" — nie przerywać jej rozkazem od nowa (pozwala dokończyć setupTime)
+  cavalryFlankOffsetPx: 60, // odległość skrzydeł kawalerii od reszty formacji
+  protectRangedThreatRadiusPx: 90, // wróg bliżej niż to od dystansowej jednostki AI -> cofnij ją za piechotę
+  groupConsolidationRadius: 150, // px — rozrzut kandydatów do zaangażowania powyżej tego progu -> najpierw się zbierają, zanim ruszą razem
+  counterCompositionThreshold: 0.4, // udział danego typu w WIDOCZNEJ armii wroga uznawany za wyraźny wzorzec do skontrowania
+  counterCompositionShift: 0.15, // o ile korygowany jest docelowy skład armii w odpowiedzi na wzorzec wroga
+  economySplitByPhase: { OPENING: 0.55, MIDGAME: 0.75, OFFENSIVE: 0.85 }, // ułamek decyzji wydatkowych na produkcję (reszta na ulepszenia), zależny od fazy — w otwarciu priorytet ma rozwój miast
+};
+
+// Jedno miejsce odczytu parametru, które samo wybiera właściwe źródło —
+// wywołujący nie musi pamiętać, który klucz ma odpowiednik w hard mode.
+function cfgVal(key) {
+  return isHard() && key in AI_HARD_CONFIG ? AI_HARD_CONFIG[key] : AI_CONFIG[key];
+}
+
+// ------------------------------------------------------------
 // Stan AI — WYŁĄCZNIE w tym module, silnik o nim nic nie wie. Trzy
 // zgrupowania z zadaniami (obrona/natarcie/rezerwa) — "rozwiązanie"
 // grupy to po prostu wyczyszczenie jej Setu: niezrzeszone żywe
@@ -257,6 +297,32 @@ function nearbyHillsOrSame(api, point) {
   return point;
 }
 
+function isWaterAt(api, point) {
+  const tile = api.worldToTile(point.x, point.y);
+  const terrain = api.terrainAt(tile.col, tile.row);
+  return !!terrain && terrain.name === 'WATER';
+}
+
+// [TRYB HARD] Jak nearbyHillsOrSame, ale dodatkowo unika stawiania
+// dystansowych w lesie/wodzie, gdy w pobliżu jest rozsądna alternatywa —
+// kolejność preferencji: wzgórza (bonus zasięgu) > zwykłe pole > (brak
+// niczego lepszego w promieniu) zostań, gdzie wypadło.
+function betterGroundForRanged(api, point) {
+  if (isHillsAt(api, point)) return point;
+  if (!isForestAt(api, point) && !isWaterAt(api, point)) return point;
+  for (let radius = 1; radius <= 3; radius++) {
+    for (let dc = -radius; dc <= radius; dc++) {
+      for (let dr = -radius; dr <= radius; dr++) {
+        const tile = api.worldToTile(point.x, point.y);
+        const candidate = api.tileToWorld(tile.col + dc, tile.row + dr);
+        if (isHillsAt(api, candidate)) return candidate;
+        if (!isForestAt(api, candidate) && !isWaterAt(api, candidate)) return candidate;
+      }
+    }
+  }
+  return point;
+}
+
 // Odcinek a->b: czy punkt p leży bliżej niego niż maxDist? Używane przez
 // frontCohesionOk do wykrycia wrogiej siły "na drodze" między domem a celem.
 function isNearSegment(p, a, b, maxDist) {
@@ -320,6 +386,7 @@ function frontCohesionOk(api, state, targetPoint) {
 // index.html: nowy rozkaz zeruje rozstawienie).
 // ------------------------------------------------------------
 function issueGroupOrder(api, unitSet, targetPoint, homeRefPoint) {
+  if (isHard()) { issueFormationOrderHard(api, unitSet, targetPoint, homeRefPoint); return; }
   const list = [...unitSet];
   if (list.length === 0) return;
   const melee = list.filter((u) => !api.UNIT_TYPES[u.type].ranged);
@@ -334,6 +401,94 @@ function issueGroupOrder(api, unitSet, targetPoint, homeRefPoint) {
     };
     rangedTarget = nearbyHillsOrSame(api, rangedTarget);
     api.issueMoveOrder(ranged, rangedTarget);
+  }
+}
+
+// [TRYB HARD] Formacja z rolami: piechota na linii (jak dawny
+// issueGroupOrder), dystansowi za nią (przez betterGroundForRanged —
+// wzgórza > pole, omija las/wodę), kawaleria na obu skrzydłach linii
+// (cavalryFlankOffsetPx). Rozkaz ruchu wydawany WYŁĄCZNIE jednostkom,
+// które jeszcze nie dotarły na wyliczone miejsce ORAZ nie są akurat
+// zaangażowane w walkę (engagedTargetId) — nigdy nie przerywa trwającego
+// starcia ani nie przestawia jednostki, która już stoi i się rozstawia.
+function issueFormationOrderHard(api, unitSet, targetPoint, homeRefPoint) {
+  const list = [...unitSet];
+  if (list.length === 0) return;
+  const cavalry = list.filter((u) => u.type === 'CAVALRY');
+  const ranged = list.filter((u) => api.UNIT_TYPES[u.type].ranged);
+  const melee = list.filter((u) => u.type !== 'CAVALRY' && !api.UNIT_TYPES[u.type].ranged);
+
+  const dx = targetPoint.x - homeRefPoint.x, dy = targetPoint.y - homeRefPoint.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const dirX = dx / len, dirY = dy / len;
+  const perpX = -dirY, perpY = dirX;
+
+  const moveIfNeeded = (units, point) => {
+    const need = units.filter((u) => u.engagedTargetId == null
+      && (u.path.length > 0 || dist(u, point) > AI_HARD_CONFIG.formationSettleRadiusPx));
+    if (need.length > 0) api.issueMoveOrder(need, point);
+  };
+
+  moveIfNeeded(melee, targetPoint);
+
+  if (ranged.length > 0) {
+    let rangedTarget = {
+      x: targetPoint.x - dirX * AI_CONFIG.rangedBehindOffsetPx,
+      y: targetPoint.y - dirY * AI_CONFIG.rangedBehindOffsetPx,
+    };
+    rangedTarget = betterGroundForRanged(api, rangedTarget);
+    moveIfNeeded(ranged, rangedTarget);
+  }
+
+  if (cavalry.length > 0) {
+    const half = Math.ceil(cavalry.length / 2);
+    const leftFlank = {
+      x: targetPoint.x - perpX * AI_HARD_CONFIG.cavalryFlankOffsetPx,
+      y: targetPoint.y - perpY * AI_HARD_CONFIG.cavalryFlankOffsetPx,
+    };
+    const rightFlank = {
+      x: targetPoint.x + perpX * AI_HARD_CONFIG.cavalryFlankOffsetPx,
+      y: targetPoint.y + perpY * AI_HARD_CONFIG.cavalryFlankOffsetPx,
+    };
+    moveIfNeeded(cavalry.slice(0, half), leftFlank);
+    moveIfNeeded(cavalry.slice(half), rightFlank);
+  }
+}
+
+// [TRYB HARD] Chroni artylerię/łuczników przed odsłonięciem: gdy jakikolwiek
+// wróg zbliży się na protectRangedThreatRadiusPx do dystansowej jednostki
+// AI, cofa WSZYSTKICH zagrożonych dystansowych tej grupy za centroid jej
+// piechoty (albo do najbliższego miasta, gdy grupa nie ma piechoty),
+// przez betterGroundForRanged (omija las/wodę przy okazji odwrotu).
+function decideProtectRanged(api, state) {
+  const enemies = enemyAliveUnits(api, state);
+  if (enemies.length === 0) return;
+  for (const key of ['defense', 'offense']) {
+    const list = [...state.groups[key]];
+    const rangedUnits = list.filter((u) => api.UNIT_TYPES[u.type].ranged);
+    if (rangedUnits.length === 0) continue;
+    const threatened = rangedUnits.filter((u) => enemies.some((e) => dist(u, e) <= AI_HARD_CONFIG.protectRangedThreatRadiusPx));
+    if (threatened.length === 0) continue;
+
+    const meleeUnits = list.filter((u) => !api.UNIT_TYPES[u.type].ranged);
+    let shelter;
+    if (meleeUnits.length > 0) {
+      shelter = { x: meleeUnits.reduce((s, u) => s + u.x, 0) / meleeUnits.length, y: meleeUnits.reduce((s, u) => s + u.y, 0) / meleeUnits.length };
+    } else {
+      const home = nearestCity(threatened[0], myCities(api, state), api);
+      if (!home) continue;
+      shelter = api.cityCenter(home);
+    }
+    const home = nearestCity(shelter, myCities(api, state), api);
+    const homeCenter = home ? api.cityCenter(home) : shelter;
+    const hdx = homeCenter.x - shelter.x, hdy = homeCenter.y - shelter.y;
+    const hlen = Math.hypot(hdx, hdy) || 1;
+    let retreatPoint = {
+      x: shelter.x + (hdx / hlen) * AI_CONFIG.rangedBehindOffsetPx,
+      y: shelter.y + (hdy / hlen) * AI_CONFIG.rangedBehindOffsetPx,
+    };
+    retreatPoint = betterGroundForRanged(api, retreatPoint);
+    api.issueMoveOrder(threatened, retreatPoint);
   }
 }
 
@@ -431,8 +586,14 @@ function decideAdvance(api, state, now, allowCityTargets) {
   state.advanceCommittedAt = null;
 
   const totalPower = sumPower(api, myAliveUnits(api, state));
-  const maxCommitPower = totalPower * AI_CONFIG.maxArmyCommitmentFraction;
+  const maxCommitPower = totalPower * cfgVal('maxArmyCommitmentFraction');
   const candidates = [...state.groups.reserve, ...state.groups.offense];
+  // [TRYB HARD] zdrowsze jednostki jako pierwsze — ranne, wciąż leczące
+  // się w rezerwie, zostają z tyłu dłużej; to realizuje "zastępuje
+  // ranne świeżymi z rezerwy" bez osobnego mechanizmu śledzenia rotacji.
+  if (isHard()) {
+    candidates.sort((a, b) => (b.hp / api.UNIT_TYPES[b.type].maxHp) - (a.hp / api.UNIT_TYPES[a.type].maxHp));
+  }
   let committedPower = 0;
   const engageUnits = [];
   for (const u of candidates) {
@@ -442,6 +603,25 @@ function decideAdvance(api, state, now, allowCityTargets) {
     committedPower += p;
   }
   if (engageUnits.length === 0) return;
+
+  // [TRYB HARD] Koncentracja sił przed starciem: jeśli wybrani kandydaci
+  // są rozrzuceni dalej niż groupConsolidationRadius (część świeża z
+  // rezerwy przy mieście, część już na przedpolu), każ im się najpierw
+  // zejść do wspólnego punktu (centroid — obie części idą sobie naprzeciw,
+  // szybciej niż zbiórka w jednym punkcie) i dopiero w KOLEJNEJ turze
+  // decyzyjnej oceniaj cele. Bez tego oddziały dochodziłyby do walki
+  // pojedynczo, w miarę jak każdy dociera własnym tempem.
+  if (isHard() && engageUnits.length > 1) {
+    const centroid = {
+      x: engageUnits.reduce((s, u) => s + u.x, 0) / engageUnits.length,
+      y: engageUnits.reduce((s, u) => s + u.y, 0) / engageUnits.length,
+    };
+    const maxSpread = Math.max(...engageUnits.map((u) => dist(u, centroid)));
+    if (maxSpread > AI_HARD_CONFIG.groupConsolidationRadius) {
+      issueGroupOrder(api, new Set(engageUnits), centroid, centroid);
+      return;
+    }
+  }
 
   let bestTarget = null, bestScore = -Infinity, bestKind = null, bestRatio = 0;
   for (const cluster of clusterEnemyUnits(api, state)) {
@@ -495,7 +675,7 @@ function decideAdvance(api, state, now, allowCityTargets) {
   const cavalry = engageUnits.filter((u) => u.type === 'CAVALRY');
   const rest = engageUnits.filter((u) => u.type !== 'CAVALRY');
 
-  if (cavalry.length > 0 && Math.random() < AI_CONFIG.flankAttemptChance) {
+  if (cavalry.length > 0 && Math.random() < cfgVal('flankAttemptChance')) {
     const dx = bestTarget.x - home.x, dy = bestTarget.y - home.y;
     const len = Math.hypot(dx, dy) || 1;
     const perpX = -dy / len, perpY = dx / len;
@@ -608,11 +788,37 @@ function decideTradeRoutes(api, state) {
   }
 }
 
+// [TRYB HARD] Koryguje bazowy docelowy skład armii (AI_CONFIG.targetArmyComposition)
+// w odpowiedzi na WIDOCZNY skład wroga (pozycje/typy jednostek są zawsze
+// widoczne na mapie dla obu stron — to uczciwa wiedza, nie podgląd
+// niewidocznych informacji). Reaguje tylko na wyraźny wzorzec
+// (counterCompositionThreshold), umiarkowaną korektą (counterCompositionShift),
+// nigdy nie zamienia całej armii w jeden typ.
+function computeTargetComposition(api, state) {
+  if (!isHard()) return AI_CONFIG.targetArmyComposition;
+  const enemy = enemyAliveUnits(api, state);
+  const total = enemy.length || 1;
+  const cavalryShare = enemy.filter((u) => u.type === 'CAVALRY').length / total;
+  const infantryShare = enemy.filter((u) => u.type === 'LIGHT_INFANTRY' || u.type === 'HEAVY_INFANTRY').length / total;
+  const comp = { ...AI_CONFIG.targetArmyComposition };
+  if (cavalryShare >= AI_HARD_CONFIG.counterCompositionThreshold) {
+    comp.HEAVY_INFANTRY = (comp.HEAVY_INFANTRY || 0) + AI_HARD_CONFIG.counterCompositionShift;
+    comp.CAVALRY = Math.max(0, (comp.CAVALRY || 0) - AI_HARD_CONFIG.counterCompositionShift);
+  }
+  if (infantryShare >= AI_HARD_CONFIG.counterCompositionThreshold) {
+    comp.ARCHER = (comp.ARCHER || 0) + AI_HARD_CONFIG.counterCompositionShift / 2;
+    comp.CANNON = (comp.CANNON || 0) + AI_HARD_CONFIG.counterCompositionShift / 2;
+    comp.LIGHT_INFANTRY = Math.max(0, (comp.LIGHT_INFANTRY || 0) - AI_HARD_CONFIG.counterCompositionShift);
+  }
+  return comp;
+}
+
 function pickProductionType(api, state) {
   const alive = myAliveUnits(api, state);
   const total = alive.length || 1;
+  const targetComposition = computeTargetComposition(api, state);
   let bestType = null, bestGap = -Infinity;
-  for (const [type, targetRatio] of Object.entries(AI_CONFIG.targetArmyComposition)) {
+  for (const [type, targetRatio] of Object.entries(targetComposition)) {
     const cfg = api.UNIT_TYPES[type];
     if (api.gold[state.owner] < cfg.cost) continue;
     const current = alive.filter((u) => u.type === type).length / total;
@@ -628,7 +834,19 @@ function decideEconomy(api, state) {
   const mine = myCities(api, state);
   if (mine.length === 0) return;
   const underPressure = isUnderPressure(api, state);
-  const productionShare = underPressure ? AI_CONFIG.economySplitUnderPressure : AI_CONFIG.economySplitBase;
+  // [TRYB HARD] Podział zależny od FAZY, nie tylko presji — w otwarciu
+  // priorytet ma rozwój miast, w środkowej/ofensywnej coraz mocniej
+  // produkcja. Presja militarna nadal ma pierwszeństwo nad fazą (pod
+  // atakiem trzeba jednostek NATYCHMIAST, niezależnie od tego, co
+  // sugerowałaby faza).
+  let productionShare;
+  if (underPressure) {
+    productionShare = AI_CONFIG.economySplitUnderPressure;
+  } else if (isHard()) {
+    productionShare = AI_HARD_CONFIG.economySplitByPhase[state.phase] ?? AI_CONFIG.economySplitBase;
+  } else {
+    productionShare = AI_CONFIG.economySplitBase;
+  }
   const spendOnProduction = Math.random() < productionShare;
 
   if (spendOnProduction) {
@@ -743,6 +961,7 @@ function runDecisionCycle(api, state, now) {
   decideDefense(api, state, now);
   if (state.phase === 'MIDGAME') decideAdvance(api, state, now, false);
   else if (state.phase === 'OFFENSIVE') decideAdvance(api, state, now, true);
+  if (isHard()) decideProtectRanged(api, state); // [TRYB HARD] korekta PO głównych rozkazach tej tury — reaguje na zagrożenie w tej samej turze, nie dopiero w następnej
   if (state.phase !== 'OPENING') decideConvoyRaid(api, state);
   decideEconomy(api, state);
 }
