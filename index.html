@@ -1048,6 +1048,7 @@ function spawnUnit(type, col, row, owner) {
     turnRemaining: 0, // s do końca odwracania się w stronę nowego engagedTargetId (facingAngle zamrożone, dopóki > 0) — patrz UNIT_TYPES.turnTimeSeconds
     engagementDuration: 0, // s trwania AKTUALNEGO zaangażowania — im dłużej trwa, tym bardziej zanika bonus za flankowanie/tył (patrz flankBonusFor)
     chaseAnchorX: null, chaseAnchorY: null, // pozycja w momencie nawiązania AKTUALNEGO zaangażowania — limit dystansu "napierania"/pościgu, patrz MAX_CHASE_DISTANCE_PX w resolveCombat
+    chaseLastTargetX: null, chaseLastTargetY: null, // ostatnia pozycja celu, do której policzono trasę pościgu — patrz updateChasePaths
     attackOrderTargetId: null, // wymuszony przez gracza cel ataku (PPM na wrogiej jednostce) — patrz issueAttackOrder/updateAttackOrders/resolveCombat
     attackOrderAnchorX: null, attackOrderAnchorY: null, // pozycja w momencie WYDANIA rozkazu ataku — limit pościgu, ten sam MAX_CHASE_DISTANCE_PX co napieranie
     attackOrderLastTargetX: null, attackOrderLastTargetY: null, // ostatnia pozycja celu, do której liczono trasę — próg przeliczenia, patrz ATTACK_ORDER_REPATH_DIST_PX
@@ -2167,6 +2168,40 @@ function updateAttackOrders() {
     }
   }
 }
+
+// BŁĄD naprawiony tu: jednostka wręcz, której cel uciekł poza zasięg
+// ataku, zależała WYŁĄCZNIE od zewnętrznych, okresowych rozkazów ruchu
+// (AI/gracz) — dochodziła do STAREJ pozycji celu, zatrzymywała się i
+// czekała na kolejny rozkaz, więc pościg wyglądał jak "podbiega,
+// zatrzymuje się, rusza ponownie" (patrz zgłoszenie). Naprawa: dopóki
+// resolveCombat utrzymuje zaangażowanie jako "pościg w toku" (cel poza
+// zasięgiem, ale w granicach MAX_CHASE_DISTANCE_PX od chaseAnchor — patrz
+// tam), ta funkcja W KAŻDEJ klatce dogania cel ciągłym przeliczaniem
+// trasy, tym samym wzorcem co już sprawdzony updateAttackOrders powyżej
+// (ten sam próg ponownego przeliczenia). Wołane PRZED updateUnit, żeby
+// ścieżka była świeża zanim jednostka w tej klatce ruszy. Dystansowi nie
+// gonią (bezsensowne bez rozstawienia w biegu) — resolveCombat i tak
+// zrywa im zaangażowanie od razu poza zasięgiem.
+function updateChasePaths() {
+  const unitsById = new Map(units.map(u => [u.id, u]));
+  for (const u of units) {
+    if (u.hp <= 0 || u.routed || u.engagedTargetId == null) continue;
+    const cfg = UNIT_TYPES[u.type];
+    if (cfg.ranged) continue;
+    const target = unitsById.get(u.engagedTargetId);
+    if (!target || target.hp <= 0) continue;
+    if (Math.hypot(target.x - u.x, target.y - u.y) <= cfg.attackRange) continue; // już w zasięgu — walką zajmie się resolveCombat
+    if (u.path.length === 0 || u.chaseLastTargetX == null
+      || Math.hypot(target.x - u.chaseLastTargetX, target.y - u.chaseLastTargetY) > ATTACK_ORDER_REPATH_DIST_PX) {
+      const rawPath = findPath(worldToTile(u.x, u.y), worldToTile(target.x, target.y), target);
+      if (rawPath !== null) {
+        u.path = finalizePath(u, rawPath);
+        u.chaseLastTargetX = target.x;
+        u.chaseLastTargetY = target.y;
+      }
+    }
+  }
+}
 // Tylko dla dystansowych — patrz TARGET_PRIORITIES/handler Tab niżej,
 // który wciąż CYKLUJE dla gracza; AI ustawia wartość wprost, bez cyklu.
 function setTargetPriority(unit, priority) {
@@ -3003,7 +3038,23 @@ function resolveCombat(allUnits, dt) {
     } else if (current) {
       const dist = Math.hypot(current.x - unit.x, current.y - unit.y);
       const maxRange = ucfg.ranged ? effectiveAttackRange(unit) : ucfg.attackRange;
-      if (dist > maxRange) current = null;
+      if (dist > maxRange) {
+        // Cel poza zasięgiem. Dla WRĘCZ to POŚCIG, nie utrata zaangażowania
+        // (BŁĄD naprawiony tu — dawniej natychmiastowe current=null
+        // zrywało kontakt bojowy z uciekającym wrogiem całkowicie, jedyne
+        // zbliżanie ("napieranie" niżej) też wymaga bycia W zasięgu, więc
+        // ścigający zależał wyłącznie od zewnętrznych, okresowych rozkazów
+        // ruchu — stąd "podbiega do starej pozycji, zatrzymuje się").
+        // Zaangażowanie zostaje, dopóki mieścimy się w istniejącym
+        // MAX_CHASE_DISTANCE_PX od chaseAnchor — patrz updateChasePaths,
+        // która W KAŻDEJ klatce dogania cel ciągłym przeliczaniem trasy.
+        // Dystansowi nie gonią — utrata zasięgu jak dawniej kończy zaangażowanie.
+        if (ucfg.ranged) {
+          current = null;
+        } else if (Math.hypot(unit.x - unit.chaseAnchorX, unit.y - unit.chaseAnchorY) >= MAX_CHASE_DISTANCE_PX) {
+          current = null;
+        }
+      }
     }
 
     if (!current) {
@@ -3028,6 +3079,8 @@ function resolveCombat(allUnits, dt) {
         unit.turnRemaining = ucfg.turnTimeSeconds;
         unit.chaseAnchorX = unit.x; // punkt startu pościgu/napierania dla TEGO zaangażowania — patrz MAX_CHASE_DISTANCE_PX
         unit.chaseAnchorY = unit.y;
+        unit.chaseLastTargetX = null; // wymuś świeże przeliczenie trasy w updateChasePaths dla NOWEGO celu
+        unit.chaseLastTargetY = null;
       } else {
         unit.engagedTargetId = null;
       }
@@ -3063,6 +3116,10 @@ function resolveCombat(allUnits, dt) {
       // klatkę — patrz pętla wyżej.
       const target = attacker.engagedTargetId != null ? unitsById.get(attacker.engagedTargetId) : null;
       if (!target) continue;
+      // Zaangażowanie może dziś oznaczać POŚCIG jeszcze poza zasięgiem
+      // (patrz pętla wyżej) — bez tego sprawdzenia ścigający zadawałby
+      // obrażenia na odległość, zanim faktycznie dogoni cel.
+      if (Math.hypot(target.x - attacker.x, target.y - attacker.y) > cfg.attackRange) continue;
       attacks.push({ attacker, target });
       attackersThisFrame.add(attacker);
       // Kąt liczony względem AKTUALNEGO zwrotu celu (patrz pętle
@@ -4528,6 +4585,7 @@ function gameLoop(now) {
   if (!paused) {
     const dt = rawDt * gameSpeedMultiplier;
     updateAttackOrders();
+    updateChasePaths();
     for (const u of units) updateUnit(u, dt);
     for (let i = 0; i < COLLISION_RESOLVE_ITERATIONS; i++) resolveCollisions(units);
     units = resolveCombat(units, dt);

@@ -496,22 +496,27 @@ function frontCohesionOk(api, state, targetPoint) {
 // (nigdy woda — patrz findAcceptableGround, główna przyczyna jednostek
 // stojących w wodzie).
 //
-// STABILNOŚĆ (patrz diagnoza — "jednostka wraca po wypchnięciu"): ta
+// STABILNOŚĆ (patrz zgłoszenie — "jednostka wraca po wypchnięciu"): ta
 // funkcja jest wołana WIELOKROTNIE dla tego samego zaangażowania (co
-// decisionIntervalSeconds, przez cały commitmentTime). Za KAŻDYM razem
-// dostaje TĘ SAMĄ pełną listę i TĘ SAMĄ krzywą — issueFrontOrder/
-// assignFrontTargets są funkcjami czystymi (te same wejścia = te same
-// sloty), więc powtórne wydanie rozkazu jest idempotentne i NIE przelicza
-// geometrii od nowa na kurczącej się liście (to właśnie robił dawny
-// filtr "moveIfNeeded" oparty o promień osiedlenia — usunięty). Jedyny
-// filtr to jednostki aktualnie W WALCE — te nigdy nie są przerywane.
+// decisionIntervalSeconds, przez cały commitmentTime). issueFrontOrder/
+// assignFrontTargets sortują jednostki po ICH BIEŻĄCEJ pozycji rzutowanej
+// na krzywą — więc nawet z tą samą listą i krzywą, drobne przesunięcie
+// JEDNEJ jednostki (np. wypchnięcie przez sojusznika) zmienia kolejność
+// sortowania i przestawia SLOTY całej grupy tej samej roli, mimo że nic
+// realnie się nie zmieniło. Naprawa: NIE wydawaj rozkazu ponownie, jeśli
+// cała grupa jest już z grubsza na miejscu (aktywna ścieżka ALBO blisko
+// rejonu formacji) — dopiero gdy KTOŚ faktycznie tego potrzebuje (świeżo
+// wolny/daleko), rozkaz idzie do CAŁEJ grupy naraz (spójna geometria),
+// nie tylko do potrzebującego.
 // ------------------------------------------------------------
 function issueFormationOrder(api, unitSet, targetPoint, homeRefPoint) {
   const list = [...unitSet].filter((u) => u.engagedTargetId == null);
   if (list.length === 0) return;
 
   if (Math.random() >= cfgVal('tacticalSkill')) {
-    api.issueMoveOrder(list, targetPoint);
+    const looseRadius = Math.max(40, list.length * 10);
+    const need = list.filter((u) => u.path.length > 0 || dist(u, targetPoint) > looseRadius);
+    if (need.length > 0) api.issueMoveOrder(need, targetPoint);
     return;
   }
 
@@ -520,6 +525,9 @@ function issueFormationOrder(api, unitSet, targetPoint, homeRefPoint) {
   const len = Math.hypot(dx, dy) || 1;
   const perpX = -dy / len, perpY = dx / len;
   const halfWidth = Math.max(30, list.length * 9);
+  const looseRadius = halfWidth + 60; // margines na rangedBehind/cavalryFlank poza samą linią
+  const anyoneNeeds = list.some((u) => u.path.length === 0 && dist(u, safeTarget) > looseRadius);
+  if (!anyoneNeeds) return; // cała grupa już w rejonie formacji — nie przestawiaj nikogo bez powodu
   const curve = [
     { x: safeTarget.x - perpX * halfWidth, y: safeTarget.y - perpY * halfWidth },
     { x: safeTarget.x + perpX * halfWidth, y: safeTarget.y + perpY * halfWidth },
