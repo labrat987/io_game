@@ -15,11 +15,18 @@
   #legendToggleBtn:hover { background: rgba(30,30,30,0.85); }
   #legendPanel {
     position: fixed; top: 50%; right: 0; transform: translateY(-50%);
-    width: 300px; max-height: 82vh; overflow-y: auto;
+    width: 300px; max-width: min(300px, 80vw); max-height: 82vh; overflow-y: auto;
     color: #eee; font: 12px monospace; line-height: 1.5;
-    background: rgba(0,0,0,0.85); padding: 10px 12px; border-radius: 4px 0 0 4px;
+    background: rgba(0,0,0,0.85); padding: 10px 28px 10px 12px; border-radius: 4px 0 0 4px;
     border: 1px solid #555; border-right: none;
   }
+  #legendCloseBtn {
+    position: absolute; top: 4px; right: 6px; width: 20px; height: 20px;
+    color: #eee; font: bold 13px monospace; cursor: pointer;
+    background: rgba(255,255,255,0.08); border: 1px solid #555; border-radius: 3px;
+    line-height: 18px; text-align: center; padding: 0;
+  }
+  #legendCloseBtn:hover { background: rgba(255,255,255,0.2); }
   #legendPanel h4 { margin: 10px 0 4px; color: #ffcc66; font-size: 12px; }
   #legendPanel h4:first-child { margin-top: 0; }
   #legendPanel .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
@@ -71,11 +78,26 @@
   #gameOverOverlay td, #gameOverOverlay th { padding: 3px 12px; text-align: right; }
   #gameOverOverlay th { color: #ffcc66; }
   #gameOverOverlay td:first-child, #gameOverOverlay th:first-child { text-align: left; }
+  #eventPanel {
+    position: fixed; bottom: 12px; left: 12px; width: 260px; max-width: min(260px, 70vw);
+    max-height: 220px; overflow-y: auto;
+    color: #eee; font: 12px monospace; line-height: 1.4;
+    background: rgba(0,0,0,0.75); padding: 8px 10px; border-radius: 4px;
+    border: 1px solid #444;
+  }
+  #eventPanel .title { color: #ffcc66; margin-bottom: 4px; }
+  #eventPanel .row {
+    padding: 3px 4px; margin: 2px 0; border-radius: 3px; cursor: pointer;
+    border-left: 3px solid #888;
+  }
+  #eventPanel .row:hover { background: rgba(255,255,255,0.1); }
+  #eventPanel .empty { color: #888; }
 </style>
 </head>
 <body>
 <div id="legendToggleBtn">☰ Legenda</div>
 <div id="legendPanel" style="display:none;">
+  <button id="legendCloseBtn" title="Zamknij legendę">✕</button>
   <h4>Sterowanie</h4>
   LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
   PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
@@ -113,6 +135,7 @@
   <div class="row"><span class="swatch" style="background:#c2a76c;"></span>Wzgórza — spowolnienie zależne od typu, dystansowi +40% zasięgu</div>
 </div>
 <div id="unitStatsTooltip"></div>
+<div id="eventPanel"><div class="title">Zdarzenia</div><div id="eventPanelList"><div class="empty">(brak)</div></div></div>
 <div id="goldPanel">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)<span id="lastCityBadge" style="display:none; color:#ffcc66;"><br>⚠ OSTATNIE MIASTO — wzmocniony dochód</span></div>
 <div id="alertBanner" style="display:none;"></div>
 <div id="gameOverOverlay" style="display:none;"></div>
@@ -417,7 +440,7 @@ const TERRAIN_MODIFIERS = {
   },
 };
 
-const BASE_SPEED_PX_PER_S = 28.8; // mnożone przez unit.speed i terrain.speedMultiplier (obniżone łącznie o ~50% od bazy — gracz ma zdążyć zareagować na przebieg starcia, przegrupować, wycofać osłabione oddziały)
+const BASE_SPEED_PX_PER_S = 15.84; // było 28.8, -45% — gra ma być wolna i planowana, gracz musi zdążyć zobaczyć zagrożenie i zareagować (mnożone przez unit.speed i terrain.speedMultiplier, obejmuje też konwoje i PANIC_SPEED_MULTIPLIER — jeden wspólny czynnik, proporcje między typami zachowane)
 
 // Zahardkodowana mapa terenu — edytuj ręcznie (0 pole, 1 las, 2 gory,
 // 3 woda, 4 wzgórza). Powiększona o ~50% względem pierwszej wersji
@@ -660,6 +683,33 @@ let dragStartOwnCity = null; // własne miasto, na którym zaczęto PPM przecią
 // widoczna natychmiast, patrz updateConvoyCaptures).
 let alerts = []; // {text, until} — kolejka, NIE pojedynczy skalar: "miasto atakowane" i "miasto stracone" mogą wystąpić blisko siebie w czasie
 const ALERT_MAX_STACKED = 3; // limit jednocześnie wyświetlanych linii, żeby baner nie rozrósł się bez końca
+
+// Panel zdarzeń (dolny lewy róg) + wskaźniki poza ekranem — przy AI
+// działającym w kilku miejscach naraz gracz musi mieć jedno miejsce, gdzie
+// widać CO się stało i GDZIE, z możliwością przesunięcia tam kamery.
+// Osobne od `alerts` (transient banner u góry) — to trwalszy log.
+let gameEvents = []; // {id, text, x, y, startTime, color}
+let nextEventId = 1;
+const GAME_EVENT_LOG_MAX = 8; // ile ostatnich zdarzeń trzymamy w panelu
+const OFFSCREEN_INDICATOR_DURATION_MS = 8000; // jak długo po zdarzeniu pokazujemy wskaźnik krawędziowy
+function logGameEvent(text, x, y, color) {
+  gameEvents.unshift({ id: nextEventId++, text, x, y, startTime: performance.now(), color: color || '#ffcc66' });
+  if (gameEvents.length > GAME_EVENT_LOG_MAX) gameEvents.length = GAME_EVENT_LOG_MAX;
+  eventPanelListEl.innerHTML = '';
+  for (const ev of gameEvents) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.borderLeftColor = ev.color;
+    row.textContent = ev.text;
+    row.onclick = () => {
+      cameraX = ev.x;
+      cameraY = ev.y;
+      clampCamera();
+      updateViewTransform();
+    };
+    eventPanelListEl.appendChild(row);
+  }
+}
 
 function spawnUnit(type, col, row, owner) {
   const center = tileToWorld(col, row);
@@ -1216,13 +1266,27 @@ const alertBannerEl = document.getElementById('alertBanner');
 const gameOverOverlayEl = document.getElementById('gameOverOverlay');
 const legendToggleBtnEl = document.getElementById('legendToggleBtn');
 const legendPanelEl = document.getElementById('legendPanel');
+const legendCloseBtnEl = document.getElementById('legendCloseBtn');
 const unitStatsTooltipEl = document.getElementById('unitStatsTooltip');
+const eventPanelListEl = document.getElementById('eventPanelList');
 
 // Zwinięty domyślnie — nie ma zasłaniać mapy, gracz sam go rozwija.
+// BŁĄD sprzed tej tury: otwarcie panelu chowało zakładkę-przycisk, a
+// wewnątrz panelu nie było ŻADNEGO innego przycisku zamknięcia — więc
+// raz otwartego panelu nie dało się zamknąć bez przeładowania strony.
+// Naprawa: jawny ✕ wewnątrz panelu (zawsze działa, panel go nie zasłania
+// — to jego JEDYNY właściciel ekranu). Zakładka nadal chowa się przy
+// otwartym panelu (inaczej panel, szerszy i rysowany później w DOM,
+// zasłania ją fizycznie na ekranie — próba kliknięcia "przez" panel w
+// zakładkę pod spodem i tak by nie działała), ale teraz jest to
+// nieszkodliwe, bo ✕ zawsze zapewnia drogę powrotną.
 legendToggleBtnEl.onclick = () => {
-  const collapsed = legendPanelEl.style.display === 'none';
-  legendPanelEl.style.display = collapsed ? 'block' : 'none';
-  legendToggleBtnEl.style.display = collapsed ? 'none' : 'block';
+  legendPanelEl.style.display = 'block';
+  legendToggleBtnEl.style.display = 'none';
+};
+legendCloseBtnEl.onclick = () => {
+  legendPanelEl.style.display = 'none';
+  legendToggleBtnEl.style.display = 'block';
 };
 
 // Krótkie opisy roli — wyłącznie do podglądu w panelu miasta (patrz
@@ -2285,6 +2349,7 @@ function updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHit
           u.routed = true;
           u.path = []; // porzuca stary rozkaz, gracz i tak nią teraz nie kieruje
           u.timeSafeFromEnemy = 0;
+          if (u.owner === OWNED_PLAYER) logGameEvent('Oddział załamał się!', u.x, u.y, '#ffffff');
         }
       }
     } else if (u.routed && u.morale >= MORALE_RECOVER_THRESHOLD) {
@@ -2698,6 +2763,7 @@ function updateConvoyCaptures(dt, now) {
       if (u.owner === OWNED_PLAYER) {
         showAlert('Twój konwój jest przejmowany!');
         captureAlertEffects.push({ x: u.x, y: u.y, startTime: now, color: '#ff8800' });
+        logGameEvent('Konwój jest przejmowany', u.x, u.y, '#ff8800');
       }
     }
 
@@ -2729,6 +2795,7 @@ function updateConvoyCaptures(dt, now) {
       if (lostOwner === OWNED_PLAYER) {
         showAlert(`Utracono konwój na rzecz ${u.owner}! -${Math.round(lostValue)} złota`);
         captureAlertEffects.push({ x: u.x, y: u.y, startTime: now, color: '#ff2222' });
+        logGameEvent(`Utracono konwój (-${Math.round(lostValue)} zł)`, u.x, u.y, '#ff2222');
       }
     }
   }
@@ -2766,6 +2833,7 @@ function updateCityCaptures(dt, now) {
         if (city.owner === OWNED_PLAYER) {
           showAlert(`Miasto ${city.id} jest atakowane!`);
           captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: PLAYERS[besiegerOwner].color });
+          logGameEvent(`Miasto ${city.id} atakowane`, center.x, center.y, PLAYERS[besiegerOwner].color);
         }
       }
       const multiplier = Math.min(1 + (count - 1) * CITY_CAPTURE_ATTACKER_BONUS_PER_UNIT, CITY_CAPTURE_MAX_ATTACKER_MULTIPLIER);
@@ -2806,10 +2874,12 @@ function updateCityCaptures(dt, now) {
         if (oldOwner === OWNED_PLAYER) {
           showAlert(`Utracono miasto ${city.id}!`);
           captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: '#ff2222' });
+          logGameEvent(`Utracono miasto ${city.id}`, center.x, center.y, '#ff2222');
         }
         if (city.owner === OWNED_PLAYER) {
           showAlert(`Zdobyto miasto ${city.id}!`);
           captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: '#33ff33' });
+          logGameEvent(`Zdobyto miasto ${city.id}`, center.x, center.y, '#33ff33');
         }
 
         if (CITIES.filter(c => c.owner === oldOwner).length === 0) {
@@ -3126,6 +3196,41 @@ function drawCaptureAlertEffects(now) {
     ctx.lineWidth = 3;
     ctx.stroke();
     ctx.globalAlpha = 1;
+  }
+}
+
+// Wskaźnik krawędziowy dla zdarzeń poza aktualnym widokiem — przy AI
+// działającym w kilku miejscach naraz gracz musi wiedzieć, że coś się
+// dzieje, nawet patrząc gdzie indziej. Rysowane W PRZESTRZENI EKRANU
+// (wołane PO ctx.restore() w gameLoop, bez transformacji kamery).
+function drawOffScreenIndicators(now) {
+  const margin = 24;
+  for (const ev of gameEvents) {
+    if (now - ev.startTime > OFFSCREEN_INDICATOR_DURATION_MS) continue;
+    const screenX = ev.x * viewScale + viewOffsetX;
+    const screenY = ev.y * viewScale + viewOffsetY;
+    if (screenX >= margin && screenX <= canvas.width - margin && screenY >= margin && screenY <= canvas.height - margin) continue; // widoczne na ekranie — bez wskaźnika
+
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    const angle = Math.atan2(screenY - cy, screenX - cx);
+    const halfW = canvas.width / 2 - margin, halfH = canvas.height / 2 - margin;
+    const scale = Math.min(halfW / (Math.abs(Math.cos(angle)) || 1e-6), halfH / (Math.abs(Math.sin(angle)) || 1e-6));
+    const ix = cx + Math.cos(angle) * scale;
+    const iy = cy + Math.sin(angle) * scale;
+
+    const pulse = 0.6 + 0.4 * Math.sin(now / 200);
+    ctx.save();
+    ctx.translate(ix, iy);
+    ctx.rotate(angle);
+    ctx.fillStyle = ev.color;
+    ctx.globalAlpha = pulse;
+    ctx.beginPath();
+    ctx.moveTo(10, 0);
+    ctx.lineTo(-8, -7);
+    ctx.lineTo(-8, 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -3798,6 +3903,7 @@ function gameLoop(now) {
   drawOrderFailEffects(now);
   drawGestureFeedback();
   ctx.restore();
+  drawOffScreenIndicators(now); // przestrzeń EKRANU, poza ctx.restore() — bez transformacji kamery
 
   requestAnimationFrame(gameLoop);
 }
@@ -4140,7 +4246,7 @@ window.BalanceSim = {
 window.GameAPI = {
   CITIES, PLAYERS, OWNED_PLAYER, UNIT_TYPES, TERRAIN, TERRAIN_MODIFIERS, CITY_LEVELS,
   TILE_SIZE, MAP_COLS, MAP_ROWS, MAP_WIDTH_PX, MAP_HEIGHT_PX, CITY_ZONE_RADIUS,
-  gold, stats,
+  gold, goldRate, stats,
   getUnits: () => units,
   getTradeRoutes: () => tradeRoutes,
   isGameOver: () => gameOver,
