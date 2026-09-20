@@ -54,7 +54,19 @@ const AI_CONFIG = {
   clusterRadius: 100, // px — promień grupowania widocznych jednostek wroga w "armie" (klastry)
   frontCohesionBlockingPowerFraction: 0.5, // jeśli siła wroga "za plecami" (między domem a celem) >= tyle razy CAŁA siła AI, wstrzymaj głębokie natarcie
   midToOffensivePowerRatioFloor: 1.15, // dolny limit progu po złagodzeniu przy patcie — mecz ma się kończyć, niezależnie od poziomu
-  midToOffensiveMinOwnIncome: 1.0, // minimalny WŁASNY dochód (zł/s, GameAPI.goldRate) wymagany do rozważenia ofensywy
+  // Minimalny WŁASNY dochód (zł/s) wymagany do rozważenia ofensywy.
+  // BŁĄD naprawiony tu: GameAPI.goldRate to WYŁĄCZNIE wygładzone tempo
+  // płaskiego dochodu z miast (index.html/updateEconomy) — konwoje
+  // (dominujące, skokowe źródło zysku) NIGDY go nie zasilają
+  // (updateConvoys dopisuje do gold[], nie do goldRate[]). Przy
+  // CITY_BASE_INCOME_PER_SECOND=0.11 i realistycznych 2-3 miastach
+  // osiągalne goldRate to ~0.22-0.33 zł/s — próg 1.0 był NIEOSIĄGALNY
+  // bez desperackiego bonusu "ostatniego miasta", więc AI praktycznie
+  // nigdy nie wchodziło w fazę OFFENSIVE (potwierdzone empirycznie: 12
+  // minut realnej walki, zero przejść do OFFENSIVE na żadnym poziomie).
+  // 0.15 jest osiągalne już przy 2 miastach (0.22 zł/s), wciąż wymaga
+  // rzeczywistej, nie tylko chwilowej, gospodarki.
+  midToOffensiveMinOwnIncome: 0.15,
   bigVictoryEnemyPowerDrop: 120, // nagły spadek widocznej siły wroga między turami uznawany za "dużą bitwę"
   bigVictoryWindowSeconds: 90, // jak długo "świeże zwycięstwo" liczy się jako samodzielny powód wejścia w ofensywę
   offensiveRetreatPowerFraction: 0.6, // spadek własnej siły poniżej tego ułamka stanu z początku ofensywy -> powrót do fazy środkowej
