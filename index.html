@@ -765,7 +765,7 @@ const CITIES = [
 for (const city of CITIES) { city.queue = []; city.level = 1; city.upgradeRemaining = 0; city.timeSinceLastConvoy = 0; city.siegeProgress = 0; city.besiegingOwner = null; city.rallyPoint = null; } // queue: {type, remainingTime}; level 1-5, upgradeRemaining: s do końca trwającego ulepszenia (0 = brak); timeSinceLastConvoy: patrz CITY_LEVELS/updateTradeRoutes — tyka TYLKO gdy miasto ma ≥1 szlak; siegeProgress/besiegingOwner: patrz updateCityCaptures; rallyPoint: {x,y} albo null — punkt zbiórki dla świeżo wyprodukowanych jednostek, patrz updateEconomy/mouseup
 
 const STARTING_GOLD = 250; // starcza na kilka jednostek na start
-const CITY_BASE_INCOME_PER_SECOND = 0.15; // mały, stały dochód z posiadanego miasta — trickle, szlaki handlowe są głównym źródłem zysku
+const CITY_BASE_INCOME_PER_SECOND = 0.11; // mały, stały dochód z posiadanego miasta — trickle, szlaki handlowe są głównym źródłem zysku (obniżone z 0.15, -26,7%, najbliższa czysta wartość do żądanego ~25%)
 const CITY_QUEUE_MAX_LENGTH = 5; // maks. liczba jednostek w kolejce produkcji jednego miasta naraz
 
 // Przejmowanie miast — okupacja czasowa (patrz updateCityCaptures), NIE
@@ -2077,16 +2077,33 @@ function issueMoveOrder(unitList, target) {
     }
   });
 }
+// BŁĄD naprawiony tu: dawniej KAŻDA jednostka dostawała dokładnie tę samą
+// krzywą — findRouteEntryIndex/buildRoutePath już wyliczał per-jednostkę
+// najbliższy punkt WEJŚCIA na trasę, ale poza tym wszystkie podążały
+// identyczną, współdzieloną linią, więc zbiegały się na niej i grzęzły w
+// sobie nawzajem (patrz zgłoszenie). Naprawa: każda jednostka dostaje
+// WŁASNĄ, równoległą kopię krzywej przesuniętą bocznie (prostopadle do
+// ogólnego kierunku trasy) o wielokrotność FORMATION_SPACING, licząc od
+// środka grupy — jadą obok siebie w luźnym szyku, nie jedna po drugiej.
 function issueRouteOrder(unitList, curve) {
-  for (const u of unitList) {
+  const n = unitList.length;
+  const dirStart = curve[0], dirEnd = curve[curve.length - 1];
+  const ddx = dirEnd.x - dirStart.x, ddy = dirEnd.y - dirStart.y;
+  const dlen = Math.hypot(ddx, ddy) || 1;
+  const perpX = -ddy / dlen, perpY = ddx / dlen;
+
+  unitList.forEach((u, i) => {
     u.attackOrderTargetId = null;
-    const rawPath = buildRoutePath(u, curve);
+    const lane = i - (n - 1) / 2;
+    const offset = lane * FORMATION_SPACING;
+    const shiftedCurve = offset === 0 ? curve : curve.map(p => ({ x: p.x + perpX * offset, y: p.y + perpY * offset }));
+    const rawPath = buildRoutePath(u, shiftedCurve);
     if (rawPath === null) {
       pushOrderFailEffect(u);
     } else {
       u.path = finalizePath(u, rawPath);
     }
-  }
+  });
 }
 function issueFrontOrder(unitList, curve) {
   for (const u of unitList) u.attackOrderTargetId = null;
