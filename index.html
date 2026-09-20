@@ -217,10 +217,12 @@ const PUSH_WINNING_DAMAGE_MULTIPLIER = 1.0;
 const PUSH_STALEMATE_DAMAGE_MULTIPLIER = 0.5;
 const PUSH_LOSING_DAMAGE_MULTIPLIER = 0.25;
 
-// Spowolnienie w zwarciu — naprawia "przepychanie się" przez wroga
-// rozkazem ruchu bez realnego stoczenia walki (patrz resolveCombat/updateUnit)
-const MELEE_SLOW_DURATION = 1.5; // s po ostatnim ciosie zadanym/otrzymanym w zwarciu
-const COMBAT_SPEED_MULTIPLIER = 0.22; // mnożnik prędkości w tym oknie (obniżone z 0.3 — jednostki mają być trochę wolniejsze podczas walki)
+// Spowolnienie w walce — naprawia "przepychanie się" przez wroga rozkazem
+// ruchu bez realnego stoczenia walki (patrz resolveCombat/updateUnit).
+// Wyzwalane przez timeSinceCombat (zadane LUB otrzymane obrażenia —
+// zarówno wręcz, jak i ostrzałem, patrz resolveCombat), nie tylko zwarcie.
+const MELEE_SLOW_DURATION = 1.5; // s po ostatnim ciosie zadanym/otrzymanym
+const COMBAT_SPEED_MULTIPLIER = 0.12; // mnożnik prędkości w tym oknie (wzmocnione z 0.22 — trudniej przejść przez walczącą linię, walka ma się rozstrzygać, nie omijać marszem)
 
 // Bonus "dobijania" dla ostrzału dystansowego — patrz updateProjectiles
 const LOW_HP_THRESHOLD = 0.3; // poniżej tego ułamka maxHp celu
@@ -389,7 +391,7 @@ const UNIT_TYPES = {
   CANNON:         { ranged: true,  maxHp: 140, damagePerShot: 5.76, reloadTime: 5.0, projectileSpeed: 150, meleeDamage: 0.56, accuracy: 6.5, attackRange: 150, speed: 0.3,  cost: 90, collisionRadius: 7, drawRadius: 8, pushStrength: 0, setupTime: 2.0, moraleResistance: 0.5, buildTime: 14, lastStandChance: 0.02, turnTimeSeconds: 2.5, flankResistance: 1.0 }, // obrażenia -20% (7.2 -> 5.76); lastStandChance 0.05 -> 0.02
   LIGHT_INFANTRY: { ranged: false, maxHp: 200, damagePerSecond: 6.8, attackRange: 20,  speed: 0.75, cost: 40, collisionRadius: 5, drawRadius: 6, pushStrength: 0.004, moraleResistance: 0.9, buildTime: 6, lastStandChance: 0.08, turnTimeSeconds: 0.7, flankResistance: 1.0 }, // obrażenia -20% (8.5 -> 6.8); pushStrength zredukowane do ~1% (0.4 -> 0.004) — napieranie ma być praktycznie niezauważalne, front trzyma się WYŁĄCZNIE twardą kolizją (resolveCollisions), nie przepychaniem; lastStandChance 0.2 -> 0.08
   HEAVY_INFANTRY: { ranged: false, maxHp: 400, damagePerSecond: 10.24, attackRange: 20,  speed: 0.45, cost: 70, collisionRadius: 6, drawRadius: 7, pushStrength: 0.01, moraleResistance: 1.8, buildTime: 10, lastStandChance: 0.15, turnTimeSeconds: 1.6, flankResistance: 0.6 }, // obrażenia -20% (12.8 -> 10.24); pushStrength ~1% (1.0 -> 0.01); lastStandChance 0.4 -> 0.15
-  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 9.52, attackRange: 20,  speed: 1.0,  cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 0.002, moraleResistance: 1.0, combatSpeedMultiplier: 0.55, buildTime: 9, lastStandChance: 0.06, turnTimeSeconds: 0.4, flankResistance: 1.0 }, // obrażenia -20% (11.9 -> 9.52); pushStrength ~1% (0.2 -> 0.002); lastStandChance 0.15 -> 0.06; combatSpeedMultiplier 0.7 -> 0.55 (trochę wolniejsza w zwarciu, nadal łatwiej się wyrywa niż inne typy)
+  CAVALRY:        { ranged: false, maxHp: 240, damagePerSecond: 9.52, attackRange: 20,  speed: 1.15, cost: 80, collisionRadius: 6, drawRadius: 7, pushStrength: 0.002, moraleResistance: 1.0, disengageSpeed: 0.6, buildTime: 9, lastStandChance: 0.06, turnTimeSeconds: 0.4, flankResistance: 1.0 }, // obrażenia -20% (11.9 -> 9.52); pushStrength ~1% (0.2 -> 0.002); lastStandChance 0.15 -> 0.06; speed 1.0 -> 1.15 (+15%, ma wyraźnie odstawać tempem — to jej główna rola); combatSpeedMultiplier USUNIĘTE (podczas zwykłego starcia kawaleria dostaje tak samo mocną karę jak inni, COMBAT_SPEED_MULTIPLIER), zastąpione disengageSpeed=0.6 — łagodniejsza kara WYŁĄCZNIE gdy aktywnie się wycofuje (patrz unit.disengaging w resolveCombat/updateUnit)
   // Bezbronny nosiciel złota (attackRange:0 -> nigdy nie znajdzie celu do
   // ataku; wykluczony z namierzania przez innych — patrz findTargetForUnit/
   // findNearestEnemyInRange — więc nigdy nie ginie w walce, tylko może
@@ -608,6 +610,22 @@ function isDefendingOwnCityZone(unit) {
   }
   return false;
 }
+
+const CITY_PRODUCTION_SLOWDOWN_MULTIPLIER = 0.5; // mnożnik tempa produkcji/wysyłki konwojów, gdy w strefie miasta jest choć jedna żywa jednostka wroga
+
+// Czy w strefie TEGO miasta stoi choć jedna żywa, niezłamana jednostka
+// wroga — NIEZALEŻNIE od obecności obrońców (to inny warunek niż
+// city.besiegingOwner/updateCityCaptures, który wymaga ZERA obrońców).
+// "Walka o miasto" w sensie tego sprawdzenia to każda obecność wroga w
+// zonie, obronione czy nie — patrz updateEconomy/updateTradeRoutes.
+function isEnemyInCityZone(city) {
+  const center = cityCenter(city);
+  for (const u of units) {
+    if (u.type === 'CONVOY' || u.hp <= 0 || u.routed || u.owner === city.owner) continue;
+    if (Math.hypot(u.x - center.x, u.y - center.y) <= CITY_ZONE_RADIUS) return true;
+  }
+  return false;
+}
 // Mnożnik obrażeń OTRZYMYWANYCH przez cel — obrona ma być realnie
 // łatwiejsza niż zdobycie, żeby pojedyncza jednostka nie mogła przemknąć
 // przez front i zająć niebronionego zaplecza.
@@ -774,8 +792,8 @@ function spawnUnit(type, col, row, owner) {
     hp: UNIT_TYPES[type].maxHp,
     reloadRemaining: 0, // tylko dla ranged, ale ustawiane zawsze
     setupRemaining: 0, // tylko dla ranged — czas do końca rozstawienia po zatrzymaniu
-    timeSinceCombat: 0, // s od ostatniego zadania/otrzymania obrażeń — reguluje regenerację
-    timeSinceMeleeCombat: Infinity, // s od ostatniego ciosu w zwarciu (nie ostrzału) — reguluje combatSlow
+    timeSinceCombat: Infinity, // s od ostatniego zadania/otrzymania obrażeń (wręcz LUB ostrzał) — reguluje regenerację ORAZ spowolnienie w walce (patrz updateUnit); Infinity na starcie = jednostka nigdy nie walczyła, nie ma być spowolniona zanim w ogóle zobaczy wroga
+    disengaging: false, // czy najbliższy punkt ścieżki oddala jednostkę od najbliższego wroga — patrz resolveCombat/UNIT_TYPES.disengageSpeed
     hitFlashUntil: 0, // performance.now() do kiedy rysować błysk trafienia
     shakeUntil: 0, // performance.now() do kiedy rysować drganie (trafienie z działa)
     targetPriority: 'NEAREST', // tylko dla ranged — patrz findTargetForUnit, przełączane klawiszem Tab
@@ -2027,13 +2045,17 @@ function updateUnit(unit, dt) {
   const perTypeSpeedMultiplier = TERRAIN_MODIFIERS[unit.type][terrain.name].speedMultiplier;
   const effectiveSpeedMultiplier = terrain.passable ? terrain.speedMultiplier * perTypeSpeedMultiplier : 1.0;
   // złamana jednostka ucieka na adrenalinie (szybciej), nie walczy więc
-  // spowolnienie zwarcia jej nie dotyczy; w zwarciu jednostka ma
-  // faktycznie walczyć, nie przepychać się dalej — część typów (kawaleria)
-  // wychodzi z tego łatwiej niż inne (combatSpeedMultiplier per typ)
-  const meleeSlowMultiplier = UNIT_TYPES[unit.type].combatSpeedMultiplier ?? COMBAT_SPEED_MULTIPLIER;
+  // spowolnienie walki jej nie dotyczy; świeżo w walce (zadała/otrzymała
+  // obrażenia, patrz timeSinceCombat w resolveCombat) jednostka ma
+  // faktycznie ją rozstrzygnąć, nie przepychać się dalej marszem —
+  // WYJĄTEK: jednostka aktywnie się wycofująca (unit.disengaging, patrz
+  // resolveCombat) korzysta z łagodniejszego disengageSpeed, jeśli typ go
+  // ma (dziś tylko kawaleria — "łatwiej się wyrywa")
+  const cfg = UNIT_TYPES[unit.type];
+  const meleeSlowMultiplier = (unit.disengaging && cfg.disengageSpeed != null) ? cfg.disengageSpeed : COMBAT_SPEED_MULTIPLIER;
   const speedStateMultiplier = unit.routed
     ? PANIC_SPEED_MULTIPLIER
-    : (unit.timeSinceMeleeCombat < MELEE_SLOW_DURATION ? meleeSlowMultiplier : 1);
+    : (unit.timeSinceCombat < MELEE_SLOW_DURATION ? meleeSlowMultiplier : 1);
   const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier * speedStateMultiplier;
 
   const x0 = unit.x, y0 = unit.y; // do wyliczenia zwrotu (facingAngle) z faktycznego przesunięcia tej klatki
@@ -2419,8 +2441,8 @@ function updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHit
   }
 
   // przewaga liczebna w zwarciu: kto atakuje kogo wręcz w tej klatce
-  // (świadomie tylko zwarcie, jak timeSinceMeleeCombat — ostrzał
-  // dystansowy jest już liczony osobno przez same obrażenia)
+  // (świadomie tylko zwarcie — ostrzał dystansowy jest już liczony osobno
+  // przez same obrażenia)
   const meleeAttackersOf = new Map(); // target -> Set(attacker)
   for (const { attacker, target } of attacks) {
     if (!meleeAttackersOf.has(target)) meleeAttackersOf.set(target, new Set());
@@ -2878,20 +2900,23 @@ function resolveCombat(allUnits, dt) {
     }
   }
 
-  // Osobny zegar zwarcia (nie ostrzału) — napędza spowolnienie w walce
-  // wręcz. `attacks` zawiera wyłącznie starcia wręcz (w tym dystansowych
-  // zmuszonych do zwarcia), nigdy trafień pociskiem.
-  const meleeThisFrame = new Set();
-  for (const { attacker, target } of attacks) {
-    meleeThisFrame.add(attacker);
-    meleeThisFrame.add(target);
-  }
+  // Kierunek ruchu względem najbliższego wroga — potrzebne WYŁĄCZNIE, gdy
+  // jednostka jest świeżo w walce (patrz UNIT_TYPES.disengageSpeed w
+  // updateUnit). LOKALNY kierunek (iloczyn skalarny wektora do
+  // NAJBLIŻSZEGO punktu ścieżki z wektorem "od wroga"), nie odległość do
+  // odległego, końcowego punktu trasy — inaczej trasa prowadząca "przez"
+  // wroga do dalekiego celu fałszywie wygląda jak oddalanie się, bo
+  // sam odległy punkt końcowy jest daleko od wroga.
   for (const u of allUnits) {
-    if (meleeThisFrame.has(u)) {
-      u.timeSinceMeleeCombat = 0;
-    } else {
-      u.timeSinceMeleeCombat += dt;
-    }
+    if (u.hp <= 0 || u.path.length === 0 || u.timeSinceCombat >= MELEE_SLOW_DURATION) { u.disengaging = false; continue; }
+    const { enemy } = findNearestEnemyAnyRange(u, allUnits);
+    if (!enemy) { u.disengaging = false; continue; }
+    const next = u.path[0];
+    const stepX = next.x - u.x, stepY = next.y - u.y;
+    const stepLen = Math.hypot(stepX, stepY) || 1;
+    const awayX = u.x - enemy.x, awayY = u.y - enemy.y;
+    const dot = (stepX / stepLen) * awayX + (stepY / stepLen) * awayY;
+    u.disengaging = dot > 0;
   }
 
   updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHitAttackersOf, dt);
@@ -2958,7 +2983,9 @@ function updateTradeRoutes(dt) {
   for (const city of CITIES) {
     const hasRoute = tradeRoutes.some(r => r.cityAId === city.id || r.cityBId === city.id);
     if (!hasRoute) continue;
-    city.timeSinceLastConvoy += dt;
+    // Wróg w strefie miasta spowalnia też wysyłkę konwojów — patrz CITY_PRODUCTION_SLOWDOWN_MULTIPLIER
+    const slowdown = isEnemyInCityZone(city) ? CITY_PRODUCTION_SLOWDOWN_MULTIPLIER : 1;
+    city.timeSinceLastConvoy += dt * slowdown;
     if (city.timeSinceLastConvoy >= CITY_LEVELS[city.level].spawnInterval) {
       city.timeSinceLastConvoy = 0;
       spawnCityConvoy(city);
@@ -3195,7 +3222,10 @@ function updateEconomy(dt) {
 
   for (const city of CITIES) {
     if (city.queue.length > 0) {
-      city.queue[0].remainingTime -= dt;
+      // Wróg w strefie miasta spowalnia produkcję (walka o miasto), wraca
+      // do normy dopiero gdy strefa jest znów całkowicie czysta od wroga
+      const slowdown = isEnemyInCityZone(city) ? CITY_PRODUCTION_SLOWDOWN_MULTIPLIER : 1;
+      city.queue[0].remainingTime -= dt * slowdown;
       if (city.queue[0].remainingTime <= 0) {
         const { type } = city.queue.shift();
         const unit = spawnUnit(type, city.col, city.row, city.owner);
@@ -3781,7 +3811,12 @@ function drawUnitIcon(u, cfg) {
 function drawUnits(now) {
   for (const u of units) {
     const cfg = UNIT_TYPES[u.type];
-    if (u.path.length > 0) {
+    // Podgląd trasy — WYŁĄCZNIE dla własnych jednostek (chyba że tryb
+    // debug, klawisz D). Rysowanie tego dla jednostek wroga ujawniałoby
+    // dokładnie dokąd AI je prowadzi, zanim tam dotrą — zakazany przeciek
+    // jego zamiarów (patrz CLAUDE.md: gracz widzi tylko pozycje i ruch
+    // wroga, nigdy jego rozkazy).
+    if (u.path.length > 0 && (u.owner === OWNED_PLAYER || debugMode)) {
       ctx.strokeStyle = 'rgba(255,255,255,0.35)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -3904,7 +3939,7 @@ function drawUnits(now) {
         ctx.fillText(shotsLabel, u.x, shotsY);
       }
     }
-    if (cfg.ranged && u.targetPriority && u.targetPriority !== 'NEAREST') {
+    if (cfg.ranged && u.targetPriority && u.targetPriority !== 'NEAREST' && (u.owner === OWNED_PLAYER || debugMode)) {
       const letter = { ENEMY_ARTILLERY: 'A', HEAVY_UNITS: 'H', WEAKEST: 'W' }[u.targetPriority];
       const bx = u.x + cfg.drawRadius * 0.7, by = u.y - cfg.drawRadius * 0.7;
       ctx.beginPath();
