@@ -135,10 +135,86 @@
   }
   #eventPanel .row:hover { background: rgba(255,255,255,0.1); }
   #eventPanel .empty { color: #888; }
+
+  /* ============================================================
+     Menu, ekrany pomocnicze (trudność/ustawienia/instrukcja) i pauza —
+     wszystkie pełnoekranowe overlaye dzielą jeden szkielet wizualny.
+     Kolejność z-index: gameOverOverlay(100) < pauseOverlay(110) <
+     .fullscreenOverlay(150) — instrukcja otwarta z pauzy ma się pokazać
+     NAD przyciemnieniem pauzy, nie pod nim.
+     ============================================================ */
+  .fullscreenOverlay {
+    position: fixed; inset: 0; z-index: 150; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(10,10,10,0.95); color: #eee; font: 14px monospace;
+    overflow-y: auto; padding: 24px 12px;
+  }
+  .fullscreenOverlay.visible { display: flex; }
+  .menuPanel {
+    background: rgba(20,20,20,0.95); padding: 28px 36px; border-radius: 8px;
+    border: 1px solid #555; max-width: 640px; width: 100%; text-align: center;
+  }
+  .menuPanel.wide { max-width: 760px; text-align: left; }
+  .menuPanel h1 { color: #ffcc66; margin: 0 0 6px; font-size: 26px; }
+  .menuPanel h2 { color: #ffcc66; margin: 0 0 16px; font-size: 20px; }
+  .menuPanel .subtitle { color: #999; margin: 0 0 22px; font-size: 12px; }
+  .menuButton {
+    display: block; width: 100%; margin: 8px 0; padding: 12px 16px;
+    background: #2a2a2a; color: #eee; border: 1px solid #555; border-radius: 5px;
+    font: 14px monospace; cursor: pointer; text-align: left;
+  }
+  .menuButton:hover { background: #3a3a3a; border-color: #777; }
+  .menuButton .desc { display: block; color: #999; font-size: 11px; margin-top: 3px; }
+  .menuBackRow { margin-top: 18px; text-align: center; }
+  .menuBackRow .menuButton { display: inline-block; width: auto; padding: 8px 20px; }
+  .difficultyGrid {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 0 0 18px;
+  }
+  .difficultyCard {
+    border: 2px solid #555; border-radius: 6px; padding: 12px; cursor: pointer;
+    background: #232323; text-align: left;
+  }
+  .difficultyCard:hover { border-color: #888; }
+  .difficultyCard.selected { border-color: #ffcc66; background: #2e2a1c; }
+  .difficultyCard h3 { margin: 0 0 6px; color: #ffcc66; font-size: 14px; }
+  .difficultyCard p { margin: 0; color: #bbb; font-size: 11px; line-height: 1.5; }
+  .settingsRow {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 0; border-bottom: 1px solid #3a3a3a;
+  }
+  .settingsRow:last-of-type { border-bottom: none; }
+  .settingsRow label { color: #eee; font-size: 13px; }
+  .settingsRow .settingsHint { display: block; color: #888; font-size: 10px; margin-top: 2px; }
+  .howToSection { margin-bottom: 16px; }
+  .howToSection h3 { color: #ffcc66; margin: 0 0 6px; font-size: 14px; }
+  .howToSection p, .howToSection li { color: #ccc; font-size: 12px; line-height: 1.6; margin: 0 0 4px; }
+  .howToSection ul { margin: 4px 0; padding-left: 18px; }
+
+  #pauseButton {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 90; color: #eee; font: 12px monospace; cursor: pointer;
+    background: rgba(0,0,0,0.7); padding: 6px 14px; border-radius: 4px;
+    border: 1px solid #555; display: none;
+  }
+  #pauseButton:hover { background: rgba(30,30,30,0.9); }
+  #pauseOverlay {
+    position: fixed; inset: 0; z-index: 110; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.6); color: #eee; font: 14px monospace;
+  }
+  #pauseOverlay.visible { display: flex; }
+  #pauseOverlay > div {
+    background: rgba(20,20,20,0.95); padding: 28px 40px; border-radius: 8px;
+    border: 1px solid #555; text-align: center;
+  }
+  #pauseOverlay h2 { color: #ffcc66; margin: 0 0 18px; font-size: 22px; letter-spacing: 2px; }
 </style>
 </head>
 <body>
-<div id="aiDifficultyToggleBtn">⚙ AI</div>
+<!-- Elementy HUD ukryte do czasu startGame() (patrz JS) — gracz nie ma
+     jeszcze żadnego meczu w toku, gdy widzi menu główne. -->
+<div id="pauseButton" title="Zatrzymuje czas gry, ale rozkazy nadal można wydawać — wykonają się po wznowieniu. Gra bez pauzy jest trudniejsza, ale bardziej wymagająca.">⏸ Pauza (Spacja)</div>
+<div id="aiDifficultyToggleBtn" style="display:none;">⚙ AI</div>
 <div id="aiDifficultyPanel" style="display:none;">
   <button id="aiDifficultyCloseBtn" title="Zamknij">✕</button>
   <h4>Poziom trudności AI</h4>
@@ -148,7 +224,7 @@
   <label><input type="radio" name="aiDifficultyLevel" value="EXPERT">Ekspert</label>
   <p>Ta sama logika decyzyjna na każdym poziomie — różnią się wyłącznie parametrami (szybkość reakcji, dokładność formacji, progi podejmowania walki, częstość sondowania/rajdów). Żaden poziom nie dostaje bonusów do złota/produkcji/obrażeń ani wiedzy o niewidocznych jednostkach. Można przełączać w dowolnym momencie meczu.</p>
 </div>
-<div id="legendToggleBtn">☰ Legenda</div>
+<div id="legendToggleBtn" style="display:none;">☰ Legenda</div>
 <div id="legendPanel" style="display:none;">
   <button id="legendCloseBtn" title="Zamknij legendę">✕</button>
   <h4>Sterowanie</h4>
@@ -188,15 +264,141 @@
   <div class="row"><span class="swatch" style="background:#c2a76c;"></span>Wzgórza — spowolnienie zależne od typu, dystansowi +40% zasięgu</div>
 </div>
 <div id="unitStatsTooltip"></div>
-<div id="eventToggleBtn">📋 Zdarzenia<span class="badge"></span></div>
+<div id="eventToggleBtn" style="display:none;">📋 Zdarzenia<span class="badge"></span></div>
 <div id="eventPanel" style="display:none;">
   <button id="eventCloseBtn" title="Zamknij zdarzenia">✕</button>
   <div class="title">Zdarzenia</div>
   <div id="eventPanelList"><div class="empty">(brak)</div></div>
 </div>
-<div id="goldPanel">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)<span id="lastCityBadge" style="display:none; color:#ffcc66;"><br>⚠ OSTATNIE MIASTO — wzmocniony dochód</span></div>
+<div id="goldPanel" style="display:none;">Złoto: <span id="goldAmount">0</span> (<span id="goldRateText">+0.0</span>/s)<span id="lastCityBadge" style="display:none; color:#ffcc66;"><br>⚠ OSTATNIE MIASTO — wzmocniony dochód</span></div>
 <div id="alertBanner" style="display:none;"></div>
 <div id="gameOverOverlay" style="display:none;"></div>
+
+<!-- ============================================================
+     Menu główne — ekran startowy. Widoczne domyślnie (bez JS jeszcze
+     wykonanego), canvas/HUD ukryte pod spodem aż do startGame().
+     ============================================================ -->
+<div id="mainMenuOverlay" class="fullscreenOverlay visible">
+  <div class="menuPanel">
+    <h1>WarConvoy</h1>
+    <p class="subtitle">prototyp ruchu — dowodzenie na poziomie operacyjnym</p>
+    <button class="menuButton" id="menuOnlineBtn">Gra online
+      <span class="desc">Lista lobby — multiplayer w przygotowaniu</span>
+    </button>
+    <button class="menuButton" id="menuAiBtn">Gra z AI
+      <span class="desc">Mecz przeciwko sztucznemu dowódcy — wybór poziomu trudności</span>
+    </button>
+    <button class="menuButton" id="menuSettingsBtn">Ustawienia
+      <span class="desc">Prędkość gry, dźwięk, tryb debug</span>
+    </button>
+    <button class="menuButton" id="menuHowToBtn">Jak grać
+      <span class="desc">Sterowanie, walka, ekonomia, warunek zwycięstwa</span>
+    </button>
+  </div>
+</div>
+
+<!-- ============================================================
+     Wybór poziomu trudności AI — wyłącznie UI, ZERO zmian w ai.js.
+     Opisy pod kartami oparte na realnych wartościach AI_LEVELS.
+     ============================================================ -->
+<div id="difficultySelectOverlay" class="fullscreenOverlay">
+  <div class="menuPanel wide">
+    <h2 style="text-align:center;">Wybierz poziom trudności AI</h2>
+    <div class="difficultyGrid" id="difficultyGrid">
+      <div class="difficultyCard" data-level="EASY">
+        <h3>Łatwy</h3>
+        <p>Reaguje z dużym opóźnieniem (kilkanaście sekund). Często atakuje bez przewagi, zostawia artylerię bez osłony, zapomina o rotacji rannych. Formacje niedokładne, rzadko flankuje, prawie nie utrzymuje wysuniętych pozycji.</p>
+      </div>
+      <div class="difficultyCard selected" data-level="MEDIUM">
+        <h3>Średni</h3>
+        <p>Reaguje po kilku sekundach. Poprawne formacje i podstawowe wykorzystanie terenu, ale zdarzają mu się przeoczenia (np. nie zauważy od razu ataku na konwój). Czasem flankuje, zwykle najpierw się konsoliduje przed starciem.</p>
+      </div>
+      <div class="difficultyCard" data-level="HARD">
+        <h3>Trudny</h3>
+        <p>Reaguje szybko. Niemal zawsze poprawne formacje i wykorzystanie terenu. Aktywnie szuka słabych punktów — odsłoniętej artylerii, samotnych jednostek, niebronionych szlaków. Regularnie flankuje kawalerią i utrzymuje dwie wysunięte pozycje jednocześnie.</p>
+      </div>
+      <div class="difficultyCard" data-level="EXPERT">
+        <h3>Ekspert</h3>
+        <p>Reaguje niemal natychmiast. Praktycznie bezbłędne formacje, zawsze osłania artylerię. Stale sonduje obronę i nęka ekonomię (konwoje, szlaki), utrzymuje trzy wysunięte pozycje naraz. Nadal zdarzają mu się rzadkie błędy — to nie jest przeciwnik idealny.</p>
+      </div>
+    </div>
+    <button class="menuButton" id="difficultyStartBtn" style="text-align:center;">Rozpocznij</button>
+    <div class="menuBackRow"><button class="menuButton" id="difficultyBackBtn">Wstecz</button></div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Ustawienia — renderowane deklaratywnie z SETTINGS_SCHEMA (JS),
+     zapisywane w localStorage. Dodanie kolejnej opcji = jeden wpis
+     w tej tablicy, bez nowego HTML.
+     ============================================================ -->
+<div id="settingsOverlay" class="fullscreenOverlay">
+  <div class="menuPanel">
+    <h2>Ustawienia</h2>
+    <div id="settingsRows"></div>
+    <div class="menuBackRow"><button class="menuButton" id="settingsBackBtn">Zamknij</button></div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Instrukcja "Jak grać" — dostępna z menu głównego I z pauzy (ten
+     sam overlay, przycisk "Zamknij" wraca tam, skąd przyszedł —
+     patrz howToPlayReturnTarget w JS).
+     ============================================================ -->
+<div id="howToPlayOverlay" class="fullscreenOverlay">
+  <div class="menuPanel wide">
+    <h2>Jak grać</h2>
+    <div class="howToSection">
+      <h3>Sterowanie</h3>
+      <ul>
+        <li>LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = zaznaczenie prostokątem (Shift = dodaj)</li>
+        <li>PPM klik na pustym terenie = idź do punktu najszybszą trasą</li>
+        <li>PPM przeciągnięcie OD zaznaczonej jednostki = tryb TRASA — jednostki idą po narysowanej krzywej, nie na skróty</li>
+        <li>PPM przeciągnięcie po pustym terenie = tryb FRONT — jednostki rozstawiają się równomiernie wzdłuż linii</li>
+        <li>PPM na jednostce wroga = rozkaz ataku na konkretny cel</li>
+        <li>PPM z własnego miasta poza jego marker = flaga zbiórki dla nowo wyprodukowanych jednostek</li>
+        <li>PPM przeciągnięcie z jednego własnego miasta do innego = szlak handlowy</li>
+        <li>Tab = zmień priorytet celu zaznaczonych jednostek dystansowych</li>
+      </ul>
+    </div>
+    <div class="howToSection">
+      <h3>Walka i role jednostek</h3>
+      <p>Walka jest automatyczna — dowodzisz grupami, nie pojedynczymi starciami. Łucznicy i działa rzutują siłę z dystansu, ale są słabe w zwarciu. Piechota lekka i ciężka trzymają linię. Kawaleria jest szybka i służy do flankowania.</p>
+      <p>Teren zmienia prędkość i obrażenia: las osłabia dystansowych i kawalerię, wzgórza dają dystansowym +40% zasięgu (ale spowalniają, zwłaszcza działa i kawalerię), woda drastycznie tnie obrażenia, góry są nieprzechodnie.</p>
+      <p>Atak z boku lub od tyłu daje bonus obrażeń, malejący, im dłużej trwa starcie — zaskoczenie działa najmocniej na początku.</p>
+    </div>
+    <div class="howToSection">
+      <h3>Morale, panika i Last Stand</h3>
+      <p>Przewaga liczebna, atak z flanki/tyłu i okrążenie łamią morale znacznie szybciej niż uczciwe starcie 1 na 1. Złamana jednostka panikuje — ucieka i nie słucha rozkazów — albo (rzadziej, głównie ciężka piechota) staje do desperackiej obrony (Last Stand) zamiast uciekać.</p>
+    </div>
+    <div class="howToSection">
+      <h3>Leczenie</h3>
+      <p>Jednostki regenerują HP wyłącznie w strefie własnego miasta (i nie na wodzie) — trzeba rotować uszkodzone oddziały przez zaplecze, nie da się leczyć na linii frontu.</p>
+    </div>
+    <div class="howToSection">
+      <h3>Ekonomia</h3>
+      <p>Miasta są predefiniowane na mapie — gracz ich nie buduje. Każde miasto ma poziom (1-5, płatne ulepszenia) i własny, niezależny licznik konwojów. Szlaki handlowe łączą Twoje miasta; konwój losuje trasę spośród dostępnych szlaków i wiezie złoto. Wrogie jednostki mogą przechwycić konwój w drodze.</p>
+    </div>
+    <div class="howToSection">
+      <h3>Przejmowanie miast i warunek zwycięstwa</h3>
+      <p>Miasto bez obrońcy w swojej strefie, oblegane przez jednostki wroga, po pewnym czasie zmienia właściciela — obecność choćby jednego obrońcy zatrzymuje ten proces. Utrata wszystkich miast kończy mecz przegraną.</p>
+    </div>
+    <div class="menuBackRow"><button class="menuButton" id="howToBackBtn">Zamknij</button></div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Pauza (tylko w grze z AI) — symulacja zamrożona, rozkazy nadal
+     można wydawać (wykonają się po wznowieniu), patrz gameLoop.
+     ============================================================ -->
+<div id="pauseOverlay">
+  <div>
+    <h2>PAUZA</h2>
+    <button class="menuButton" id="pauseResumeBtn">Wznów (Spacja)</button>
+    <button class="menuButton" id="pauseHowToBtn">Jak grać</button>
+  </div>
+</div>
+
 <div id="cityPanel" style="display:none;">
   <div id="cityPanelTitle"></div>
   <div id="cityUpgradeSection"></div>
@@ -767,7 +969,7 @@ let stats = {
   P1: { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 },
   P2: { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 },
 };
-const matchStartTime = performance.now();
+let matchStartTime = performance.now(); // nadpisywane przez startGame() w momencie faktycznego startu meczu (patrz sekcja MENU/START GRY)
 let gameOver = false;
 
 // Szlaki handlowe — patrz sekcja CONFIG (TRADE_ROUTE_*, CITY_LEVELS) i
@@ -858,10 +1060,11 @@ function spawnUnit(type, col, row, owner) {
 }
 
 // Dwie armie po przeciwnych krańcach mapy, na sprawdzonym przechodnim
-// terenie (pole). P1 (niebieski, sterowany) po lewej, P2 (czerwony,
-// statyczny — bez AI) po prawej. Pomijane w trybie headless — narzędzie
-// balansu (window.BalanceSim) spawnuje własne, zdefiniowane scenariuszem armie.
-if (!HEADLESS) {
+// terenie (pole). P1 (niebieski, sterowany) po lewej, P2 (czerwony, AI)
+// po prawej. Wołane WYŁĄCZNIE przez startGame() (patrz niżej, sekcja
+// MENU/START GRY) — nigdy w trybie headless, gdzie narzędzie balansu
+// (window.BalanceSim) spawnuje własne, zdefiniowane scenariuszem armie.
+function spawnDefaultArmies() {
   spawnUnit('ARCHER', 1, 8, 'P1');
   spawnUnit('ARCHER', 2, 8, 'P1');
   spawnUnit('CANNON', 1, 9, 'P1');
@@ -1777,14 +1980,25 @@ window.addEventListener('keydown', (e) => {
       u.targetPriority = TARGET_PRIORITIES[(i + 1) % TARGET_PRIORITIES.length];
     }
   } else if (e.key === 'd' || e.key === 'D') {
-    // tryb debug — liczba morale nad każdą jednostką, na stałe do balansowania
+    // tryb debug — liczba morale nad każdą jednostką, na stałe do balansowania.
+    // Mirror do settings/localStorage, żeby checkbox w Ustawieniach i ten
+    // skrót nigdy nie rozjechały się ze sobą (patrz sekcja MENU/START GRY).
     debugMode = !debugMode;
+    settings.debugMode = debugMode;
+    saveSettings();
   } else if (e.key === 'Delete' || e.key === 'Backspace') {
     if (selectedTradeRoute) {
       e.preventDefault();
       tradeRoutes = tradeRoutes.filter(r => r !== selectedTradeRoute);
       selectedTradeRoute = null;
       if (selectedCity) buildCityRoutesList(selectedCity);
+    }
+  } else if (e.code === 'Space') {
+    // Pauza — tylko w grze z AI, gdy mecz faktycznie trwa (nie w menu, nie
+    // po końcu gry, nie w "grze online" — patrz togglePause, sekcja MENU/START GRY).
+    if (gameConfig && gameConfig.mode === 'AI' && !gameOver) {
+      e.preventDefault();
+      togglePause();
     }
   }
 });
@@ -3279,9 +3493,16 @@ function triggerGameOver(winner, loser) {
         <tr><td>Przejęte miasta</td><td>${stats[winner].citiesCaptured}</td><td>${stats[loser].citiesCaptured}</td></tr>
         <tr><td>Zarobione złoto</td><td>${Math.round(stats[winner].goldEarned)}</td><td>${Math.round(stats[loser].goldEarned)}</td></tr>
       </table>
+      <button class="menuButton" id="gameOverMenuBtn" style="margin-top:16px;">Powrót do menu</button>
     </div>
   `;
   gameOverOverlayEl.style.display = 'flex';
+  // Prościej i bezpieczniej niż ręczny reset dziesiątek zmiennych stanu
+  // (units/CITIES/gold/stats/tradeRoutes/kamera/stan AI...) — przeładowanie
+  // strony daje dokładnie ten sam efekt co "powrót do menu": świeży,
+  // spójny stan, menu główne jako pierwszy ekran. Ustawienia przetrwają
+  // (localStorage), patrz sekcja MENU/START GRY.
+  document.getElementById('gameOverMenuBtn').onclick = () => location.reload();
 }
 
 // Dochód bazowy z posiadanych miast, tempo dochodu do UI, produkcja
@@ -4270,24 +4491,37 @@ function drawFrontTicks(pts, color) {
 let aiTickCallbacks = [];
 function onAITick(fn) { aiTickCallbacks.push(fn); }
 
+// Pauza (tylko w grze z AI, patrz sekcja MENU/START GRY): zamraża
+// WYŁĄCZNIE ten blok symulacji poniżej — rysowanie i obsługa myszy/
+// klawiatury (a więc wydawanie rozkazów: selekcja, TRASA/FRONT, rozkaz
+// ataku, flaga zbiórki, produkcja, szlaki) działają bez zmian, bo są
+// osobnymi listenerami mutującymi stan (unit.path/city.queue/...), nie
+// częścią tej pętli. Rozkaz wydany w pauzie po prostu czeka na
+// wznowienie — nie potrzeba osobnej "kolejki rozkazów".
+let paused = false;
+let gameSpeedMultiplier = 1; // nadpisywane przez applySettings() z Ustawień
+
 let lastTime = performance.now();
 function gameLoop(now) {
   if (gameOver) return; // mecz zakończony — ostatnia klatka zamrożona pod #gameOverOverlay, pętla się nie wznawia
 
-  const dt = Math.min(0.05, (now - lastTime) / 1000);
-  lastTime = now;
+  const rawDt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now; // aktualizowane ZAWSZE, także w pauzie — inaczej dt "skoczyłby" o czas pauzy przy wznowieniu
 
-  updateAttackOrders();
-  for (const u of units) updateUnit(u, dt);
-  for (let i = 0; i < COLLISION_RESOLVE_ITERATIONS; i++) resolveCollisions(units);
-  units = resolveCombat(units, dt);
-  updateEconomy(dt);
-  updateTradeRoutes(dt);
-  updateConvoys(now);
-  updateConvoyCaptures(dt, now);
-  updateCityCaptures(dt, now);
-  for (const fn of aiTickCallbacks) fn(dt, now);
-  updateGoldPanel();
+  if (!paused) {
+    const dt = rawDt * gameSpeedMultiplier;
+    updateAttackOrders();
+    for (const u of units) updateUnit(u, dt);
+    for (let i = 0; i < COLLISION_RESOLVE_ITERATIONS; i++) resolveCollisions(units);
+    units = resolveCombat(units, dt);
+    updateEconomy(dt);
+    updateTradeRoutes(dt);
+    updateConvoys(now);
+    updateConvoyCaptures(dt, now);
+    updateCityCaptures(dt, now);
+    for (const fn of aiTickCallbacks) fn(dt, now);
+    updateGoldPanel();
+  }
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
@@ -4313,7 +4547,10 @@ function gameLoop(now) {
 
   requestAnimationFrame(gameLoop);
 }
-if (!HEADLESS) requestAnimationFrame(gameLoop);
+// Pętla NIE startuje tu automatycznie — dopiero startGame() (menu główne,
+// sekcja MENU/START GRY na końcu pliku) ją uruchamia, po wyborze trybu
+// (i poziomu AI). W HEADLESS w ogóle się nie uruchamia — balance-sim.js
+// woła funkcje wprost.
 
 // ============================================================
 // NARZĘDZIE BALANSU (window.BalanceSim) — wyłącznie do testowania,
@@ -4661,6 +4898,179 @@ window.GameAPI = {
   issueMoveOrder, issueRouteOrder, issueFrontOrder, queueProduction, upgradeCity, createTradeRoute, setTargetPriority,
   onTick: onAITick,
 };
+
+// ============================================================
+// MENU / START GRY — jedyne miejsce, gdzie tryb rozgrywki, kto jest AI i
+// poziom trudności wpływają na to, co w ogóle startuje (pkt 6 z prośby:
+// stan gry oddzielony od jej uruchamiania). Dziś obsługiwany tylko
+// {mode:'AI', aiDifficulty}, ale to jest punkt zaczepienia na przyszłość
+// (np. {mode:'ONLINE', ...}) bez przepisywania silnika/AI powyżej.
+// ============================================================
+
+// --- Ustawienia: deklaratywny opis + localStorage ---
+const SETTINGS_STORAGE_KEY = 'warconvoy_settings';
+const SETTINGS_SCHEMA = [
+  { key: 'gameSpeed', label: 'Prędkość gry', type: 'select', options: [0.5, 1, 1.5, 2], default: 1, format: (v) => `${v}×` },
+  { key: 'volume', label: 'Głośność', type: 'range', min: 0, max: 100, default: 50, disabled: true, hint: 'Dźwięk jeszcze niezaimplementowany — suwak przygotowany na przyszłość' },
+  { key: 'debugMode', label: 'Tryb debug', type: 'checkbox', default: false, hint: 'To samo co klawisz D — liczby morale nad jednostkami' },
+];
+
+function loadSettings() {
+  const defaults = {};
+  for (const s of SETTINGS_SCHEMA) defaults[s.key] = s.default;
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw) return { ...defaults, ...JSON.parse(raw) };
+  } catch (e) { /* localStorage niedostępne/uszkodzone — zostają wartości domyślne */ }
+  return defaults;
+}
+let settings = loadSettings();
+
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); } catch (e) { /* ustawienia po prostu nie przetrwają sesji */ }
+}
+
+// Jedyne miejsce, gdzie wartość z `settings` trafia do zmiennej faktycznie
+// czytanej przez silnik (gameSpeedMultiplier w gameLoop, debugMode w
+// dziesiątkach miejsc renderowania/logiki) — dodanie nowej opcji w
+// SETTINGS_SCHEMA zwykle wymaga też jednej linijki tutaj.
+function applySettings() {
+  gameSpeedMultiplier = settings.gameSpeed;
+  debugMode = settings.debugMode;
+}
+applySettings(); // od razu przy wczytaniu strony, jeszcze przed startem meczu
+
+function renderSettingsPanel() {
+  const container = document.getElementById('settingsRows');
+  container.innerHTML = '';
+  for (const s of SETTINGS_SCHEMA) {
+    const row = document.createElement('div');
+    row.className = 'settingsRow';
+    const labelWrap = document.createElement('div');
+    labelWrap.innerHTML = `<label>${s.label}</label>` + (s.hint ? `<span class="settingsHint">${s.hint}</span>` : '');
+    row.appendChild(labelWrap);
+
+    let input;
+    if (s.type === 'select') {
+      input = document.createElement('select');
+      for (const opt of s.options) {
+        const o = document.createElement('option');
+        o.value = String(opt);
+        o.textContent = s.format ? s.format(opt) : String(opt);
+        if (settings[s.key] === opt) o.selected = true;
+        input.appendChild(o);
+      }
+      input.onchange = () => { settings[s.key] = parseFloat(input.value); saveSettings(); applySettings(); };
+    } else if (s.type === 'range') {
+      input = document.createElement('input');
+      input.type = 'range'; input.min = s.min; input.max = s.max; input.value = settings[s.key];
+      input.disabled = !!s.disabled;
+      input.oninput = () => { settings[s.key] = parseFloat(input.value); saveSettings(); applySettings(); };
+    } else if (s.type === 'checkbox') {
+      input = document.createElement('input');
+      input.type = 'checkbox'; input.checked = !!settings[s.key];
+      input.onchange = () => { settings[s.key] = input.checked; saveSettings(); applySettings(); };
+    }
+    row.appendChild(input);
+    container.appendChild(row);
+  }
+}
+
+// --- Nawigacja między ekranami (menu/trudność/ustawienia/instrukcja/pauza) ---
+const mainMenuOverlayEl = document.getElementById('mainMenuOverlay');
+const difficultySelectOverlayEl = document.getElementById('difficultySelectOverlay');
+const settingsOverlayEl = document.getElementById('settingsOverlay');
+const howToPlayOverlayEl = document.getElementById('howToPlayOverlay');
+const pauseOverlayEl = document.getElementById('pauseOverlay');
+const pauseButtonEl = document.getElementById('pauseButton');
+
+function showOverlay(el) { el.classList.add('visible'); }
+function hideOverlay(el) { el.classList.remove('visible'); }
+
+let howToPlayReturnTarget = 'menu'; // 'menu' | 'pause' — dokąd wraca przycisk Zamknij w instrukcji
+
+document.getElementById('menuOnlineBtn').onclick = () => {
+  alert('Gra online jest w przygotowaniu — na razie dostępna jest wyłącznie gra z AI.');
+};
+document.getElementById('menuAiBtn').onclick = () => {
+  hideOverlay(mainMenuOverlayEl);
+  showOverlay(difficultySelectOverlayEl);
+};
+document.getElementById('menuSettingsBtn').onclick = () => {
+  renderSettingsPanel();
+  hideOverlay(mainMenuOverlayEl);
+  showOverlay(settingsOverlayEl);
+};
+document.getElementById('menuHowToBtn').onclick = () => {
+  howToPlayReturnTarget = 'menu';
+  hideOverlay(mainMenuOverlayEl);
+  showOverlay(howToPlayOverlayEl);
+};
+document.getElementById('settingsBackBtn').onclick = () => {
+  hideOverlay(settingsOverlayEl);
+  showOverlay(mainMenuOverlayEl);
+};
+document.getElementById('howToBackBtn').onclick = () => {
+  hideOverlay(howToPlayOverlayEl);
+  if (howToPlayReturnTarget === 'menu') showOverlay(mainMenuOverlayEl);
+  // 'pause' -> pauseOverlay jest cały czas widoczny POD spodem (niższy
+  // z-index), instrukcja go tylko przesłania — nic więcej nie trzeba robić.
+};
+
+// --- Wybór poziomu trudności AI (wyłącznie UI — patrz ai.js dla logiki) ---
+let selectedDifficulty = 'MEDIUM';
+const difficultyGridEl = document.getElementById('difficultyGrid');
+for (const card of difficultyGridEl.querySelectorAll('.difficultyCard')) {
+  card.onclick = () => {
+    selectedDifficulty = card.dataset.level;
+    for (const c of difficultyGridEl.querySelectorAll('.difficultyCard')) c.classList.toggle('selected', c === card);
+  };
+}
+document.getElementById('difficultyBackBtn').onclick = () => {
+  hideOverlay(difficultySelectOverlayEl);
+  showOverlay(mainMenuOverlayEl);
+};
+document.getElementById('difficultyStartBtn').onclick = () => {
+  hideOverlay(difficultySelectOverlayEl);
+  startGame({ mode: 'AI', aiDifficulty: selectedDifficulty });
+};
+
+// --- Pauza (tylko tryb 'AI', patrz gameLoop dla mechaniki zamrożenia) ---
+function togglePause() {
+  paused = !paused;
+  pauseButtonEl.textContent = paused ? '▶ Wznów (Spacja)' : '⏸ Pauza (Spacja)';
+  if (paused) showOverlay(pauseOverlayEl); else hideOverlay(pauseOverlayEl);
+}
+pauseButtonEl.onclick = () => {
+  if (gameConfig && gameConfig.mode === 'AI' && !gameOver) togglePause();
+};
+document.getElementById('pauseResumeBtn').onclick = () => togglePause();
+document.getElementById('pauseHowToBtn').onclick = () => {
+  howToPlayReturnTarget = 'pause';
+  showOverlay(howToPlayOverlayEl); // pauseOverlay zostaje widoczny pod spodem — instrukcja go tylko przesłania
+};
+
+// --- Start meczu ---
+let gameConfig = null; // {mode:'AI', aiDifficulty} — jedyny "parametr startowy" gry na dziś
+
+function startGame(config) {
+  gameConfig = config;
+  spawnDefaultArmies();
+  matchStartTime = performance.now();
+  if (config.mode === 'AI' && typeof window.setAIDifficulty === 'function') {
+    window.setAIDifficulty(config.aiDifficulty);
+  }
+  document.getElementById('goldPanel').style.display = 'block';
+  legendToggleBtnEl.style.display = 'block';
+  eventToggleBtnEl.style.display = 'block';
+  aiDifficultyToggleBtnEl.style.display = config.mode === 'AI' ? 'block' : 'none';
+  pauseButtonEl.style.display = config.mode === 'AI' ? 'block' : 'none';
+  requestAnimationFrame(gameLoop);
+}
+
+// Tryb headless (balance-sim) całkowicie pomija menu — narzędzie testowe
+// woła funkcje wprost i nigdy nie oczekuje interakcji z tym overlayem.
+if (HEADLESS) hideOverlay(mainMenuOverlayEl);
 </script>
 <script type="module" src="ai.js"></script>
 </body>
