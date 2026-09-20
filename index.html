@@ -142,8 +142,11 @@
 <div id="aiDifficultyPanel" style="display:none;">
   <button id="aiDifficultyCloseBtn" title="Zamknij">✕</button>
   <h4>Poziom trudności AI</h4>
-  <label><input type="checkbox" id="aiDifficultyHardCheckbox">Trudniejsze AI</label>
-  <p>Domyślnie: dotychczasowe zachowanie AI, bez zmian. Po zaznaczeniu AI lepiej ustawia formacje, chroni artylerię, koncentruje siły przed starciem, dobiera skład armii pod przeciwnika i trzyma większy odwód. Agresja i tempo pozostają takie same — to nie jest silniejszy/oszukujący przeciwnik, tylko sprawniej dowodzony. Można przełączać w dowolnym momencie meczu.</p>
+  <label><input type="radio" name="aiDifficultyLevel" value="EASY">Łatwy</label>
+  <label><input type="radio" name="aiDifficultyLevel" value="MEDIUM" checked>Średni</label>
+  <label><input type="radio" name="aiDifficultyLevel" value="HARD">Trudny</label>
+  <label><input type="radio" name="aiDifficultyLevel" value="EXPERT">Ekspert</label>
+  <p>Ta sama logika decyzyjna na każdym poziomie — różnią się wyłącznie parametrami (szybkość reakcji, dokładność formacji, progi podejmowania walki, częstość sondowania/rajdów). Żaden poziom nie dostaje bonusów do złota/produkcji/obrażeń ani wiedzy o niewidocznych jednostkach. Można przełączać w dowolnym momencie meczu.</p>
 </div>
 <div id="legendToggleBtn">☰ Legenda</div>
 <div id="legendPanel" style="display:none;">
@@ -1451,7 +1454,7 @@ const gameOverOverlayEl = document.getElementById('gameOverOverlay');
 const aiDifficultyToggleBtnEl = document.getElementById('aiDifficultyToggleBtn');
 const aiDifficultyPanelEl = document.getElementById('aiDifficultyPanel');
 const aiDifficultyCloseBtnEl = document.getElementById('aiDifficultyCloseBtn');
-const aiDifficultyHardCheckboxEl = document.getElementById('aiDifficultyHardCheckbox');
+const aiDifficultyRadioEls = document.querySelectorAll('input[name="aiDifficultyLevel"]');
 const legendToggleBtnEl = document.getElementById('legendToggleBtn');
 const legendPanelEl = document.getElementById('legendPanel');
 const legendCloseBtnEl = document.getElementById('legendCloseBtn');
@@ -1481,9 +1484,9 @@ legendCloseBtnEl.onclick = () => {
   legendToggleBtnEl.style.display = 'block';
 };
 
-// Zakładka trudności AI — ten sam wzorzec co legenda. Zaznaczenie/odznaczenie
-// checkboxa woła window.setAIDifficulty (eksponowane przez ai.js), które
-// samo decyduje co z tym zrobić — panel nie zna wewnętrznej logiki AI.
+// Zakładka trudności AI — ten sam wzorzec co legenda. Wybór poziomu woła
+// window.setAIDifficulty (eksponowane przez ai.js), które samo decyduje
+// co z tym zrobić — panel nie zna wewnętrznej logiki AI.
 aiDifficultyToggleBtnEl.onclick = () => {
   aiDifficultyPanelEl.style.display = 'block';
   aiDifficultyToggleBtnEl.style.display = 'none';
@@ -1492,11 +1495,13 @@ aiDifficultyCloseBtnEl.onclick = () => {
   aiDifficultyPanelEl.style.display = 'none';
   aiDifficultyToggleBtnEl.style.display = 'block';
 };
-aiDifficultyHardCheckboxEl.onchange = () => {
-  if (typeof window.setAIDifficulty === 'function') {
-    window.setAIDifficulty(aiDifficultyHardCheckboxEl.checked ? 'hard' : 'normal');
-  }
-};
+for (const radio of aiDifficultyRadioEls) {
+  radio.onchange = () => {
+    if (radio.checked && typeof window.setAIDifficulty === 'function') {
+      window.setAIDifficulty(radio.value);
+    }
+  };
+}
 
 // Panel zdarzeń — ten sam wzorzec zakładki co legenda (zwinięty domyślnie,
 // zakładka i panel wzajemnie się chowają, ✕ wewnątrz panelu jako pewna
