@@ -593,12 +593,23 @@ const MORALE_PULSE_MAX_SPEED = 0.012; // rad/ms przy morale bliskim zeru
 const MORALE_PULSE_MIN_AMPLITUDE = 0.3; // udział bieli w szczycie pulsu przy progu
 const MORALE_PULSE_MAX_AMPLITUDE = 0.85; // udział bieli w szczycie pulsu bliżej złamania
 
-// Kolor jednostki = gracz (nie typ) — typ rozróżniany promieniem (drawRadius)
+// Kolor jednostki = gracz (nie typ) — typ rozróżniany promieniem (drawRadius).
+// KOLEJNOŚĆ KLUCZY MA ZNACZENIE: ai.js (initAI) wiąże się przy starcie
+// modułu z PIERWSZYM kluczem różnym od OWNED_PLAYER — czyli zawsze P2,
+// dopóki host (OWNED_PLAYER) to P1. Nie zmieniaj kolejności P1..P4.
 const PLAYERS = {
-  P1: { color: '#2f6fed' },
-  P2: { color: '#e63946' },
+  P1: { color: '#2f6fed' }, // niebieski
+  P2: { color: '#e63946' }, // czerwony
+  P3: { color: '#6f42c1' }, // ciemny fiolet
+  P4: { color: '#ff8c1a' }, // pomarańczowy
 };
-const OWNED_PLAYER = 'P1'; // jedyny gracz sterowany myszą w tym prototypie
+const NEUTRAL_CITY_COLOR = '#9aa0a6'; // miasto bez właściciela (rozłączony gracz w Deathmatchu)
+function ownerColor(owner) { return (owner && PLAYERS[owner]) ? PLAYERS[owner].color : NEUTRAL_CITY_COLOR; }
+let OWNED_PLAYER = 'P1'; // był const — teraz przypisywany w startGame() dla trybu online (domyślnie nadal P1, jak dotąd)
+let ACTIVE_PLAYERS = ['P1', 'P2']; // gracze faktycznie biorący udział w meczu — domyślnie dzisiejszy układ 2-osobowy
+let netRole = 'LOCAL'; // 'LOCAL' | 'HOST' | 'CLIENT' — patrz startGame()/gameLoop
+let aiEnabled = false; // bramka wywołania aiTickCallbacks w gameLoop — patrz startGame()
+let spectating = false; // po eliminacji w Deathmatchu — widzi mapę, nie wydaje rozkazów
 
 // cost na razie nigdzie nieużywany (brak ekonomii) — zaślepka pod przyszły balans.
 // ranged:true = model salw (damagePerShot/reloadTime/projectileSpeed/
@@ -758,14 +769,26 @@ const MAP_ROWS = MAP_DATA.length;
 const CITY_SIZE_TILES = 1; // miasto zajmuje dokładnie jeden kafel
 // Zahardkodowane pozycje (jak MAP_DATA) — (col,row) to kafel miasta.
 // Własność ZMIENNA — patrz CITY_CAPTURE_*/updateCityCaptures.
+// `zone` (nie `owner` wprost) — pozwala tej samej mapie obsłużyć od 2 do
+// N graczy: assignCityOwners(activePlayers) mapuje zone->owner (zone 0 =
+// activePlayers[0], itd.; brak gracza na danej strefie = miasto neutralne,
+// owner=null). Dla domyślnego ACTIVE_PLAYERS=['P1','P2'] daje DOKŁADNIE
+// dzisiejszy układ (zone 0 = P1, zone 1 = P2).
 const CITIES = [
-  { id: 'p1_a', col: 0,  row: 21, owner: 'P1' },
-  { id: 'p1_b', col: 8,  row: 21, owner: 'P1' },
-  { id: 'p1_c', col: 0,  row: 0,  owner: 'P1' },
-  { id: 'p2_a', col: 27, row: 21, owner: 'P2' },
-  { id: 'p2_b', col: 35, row: 21, owner: 'P2' },
-  { id: 'p2_c', col: 35, row: 0,  owner: 'P2' },
+  { id: 'p1_a', col: 0,  row: 21, zone: 0 },
+  { id: 'p1_b', col: 8,  row: 21, zone: 0 },
+  { id: 'p1_c', col: 0,  row: 0,  zone: 0 },
+  { id: 'p2_a', col: 27, row: 21, zone: 1 },
+  { id: 'p2_b', col: 35, row: 21, zone: 1 },
+  { id: 'p2_c', col: 35, row: 0,  zone: 1 },
 ];
+// Ustawia city.owner na podstawie strefy i listy aktywnych graczy — wołane
+// raz przy ładowaniu (domyślnie ['P1','P2'], czyli dzisiejszy układ) i
+// ponownie z startGame() dla trybu online z inną listą graczy.
+function assignCityOwners(activePlayers) {
+  for (const city of CITIES) city.owner = activePlayers[city.zone] ?? null;
+}
+assignCityOwners(ACTIVE_PLAYERS);
 for (const city of CITIES) { city.queue = []; city.level = 1; city.upgradeRemaining = 0; city.timeSinceLastConvoy = 0; city.siegeProgress = 0; city.besiegingOwner = null; city.rallyPoint = null; } // queue: {type, remainingTime}; level 1-5, upgradeRemaining: s do końca trwającego ulepszenia (0 = brak); timeSinceLastConvoy: patrz CITY_LEVELS/updateTradeRoutes — tyka TYLKO gdy miasto ma ≥1 szlak; siegeProgress/besiegingOwner: patrz updateCityCaptures; rallyPoint: {x,y} albo null — punkt zbiórki dla świeżo wyprodukowanych jednostek, patrz updateEconomy/mouseup
 
 const STARTING_GOLD = 250; // starcza na kilka jednostek na start
@@ -961,19 +984,27 @@ let debugMode = false; // klawisz D — liczba morale nad każdą jednostką, do
 let aiDebugInfo = null; // {posture, reason} — ustawiane przez ai.js (setAIDebugInfo), pokazywane w #aiDebugPanel gdy debugMode
 let nextUnitId = 1;
 
-// Ekonomia — pomijana w trybie headless (BalanceSim nie spawnuje miast)
-let gold = { P1: STARTING_GOLD, P2: STARTING_GOLD };
-let goldRate = { P1: 0, P2: 0 }; // wygładzony (EMA) wskaźnik do UI — jedyne realne źródło (konwoje) jest skokowe, nie ciągłe
+// Ekonomia — pomijana w trybie headless (BalanceSim nie spawnuje miast).
+// gold/goldRate/stats budowane przez resetPlayerState(activePlayers), żeby
+// tryb online (2-4 graczy) mógł mieć inną listę niż domyślne ['P1','P2'].
+let gold = {};
+let goldRate = {}; // wygładzony (EMA) wskaźnik do UI — jedyne realne źródło (konwoje) jest skokowe, nie ciągłe
 let selectedCity = null;
 
 // Statystyki meczu — podstawa telemetrii na przyszłość (patrz CLAUDE.md,
 // sekcja Priorytety produktowe). Aktualizowane na bieżąco (nie liczone
 // dopiero na końcu), patrz spawnUnit/resolveCombat/updateEconomy/
 // updateConvoys/updateCityCaptures.
-let stats = {
-  P1: { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 },
-  P2: { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 },
-};
+let stats = {};
+function resetPlayerState(activePlayers) {
+  gold = {}; goldRate = {}; stats = {};
+  for (const p of activePlayers) {
+    gold[p] = STARTING_GOLD;
+    goldRate[p] = 0;
+    stats[p] = { unitsBuilt: 0, unitsLost: 0, citiesCaptured: 0, goldEarned: 0 };
+  }
+}
+resetPlayerState(ACTIVE_PLAYERS); // przy ładowaniu = dzisiejszy stan dla P1/P2
 let matchStartTime = performance.now(); // nadpisywane przez startGame() w momencie faktycznego startu meczu (patrz sekcja MENU/START GRY)
 let gameOver = false;
 
@@ -1086,28 +1117,25 @@ function spawnUnit(type, col, row, owner) {
 // po prawej. Wołane WYŁĄCZNIE przez startGame() (patrz niżej, sekcja
 // MENU/START GRY) — nigdy w trybie headless, gdzie narzędzie balansu
 // (window.BalanceSim) spawnuje własne, zdefiniowane scenariuszem armie.
-function spawnDefaultArmies() {
-  spawnUnit('ARCHER', 1, 8, 'P1');
-  spawnUnit('ARCHER', 2, 8, 'P1');
-  spawnUnit('CANNON', 1, 9, 'P1');
-  spawnUnit('CANNON', 2, 9, 'P1');
-  spawnUnit('LIGHT_INFANTRY', 1, 10, 'P1');
-  spawnUnit('LIGHT_INFANTRY', 2, 10, 'P1');
-  spawnUnit('HEAVY_INFANTRY', 1, 11, 'P1');
-  spawnUnit('HEAVY_INFANTRY', 2, 11, 'P1');
-  spawnUnit('CAVALRY', 1, 12, 'P1');
-  spawnUnit('CAVALRY', 2, 12, 'P1');
+// Jedna strefa startowa na gracza (indeks = ten sam `zone`, co w CITIES).
+// Kolejność typów/przesunięć odtwarza DOKŁADNIE dzisiejszy układ armii P1
+// (kol.1-2, wiersze 8-12). Nowa mapa Deathmatch (osobna sesja) doda kolejne
+// wpisy dla stref 2 i 3.
+const START_ARMY_OFFSETS = [
+  ['ARCHER', 0, 0], ['ARCHER', 1, 0],
+  ['CANNON', 0, 1], ['CANNON', 1, 1],
+  ['LIGHT_INFANTRY', 0, 2], ['LIGHT_INFANTRY', 1, 2],
+  ['HEAVY_INFANTRY', 0, 3], ['HEAVY_INFANTRY', 1, 3],
+  ['CAVALRY', 0, 4], ['CAVALRY', 1, 4],
+];
+const SPAWN_ZONES = [ { col: 1, row: 8 }, { col: 22, row: 8 } ];
 
-  spawnUnit('ARCHER', 22, 8, 'P2');
-  spawnUnit('ARCHER', 23, 8, 'P2');
-  spawnUnit('CANNON', 22, 9, 'P2');
-  spawnUnit('CANNON', 23, 9, 'P2');
-  spawnUnit('LIGHT_INFANTRY', 22, 10, 'P2');
-  spawnUnit('LIGHT_INFANTRY', 23, 10, 'P2');
-  spawnUnit('HEAVY_INFANTRY', 22, 11, 'P2');
-  spawnUnit('HEAVY_INFANTRY', 23, 11, 'P2');
-  spawnUnit('CAVALRY', 22, 12, 'P2');
-  spawnUnit('CAVALRY', 23, 12, 'P2');
+function spawnDefaultArmies(activePlayers) {
+  activePlayers.forEach((owner, zoneIndex) => {
+    const zone = SPAWN_ZONES[zoneIndex];
+    if (!zone) return; // brak zdefiniowanej strefy startowej dla tej pozycji na obecnej mapie
+    for (const [type, dCol, dRow] of START_ARMY_OFFSETS) spawnUnit(type, zone.col + dCol, zone.row + dRow, owner);
+  });
 }
 
 // Gest myszy — dwa równoległe sposoby wyznaczania trasy: punkty
@@ -3781,10 +3809,7 @@ function updateCityCaptures(dt, now) {
           logGameEvent(`Zdobyto miasto ${city.id}`, center.x, center.y, '#33ff33');
         }
 
-        if (CITIES.filter(c => c.owner === oldOwner).length === 0) {
-          triggerGameOver(city.owner, oldOwner);
-          return; // gra zakończona — reszta miast w tej klatce nieistotna
-        }
+        if (checkElimination(oldOwner)) return; // gra zakończona — reszta miast w tej klatce nieistotna
       }
     } else if (city.siegeProgress > 0) {
       city.siegeProgress = Math.max(0, city.siegeProgress - CITY_CAPTURE_REGRESS_PER_SECOND * dt);
@@ -3793,22 +3818,66 @@ function updateCityCaptures(dt, now) {
   }
 }
 
+// Kolejność wypadania graczy (Deathmatch, >2 aktywnych) — do ekranu końcowego.
+let eliminationOrder = [];
+
+// Gracz bez miast wypada z gry. Zwraca true, jeśli TO zakończyło mecz —
+// wywołujący (updateCityCaptures) ma wtedy przerwać dalsze przetwarzanie
+// miast w tej klatce (dokładnie ten sam `return`, co dawniej bezpośrednio
+// po triggerGameOver). Miasta neutralne (lostOwner===null, np. po
+// rozłączeniu gracza w Deathmatchu) nigdy nie "przegrywają" — pomijane,
+// naprawia to dawny błąd, w którym `CITIES.filter(c=>c.owner===null)`
+// mogło fałszywie liczyć neutralne miasta jako "czyjeś".
+function checkElimination(lostOwner) {
+  if (!lostOwner || !ACTIVE_PLAYERS.includes(lostOwner)) return false;
+  if (CITIES.some(c => c.owner === lostOwner)) return false; // ma jeszcze miasto
+  if (eliminationOrder.includes(lostOwner)) return false; // już wcześniej wyeliminowany
+  eliminationOrder.push(lostOwner);
+  const alive = ACTIVE_PLAYERS.filter(p => !eliminationOrder.includes(p));
+  if (alive.length <= 1) {
+    triggerGameOver(alive[0] || null);
+    return true;
+  }
+  removePlayerFromBoard(lostOwner);
+  return false;
+}
+
+// Usuwa wyeliminowanego gracza z planszy (Deathmatch, gdy zostaje jeszcze
+// ≥2 innych graczy) — jednostki i szlaki znikają. Przy dokładnie 2
+// aktywnych graczach ta funkcja NIGDY się nie wykonuje (checkElimination
+// zawsze kończy mecz od razu przy stracie ostatniego miasta w 1v1) — zero
+// wpływu na dzisiejsze zachowanie.
+function removePlayerFromBoard(owner) {
+  units = units.filter(u => u.owner !== owner);
+  tradeRoutes = tradeRoutes.filter(r => r.owner !== owner);
+  for (const c of CITIES) if (c.besiegingOwner === owner) { c.besiegingOwner = null; c.siegeProgress = 0; }
+}
+
 // Zamraża symulację (gameLoop przestaje ją aktualizować, ale dorysowuje
 // jeszcze tę klatkę pod overlayem) i pokazuje ekran końca gry ze
 // statystykami meczu — podstawa telemetrii na przyszłość (patrz CLAUDE.md).
-function triggerGameOver(winner, loser) {
+// Kolumny: zwycięzca, potem wyeliminowani od najpóźniej do najwcześniej —
+// dla dokładnie 2 graczy to [winner, loser], IDENTYCZNE z dawnym
+// dwukolumnowym ekranem (eliminationHtml wtedy pusty).
+function triggerGameOver(winner) {
   gameOver = true;
   const durationSeconds = (performance.now() - matchStartTime) / 1000;
+  const columns = winner ? [winner, ...[...eliminationOrder].reverse().filter(p => p !== winner)] : [...eliminationOrder].reverse();
+  const headerCells = columns.map(p => `<th>${p}</th>`).join('');
+  const row = (label, field, fmt = (v) => v) => `<tr><td>${label}</td>${columns.map(p => `<td>${fmt(stats[p][field])}</td>`).join('')}</tr>`;
+  const eliminationHtml = ACTIVE_PLAYERS.length > 2
+    ? `<div>Kolejność eliminacji: ${eliminationOrder.map((p, i) => `${i + 1}. ${p}`).join(', ')}</div>` : '';
   gameOverOverlayEl.innerHTML = `
     <div>
-      <h2>Zwycięstwo: ${winner}</h2>
+      <h2>Zwycięstwo: ${winner ?? 'brak'}</h2>
       <div>Czas trwania meczu: ${durationSeconds.toFixed(0)}s</div>
+      ${eliminationHtml}
       <table>
-        <tr><th></th><th>${winner}</th><th>${loser}</th></tr>
-        <tr><td>Zbudowane jednostki</td><td>${stats[winner].unitsBuilt}</td><td>${stats[loser].unitsBuilt}</td></tr>
-        <tr><td>Stracone jednostki</td><td>${stats[winner].unitsLost}</td><td>${stats[loser].unitsLost}</td></tr>
-        <tr><td>Przejęte miasta</td><td>${stats[winner].citiesCaptured}</td><td>${stats[loser].citiesCaptured}</td></tr>
-        <tr><td>Zarobione złoto</td><td>${Math.round(stats[winner].goldEarned)}</td><td>${Math.round(stats[loser].goldEarned)}</td></tr>
+        <tr><th></th>${headerCells}</tr>
+        ${row('Zbudowane jednostki', 'unitsBuilt')}
+        ${row('Stracone jednostki', 'unitsLost')}
+        ${row('Przejęte miasta', 'citiesCaptured')}
+        ${row('Zarobione złoto', 'goldEarned', (v) => Math.round(v))}
       </table>
       <button class="menuButton" id="gameOverMenuBtn" style="margin-top:16px;">Powrót do menu</button>
     </div>
@@ -3827,7 +3896,7 @@ function triggerGameOver(winner, loser) {
 // spawnuje miast/gold). Gospodarka jest wyłącznie przychodowa — jednostki
 // nie kosztują nic na sekundę.
 function updateEconomy(dt) {
-  for (const owner of ['P1', 'P2']) {
+  for (const owner of ACTIVE_PLAYERS) {
     const before = gold[owner];
     // Mechanizm ostatniej szansy: dokładnie jedno miasto -> płaski dochód
     // zastąpiony wzmocnionym (CITY_LAST_CITY_INCOME_PER_SECOND), znika
@@ -4892,7 +4961,7 @@ function gameLoop(now) {
     updateConvoys(now);
     updateConvoyCaptures(dt, now);
     updateCityCaptures(dt, now);
-    for (const fn of aiTickCallbacks) fn(dt, now);
+    if (aiEnabled) for (const fn of aiTickCallbacks) fn(dt, now);
     updateGoldPanel();
     updateAIDebugPanel();
   }
@@ -5260,14 +5329,18 @@ window.BalanceSim = {
 // stanu silnika. `units`/`tradeRoutes`/`gameOver` są w tym pliku
 // NADPISYWANE (np. `units = resolveCombat(...)`), więc muszą być
 // udostępnione jako gettery — zwykły alias złapałby jednorazowy,
-// nieaktualizujący się snapshot. `CITIES`/`gold`/`stats`/`PLAYERS`/
-// `UNIT_TYPES`/... to stałe referencje (CITIES to `const`, pozostałe to
-// obiekty mutowane W MIEJSCU, nigdy nie nadpisywane całościowo) —
-// bezpieczne jako zwykłe pola.
+// nieaktualizujący się snapshot. `gold`/`goldRate`/`stats` DOŁĄCZYŁY do tej
+// grupy (resetPlayerState je NADPISUJE całościowo, dla obsługi zmiennej
+// listy graczy w trybie online) — też gettery. `CITIES`/`PLAYERS`/
+// `OWNED_PLAYER`/`UNIT_TYPES`/... to stałe referencje LUB proste wartości
+// odczytywane raz przez ai.js przy starcie modułu — bezpieczne jako zwykłe pola.
 window.GameAPI = {
-  CITIES, PLAYERS, OWNED_PLAYER, UNIT_TYPES, TERRAIN, TERRAIN_MODIFIERS, CITY_LEVELS,
+  CITIES, PLAYERS, UNIT_TYPES, TERRAIN, TERRAIN_MODIFIERS, CITY_LEVELS,
   TILE_SIZE, MAP_COLS, MAP_ROWS, MAP_WIDTH_PX, MAP_HEIGHT_PX, CITY_ZONE_RADIUS,
-  gold, goldRate, stats,
+  get OWNED_PLAYER() { return OWNED_PLAYER; }, // był zwykłym polem — OWNED_PLAYER jest teraz `let`, przypisywany w startGame()
+  get gold() { return gold; },
+  get goldRate() { return goldRate; },
+  get stats() { return stats; },
   getUnits: () => units,
   getTradeRoutes: () => tradeRoutes,
   isGameOver: () => gameOver,
@@ -5435,9 +5508,20 @@ let gameConfig = null; // {mode:'AI', aiDifficulty} — jedyny "parametr startow
 
 function startGame(config) {
   gameConfig = config;
-  spawnDefaultArmies();
+  // Tryb online (ONLINE_HOST/ONLINE_CLIENT) i lista aktywnych graczy — patrz
+  // CLAUDE.md "Tryb online". Dla dzisiejszego jedynego wywołania ({mode:'AI'})
+  // te trzy linie dają DOKŁADNIE wcześniejsze wartości (netRole='LOCAL',
+  // ACTIVE_PLAYERS=['P1','P2'], OWNED_PLAYER='P1').
+  netRole = config.mode === 'ONLINE_HOST' ? 'HOST' : config.mode === 'ONLINE_CLIENT' ? 'CLIENT' : 'LOCAL';
+  ACTIVE_PLAYERS = config.activePlayers || ['P1', 'P2'];
+  OWNED_PLAYER = config.ownSeat || 'P1';
+  aiEnabled = config.mode === 'AI' || (netRole === 'HOST' && !!config.aiSeat);
+  spectating = false;
+  resetPlayerState(ACTIVE_PLAYERS);
+  assignCityOwners(ACTIVE_PLAYERS);
+  if (netRole !== 'CLIENT') spawnDefaultArmies(ACTIVE_PLAYERS);
   matchStartTime = performance.now();
-  if (config.mode === 'AI' && typeof window.setAIDifficulty === 'function') {
+  if (aiEnabled && typeof window.setAIDifficulty === 'function') {
     window.setAIDifficulty(config.aiDifficulty);
   }
   document.getElementById('goldPanel').style.display = 'block';
