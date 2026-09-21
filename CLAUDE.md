@@ -102,6 +102,14 @@ na konwojach między miastami).
   góry całkowicie nieprzechodnie
 - Jednostka na nieprzechodnim kaflu zawsze może z niego wyjść (zabezpieczenie
   przed zablokowaniem)
+- Kotwica pozycji: jednostka bez aktywnego rozkazu (ruch, punkty
+  nawigacyjne w toku, wymuszony atak, panika) zapamiętuje miejsce, w
+  którym ma stać, i stale do niego wraca, jeśli coś ją stamtąd zepchnie —
+  sojusznik przechodzący przez linię ją rozsuwa, ale po utracie kontaktu
+  wraca na miejsce; wróg NIE przełamie linii samym naporem, wyłącznie
+  zabijając obrońców lub łamiąc ich morale. Nowa kotwica ustawiana jest
+  wyłącznie w momencie zakończenia rozkazu (także powrotu z paniki),
+  nigdy w trakcie jego wykonywania
 
 ## System jednostek — różnicowanie przez pozycję, NIE przez countery
 Walka jest automatyczna i pozycyjna, więc klasyczny system rock-paper-scissors
@@ -188,8 +196,10 @@ nietykalne.
 - Jednostki jako jednolite koła, kolor = GRACZ (nie typ); typ rozróżniany
   rozmiarem i obrysem
 - Teren w płaskich, nasyconych kolorach, bez gradientów i tekstur
-- Punkty nawigacyjne rysowane jako numerowane znaczniki połączone linią,
-  osiągnięte punkty wygaszają się (pokazuje postęp trasy)
+- Punkty nawigacyjne rysowane jako małe, dyskretne kropki (bez numeracji)
+  połączone przerywaną linią w tym samym kolorze co podgląd zwykłego
+  marszu — mają wyglądać jak naturalne przedłużenie ruchu, nie rzucać się
+  w oczy; osiągnięte punkty wygaszają się (pokazuje postęp trasy)
 - Paleta graczy kontrastująca z zielenią i szarością terenu: czerwony,
   niebieski, ciemny fiolet, pomarańczowy
 

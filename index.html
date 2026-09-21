@@ -448,6 +448,7 @@ const PUSH_ADVANCE_SPEED_PER_STRENGTH = 3; // px/s na punkt pushStrength (obniż
 // dziesiątki pikseli). ~2,5 kafla — krótki, wyraźny pościg, nie pogoń
 // przez pół mapy.
 const MAX_CHASE_DISTANCE_PX = 80;
+const ANCHOR_TOLERANCE_PX = 4; // px — martwa strefa wokół punktu kotwicy (patrz updateAnchorHold), żeby jednostka nie drgała próbując trafić w piksel
 
 // Obrażenia w zwarciu skalowane tym, kto napiera (patrz pushDamageMultiplier)
 const PUSH_WINNING_DAMAGE_MULTIPLIER = 1.0;
@@ -1067,6 +1068,8 @@ function spawnUnit(type, col, row, owner) {
     attackOrderTargetId: null, // wymuszony przez gracza cel ataku (PPM na wrogiej jednostce) — patrz issueAttackOrder/updateAttackOrders/resolveCombat
     attackOrderAnchorX: null, attackOrderAnchorY: null, // pozycja w momencie WYDANIA rozkazu ataku — limit pościgu, ten sam MAX_CHASE_DISTANCE_PX co napieranie
     attackOrderLastTargetX: null, attackOrderLastTargetY: null, // ostatnia pozycja celu, do której liczono trasę — próg przeliczenia, patrz ATTACK_ORDER_REPATH_DIST_PX
+    anchorX: center.x, anchorY: center.y, // punkt, w którym jednostka "ma stać" — patrz unitHasActiveOrder/updateAnchorHold; start = pozycja spawnu
+    wasExecutingOrder: false, // stan z POPRZEDNIEJ klatki, do wykrycia przejścia "rozkaz -> bezczynność" (patrz updateUnit) — moment ustawienia nowej kotwicy
   };
   units.push(unit);
   // Statystyki meczu — konwój to automat ekonomii, nie "zbudowana
@@ -2426,9 +2429,23 @@ window.addEventListener('mouseup', (e) => {
 // ============================================================
 // RUCH JEDNOSTEK
 // ============================================================
-function updateUnit(unit, dt) {
-  if (unit.path.length === 0) return;
-  const target = unit.path[0];
+// "Coś wykonuje" = jednostka NIE podlega mechanice kotwicy (patrz
+// updateAnchorHold) — panika (ucieczka ma pierwszeństwo), aktywna ścieżka
+// (zwykły marsz/FRONT/zbiórka/odcinek trasy punktów nawigacyjnych/pościg),
+// wymuszony rozkaz ataku na cel, albo trwająca (jeszcze nieusunięta z
+// waypointGroups) sekwencja punktów nawigacyjnych — to ostatnie pokrywa też
+// oczekiwanie na maruderów między odcinkami (path puste, ale grupa wciąż
+// istnieje), żeby czekająca jednostka nie próbowała w tym czasie wracać do
+// pozycji sprzed całej trasy.
+function unitHasActiveOrder(u) {
+  return u.routed || u.path.length > 0 || u.attackOrderTargetId != null ||
+    (u.waypointGroupId != null && waypointGroups.has(u.waypointGroupId));
+}
+
+// Wspólna prędkość efektywna (teren + spowolnienie bojowe/panika) — używana
+// zarówno przy marszu po ścieżce, jak i przy powrocie do kotwicy
+// (updateAnchorHold), żeby nie duplikować tej samej formuły.
+function unitEffectiveSpeed(unit) {
   const tile = worldToTile(unit.x, unit.y);
   const terrain = terrainAt(tile.col, tile.row) || TERRAIN[0];
   // Zabezpieczenie: jeśli jednostka mimo wszystko stoi na nieprzechodnim
@@ -2449,46 +2466,91 @@ function updateUnit(unit, dt) {
   const speedStateMultiplier = unit.routed
     ? PANIC_SPEED_MULTIPLIER
     : (unit.timeSinceMeleeCombat < MELEE_SLOW_DURATION ? meleeSlowMultiplier : 1);
-  const speed = BASE_SPEED_PX_PER_S * UNIT_TYPES[unit.type].speed * effectiveSpeedMultiplier * speedStateMultiplier;
+  return BASE_SPEED_PX_PER_S * cfg.speed * effectiveSpeedMultiplier * speedStateMultiplier;
+}
 
-  const x0 = unit.x, y0 = unit.y; // do wyliczenia zwrotu (facingAngle) z faktycznego przesunięcia tej klatki
-  let remaining = speed * dt;
-  while (remaining > 0 && unit.path.length > 0) {
-    const dx = unit.path[0].x - unit.x, dy = unit.path[0].y - unit.y;
-    const dist = Math.hypot(dx, dy);
-    // Punkt ścieżki (pośredni albo ostatni) bywa zajęty przez inną
-    // jednostkę (kolizje) — zamiast wiecznie napierać o dokładny piksel
-    // (co przy kilku jednostkach na wspólnym punkcie przelotowym tworzy
-    // trwały zator), uznajemy "wystarczająco blisko" za dotarcie
-    if (dist <= UNIT_TYPES[unit.type].collisionRadius) {
-      unit.path.shift();
-      if (unit.path.length === 0) break;
-      continue;
-    }
-    if (dist <= remaining) {
-      unit.x = unit.path[0].x;
-      unit.y = unit.path[0].y;
-      unit.path.shift();
-      remaining -= dist;
-    } else {
-      unit.x += (dx / dist) * remaining;
-      unit.y += (dy / dist) * remaining;
-      remaining = 0;
-    }
-  }
-
-  // Zwrot (facingAngle) z faktycznego przesunięcia tej klatki — dowolny
-  // realny ruch aktualizuje zwrot (resolveCollisions w ogóle nie woła
-  // updateUnit/nie dotyka facingAngle, więc nie ma tu czego tłumić; przy
-  // progu 0.5px wolne jednostki, np. HEAVY_INFANTRY, poruszają się
-  // ~0.22px/klatkę i zwrot z ruchu praktycznie nigdy by się nie
-  // aktualizował). Brak ruchu → zwrot zostaje bez zmian. W walce
-  // resolveCombat "zaangażowanie" (engagedTargetId) przejmuje sterowanie
-  // zwrotem — patrz komentarz przy spawnUnit.engagedTargetId.
+// Mechanika kotwicy: jednostka bez żadnego aktywnego rozkazu (patrz
+// unitHasActiveOrder) stale dąży do swojego punktu kotwicy — pozycji, w
+// której miała stać, zanim coś ją stamtąd zepchnęło (kolizja z sojusznikiem
+// przechodzącym przez linię, napór wroga w zwarciu). Drobna strefa
+// tolerancji (ANCHOR_TOLERANCE_PX) zapobiega drganiu o piksel. `tryMove`
+// (niżej) respektuje teren tak samo jak zwykły marsz; twarde kolizje z
+// innymi jednostkami dogrywają się osobno w resolveCollisions, jak zawsze.
+function updateAnchorHold(unit, dt) {
+  if (unitHasActiveOrder(unit)) return;
+  const dx = unit.anchorX - unit.x, dy = unit.anchorY - unit.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= ANCHOR_TOLERANCE_PX) return;
+  const speed = unitEffectiveSpeed(unit);
+  const step = Math.min(speed * dt, dist);
+  const x0 = unit.x, y0 = unit.y;
+  tryMove(unit, (dx / dist) * step, (dy / dist) * step);
   const movedDist = Math.hypot(unit.x - x0, unit.y - y0);
-  if (movedDist > 0) {
-    unit.facingAngle = Math.atan2(unit.y - y0, unit.x - x0);
+  if (movedDist > 0) unit.facingAngle = Math.atan2(unit.y - y0, unit.x - x0);
+}
+
+function updateUnit(unit, dt) {
+  if (unit.path.length === 0) {
+    updateAnchorHold(unit, dt);
+  } else {
+    const speed = unitEffectiveSpeed(unit);
+    const x0 = unit.x, y0 = unit.y; // do wyliczenia zwrotu (facingAngle) z faktycznego przesunięcia tej klatki
+    let remaining = speed * dt;
+    while (remaining > 0 && unit.path.length > 0) {
+      const dx = unit.path[0].x - unit.x, dy = unit.path[0].y - unit.y;
+      const dist = Math.hypot(dx, dy);
+      // Punkt ścieżki (pośredni albo ostatni) bywa zajęty przez inną
+      // jednostkę (kolizje) — zamiast wiecznie napierać o dokładny piksel
+      // (co przy kilku jednostkach na wspólnym punkcie przelotowym tworzy
+      // trwały zator), uznajemy "wystarczająco blisko" za dotarcie
+      if (dist <= UNIT_TYPES[unit.type].collisionRadius) {
+        unit.path.shift();
+        if (unit.path.length === 0) break;
+        continue;
+      }
+      if (dist <= remaining) {
+        unit.x = unit.path[0].x;
+        unit.y = unit.path[0].y;
+        unit.path.shift();
+        remaining -= dist;
+      } else {
+        unit.x += (dx / dist) * remaining;
+        unit.y += (dy / dist) * remaining;
+        remaining = 0;
+      }
+    }
+
+    // Zwrot (facingAngle) z faktycznego przesunięcia tej klatki — dowolny
+    // realny ruch aktualizuje zwrot (resolveCollisions w ogóle nie woła
+    // updateUnit/nie dotyka facingAngle, więc nie ma tu czego tłumić; przy
+    // progu 0.5px wolne jednostki, np. HEAVY_INFANTRY, poruszają się
+    // ~0.22px/klatkę i zwrot z ruchu praktycznie nigdy by się nie
+    // aktualizował). Brak ruchu → zwrot zostaje bez zmian. W walce
+    // resolveCombat "zaangażowanie" (engagedTargetId) przejmuje sterowanie
+    // zwrotem — patrz komentarz przy spawnUnit.engagedTargetId.
+    const movedDist = Math.hypot(unit.x - x0, unit.y - y0);
+    if (movedDist > 0) {
+      unit.facingAngle = Math.atan2(unit.y - y0, unit.x - x0);
+    }
   }
+
+  // Kotwica ustawiana WYŁĄCZNIE w momencie przejścia "coś wykonywała ->
+  // nic nie wykonuje" (patrz unitHasActiveOrder) — nigdy w trakcie
+  // bezczynności (to zepsułoby powyższy powrót do kotwicy, bo kotwica
+  // ślizgałaby się razem z jednostką) ani w trakcie trwania rozkazu.
+  // Pokrywa to zwykły ruch/FRONT/zbiórkę (path pustoszeje w tej samej
+  // klatce), ostatni punkt nawigacyjny (waypointGroups.has zaczyna zwracać
+  // false, gdy advanceWaypointGroups skasuje grupę PRZED tym wywołaniem w
+  // tej samej klatce), koniec rozkazu ataku/pościgu (attackOrderTargetId
+  // wyzerowane przez updateAttackOrders PRZED tym wywołaniem) i powrót z
+  // paniki (routed=false ustawiane w updateMorale, PO updateUnit — efekt
+  // widoczny dopiero następnej klatki, ~16ms, niezauważalne).
+  const activeNow = unitHasActiveOrder(unit);
+  if (unit.wasExecutingOrder && !activeNow) {
+    unit.anchorX = unit.x;
+    unit.anchorY = unit.y;
+  }
+  unit.wasExecutingOrder = activeNow;
 }
 
 const COLLISION_DAMPING = 0.5; // tłumienie rozsuwania — zapobiega drganiu w ciasnej grupie
@@ -4501,7 +4563,11 @@ function drawWaypointReachedEffects(now) {
   }
 }
 
-function drawNumberedWaypointPath(startPoint, points, color) {
+// Bez numeracji — drobne, dyskretne kropki (patrz drawUnitWaypointRoutes:
+// naprawdę małe, nie mają "rzucać się w oczy"). Przerywana linia zostaje,
+// żeby odróżnić zaplanowaną, dalszą część trasy od aktualnie liczonego
+// odcinka `path`, rysowanego przez drawUnits linią ciągłą.
+function drawWaypointDots(startPoint, points, color) {
   if (points.length === 0) return;
   ctx.strokeStyle = color;
   ctx.globalAlpha = 0.85;
@@ -4512,29 +4578,27 @@ function drawNumberedWaypointPath(startPoint, points, color) {
   for (const p of points) ctx.lineTo(p.x, p.y);
   ctx.stroke();
   ctx.setLineDash([]);
-  points.forEach((p, i) => {
-    ctx.fillStyle = color;
+  ctx.fillStyle = color;
+  for (const p of points) {
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 11px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(i + 1), p.x, p.y + 1);
-  });
+  }
   ctx.globalAlpha = 1;
 }
 
 // Trasa WŁASNYCH jednostek — widoczna, dopóki grupa ją wykonuje (patrz
 // waypointGroups; AI nigdy nie zasila tej struktury, więc trasy
 // przeciwnika są tu strukturalnie niewidoczne, bez dodatkowego filtra).
+// Kolor identyczny z podglądem zwykłego marszu (patrz drawUnits) — trasa
+// punktów nawigacyjnych ma wyglądać jak naturalne przedłużenie zwykłego
+// ruchu, nie osobny, krzykliwy element.
 function drawUnitWaypointRoutes() {
   for (const [groupId, group] of waypointGroups) {
     const members = units.filter(u => u.hp > 0 && u.waypointGroupId === groupId);
     if (members.length === 0) continue;
     const centroid = { x: members.reduce((s, u) => s + u.x, 0) / members.length, y: members.reduce((s, u) => s + u.y, 0) / members.length };
-    drawNumberedWaypointPath(centroid, [group.current, ...group.remaining], '#ffd400');
+    drawWaypointDots(centroid, [group.current, ...group.remaining], 'rgba(255,255,255,0.35)');
   }
 }
 
@@ -4543,7 +4607,7 @@ function drawUnitWaypointRoutes() {
 // zaznaczenia (patrz zasada widoczności szlaków w drawTradeRoutes).
 function drawPendingTradeRoute() {
   if (!pendingTradeRouteSourceCity) return;
-  drawNumberedWaypointPath(cityCenter(pendingTradeRouteSourceCity), pendingTradeRoutePoints, PLAYERS[OWNED_PLAYER].color);
+  drawWaypointDots(cityCenter(pendingTradeRouteSourceCity), pendingTradeRoutePoints, PLAYERS[OWNED_PLAYER].color);
 }
 
 function drawAttackLines() {
