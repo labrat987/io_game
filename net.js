@@ -1,18 +1,14 @@
-// net.js — klient sieciowy trybu online (lobby + WebSocket do serwera).
-// Ładowany jak ai.js (moduł ES, po pełnym sparsowaniu classic-scriptu),
-// komunikuje się z silnikiem WYŁĄCZNIE przez:
+// net.js — klient sieciowy trybu online (lobby + WebSocket do serwera +
+// przekazywanie stanu gry). Ładowany jak ai.js (moduł ES, po pełnym
+// sparsowaniu classic-scriptu), komunikuje się z silnikiem WYŁĄCZNIE przez:
 // - window.EngineNetAPI (silnik -> sieć: dispatchOrder w trybie CLIENT
-//   woła EngineNetAPI.sendOrder; Krok 5 doda sendSnapshot/sampleRenderState)
+//   woła sendOrder; maybeBroadcastSnapshot na hoście woła sendSnapshot;
+//   applyRenderSnapshot na kliencie woła sampleRenderState)
 // - window.startGame/window.applyRemoteOrder (sieć -> silnik, funkcje
 //   klasycznego skryptu, dostępne na window jak każda deklaracja
 //   `function` na najwyższym poziomie)
 // CELOWO osobny most niż window.GameAPI (które czyta ai.js) — zmiana tutaj
 // nie może wpłynąć na AI.
-//
-// Zakres tego pliku (Krok 4 planu): pełny przepływ lobby — lista, tworzenie,
-// dołączanie, gotowość, boty (wyłącznie 1v1), start. Po odebraniu STARY
-// (żartobliwie: START) plik NIE uruchamia jeszcze rozgrywki (patrz
-// enterMatch niżej) — to Krok 5 (broadcast hosta + interpolacja klienta).
 
 // TODO PO WDROŻENIU: podmień na realny adres Workera (patrz CLAUDE.md,
 // sekcja "Tryb online" + instrukcje wdrożenia). `?server=` w URL nadpisuje
@@ -25,6 +21,12 @@ const SEAT_ORDER = ['P1', 'P2', 'P3', 'P4'];
 const MODE_LABELS = { ONE_V_ONE: '1v1', DEATHMATCH: 'Deathmatch' };
 const MODE_MAX_SEATS = { ONE_V_ONE: 2, DEATHMATCH: 4 };
 
+// Musi być zgodne z NET_INTERPOLATION_DELAY_MS/NET_SNAPSHOT_BUFFER_MAX w
+// index.html — dwa osobne pliki, ta sama umowa co do tempa/bufora.
+const NET_INTERPOLATION_DELAY_MS = 120;
+const NET_SNAPSHOT_BUFFER_MAX = 4;
+const NET_SEND_BACKPRESSURE_BYTES = 262144; // pomiń wysyłkę tej tury, gdy socket zalega z niewysłanymi danymi — interpolacja klienta zniweluje pojedynczy zgubiony tick
+
 let ws = null;
 let mySeat = null;
 let isHost = false;
@@ -34,6 +36,7 @@ let lobbyPlayers = {};
 let lobbyStatus = 'waiting';
 let hostSeat = null;
 let pendingMode = 'ONE_V_ONE'; // wybór w formularzu tworzenia lobby, przed wysłaniem
+const snapshotBuffer = []; // [{tick, recvAt, state}] — patrz onSnapshotFrame/sampleRenderState
 
 function httpUrl(path) { return NET_SERVER_URL.replace(/^ws/, 'http') + path; }
 function socketUrl(path) { return NET_SERVER_URL.replace(/^http/, 'ws') + path; }
@@ -290,33 +293,106 @@ function renderLobbyRoom() {
 }
 
 // ============================================================
-// Przejście do rozgrywki — CELOWO placeholder w tym kroku (Krok 4).
-// Krok 5 doda: window.startGame({mode:'ONLINE_HOST'/'ONLINE_CLIENT',
-// activePlayers, ownSeat, aiSeat, aiDifficulty}) oraz podłączenie
-// broadcastu/interpolacji, zanim rozgrywka realnie ruszy — bez tego
-// klient uruchomiłby WŁASNĄ, niezależną symulację zamiast wyświetlać
-// tę hosta (patrz plan, sekcja "Kolejność budowy").
+// Przejście do rozgrywki — host i klient wołają startGame z tym samym
+// zestawem aktywnych graczy, każdy widzi siebie jako ownSeat. Bot (jeśli
+// jest — WYŁĄCZNIE w 1v1) zawsze P2, bo ai.js wiąże się z tym seatem przy
+// starcie modułu (patrz CLAUDE.md/plan, niezmiennik host=P1/bot=P2) —
+// aiDifficulty bierzemy wprost z bots.P2.
 // ============================================================
 function enterMatch(startMsg) {
   window.hideOverlay(overlayEl());
-  const root = contentEl();
-  root.innerHTML = '';
-  root.appendChild(el('h2', { style: 'text-align:center;' }, ['Mecz się rozpoczyna...']));
-  root.appendChild(el('p', { className: 'lobbyEmptyHint' }, [
-    `Gracze: ${startMsg.activePlayers.join(', ')}. Właściwa rozgrywka online (Krok 5 planu) jeszcze niepodłączona w tej wersji.`,
-  ]));
-  window.showOverlay(overlayEl());
+  window.startGame({
+    mode: isHost ? 'ONLINE_HOST' : 'ONLINE_CLIENT',
+    activePlayers: startMsg.activePlayers,
+    ownSeat: mySeat,
+    aiSeat: isHost && !!startMsg.bots.P2,
+    aiDifficulty: startMsg.bots.P2 || 'MEDIUM',
+  });
   console.log('[online] START', startMsg);
 }
 
+function lerpAngle(a, b, t) {
+  const diff = (((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+  return a + diff * t;
+}
+
+// Odebrana ramka snapshotu ("S|<tick>|<payload>", nagłówek już zdjęty
+// przez serwer — patrz server/src/index.js) — bufor kilku ostatnich,
+// znacznik czasu to moment ODBIORU (bez synchronizacji zegarów z hostem).
+function onSnapshotFrame(raw) {
+  const secondBar = raw.indexOf('|', 2);
+  const tick = raw.slice(2, secondBar);
+  const payload = raw.slice(secondBar + 1);
+  let state;
+  try { state = JSON.parse(payload); } catch (e) { return; }
+  snapshotBuffer.push({ tick, recvAt: performance.now(), state });
+  if (snapshotBuffer.length > NET_SNAPSHOT_BUFFER_MAX) snapshotBuffer.shift();
+}
+
+// Zwraca stan do narysowania W TEJ klatce: interpoluje pozycje/kąty
+// jednostek między dwoma otaczającymi snapshotami dla czasu
+// `nowMs - NET_INTERPOLATION_DELAY_MS` (opóźnienie ~1.8 odstępu między
+// snapshotami — przeżywa pojedynczy zgubiony pakiet). Reszta pól
+// (hp/morale/właściciel/...) brana wprost z NOWSZEGO z pary — dyskretny
+// skok tam jest dużo mniej zauważalny niż dla pozycji. Przy zagłodzeniu
+// bufora (za stary/za nowy renderTime) — zamrożenie na skrajnym
+// snapshocie, NIGDY ekstrapolacja.
+function sampleRenderState(nowMs) {
+  if (snapshotBuffer.length === 0) return null;
+  const renderTime = nowMs - NET_INTERPOLATION_DELAY_MS;
+  let a = snapshotBuffer[0], b = snapshotBuffer[snapshotBuffer.length - 1];
+  if (renderTime <= a.recvAt) {
+    b = a;
+  } else if (renderTime >= b.recvAt) {
+    a = b;
+  } else {
+    for (let i = 0; i < snapshotBuffer.length - 1; i++) {
+      if (snapshotBuffer[i].recvAt <= renderTime && renderTime <= snapshotBuffer[i + 1].recvAt) {
+        a = snapshotBuffer[i]; b = snapshotBuffer[i + 1]; break;
+      }
+    }
+  }
+  const span = b.recvAt - a.recvAt;
+  const t = span > 0 ? Math.max(0, Math.min(1, (renderTime - a.recvAt) / span)) : 1;
+  const aUnitsById = new Map(a.state.units.map((u) => [u.id, u]));
+  const units = b.state.units.map((bu) => {
+    const au = aUnitsById.get(bu.id);
+    if (!au || t >= 1) return bu;
+    return Object.assign({}, bu, {
+      x: au.x + (bu.x - au.x) * t,
+      y: au.y + (bu.y - au.y) * t,
+      facingAngle: lerpAngle(au.facingAngle || 0, bu.facingAngle || 0, t),
+    });
+  });
+  return Object.assign({}, b.state, { units });
+}
+
 // ============================================================
-// Most silnik -> sieć. Krok 5 dopełni sendSnapshot/onSnapshotFrame.
+// Most silnik -> sieć.
 // ============================================================
 window.EngineNetAPI = {
   sendOrder(type, payload) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ t: 'ORDER', seq: 0, order: { type, payload } }));
   },
+  // Wołane przez maybeBroadcastSnapshot (index.html, HOST). Jedna
+  // serializacja, jedna wiadomość WS do serwera niosąca kopie dla
+  // WSZYSTKICH zdalnych graczy naraz (patrz protokół "S|tick|seat:len:payload...") —
+  // serwer rozdziela bez parsowania treści. Boty nie mają socketu, więc
+  // są pomijane. Prywatność (osobny payload na gracza) to Krok 6 — na
+  // razie każdy zdalny gracz dostaje identyczną kopię.
+  sendSnapshot(tick, state) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (ws.bufferedAmount > NET_SEND_BACKPRESSURE_BYTES) return; // pomiń tę turę — interpolacja klienta zniweluje
+    const remoteSeats = Object.keys(lobbyPlayers).filter((s) => s !== mySeat && !lobbyPlayers[s].isBot);
+    if (remoteSeats.length === 0) return;
+    const payload = JSON.stringify(state);
+    let msg = `S|${tick}|`;
+    for (const seat of remoteSeats) msg += `${seat}:${payload.length}:${payload}`;
+    ws.send(msg);
+  },
+  sampleRenderState,
+  onSnapshotFrame,
 };
 
 document.getElementById('menuOnlineBtn').onclick = () => {

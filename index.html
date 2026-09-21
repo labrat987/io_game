@@ -2525,6 +2525,7 @@ function dispatchOrder(type, payload) {
   if (spectating) return false;
   if (netRole === 'CLIENT') {
     if (window.EngineNetAPI) window.EngineNetAPI.sendOrder(type, payload);
+    pushOrderPreview(type, payload);
     return true;
   }
   const handler = ORDER_HANDLERS[type];
@@ -2536,6 +2537,48 @@ function applyRemoteOrder(seat, type, payload) {
   if (!ACTIVE_PLAYERS.includes(seat)) return;
   const handler = ORDER_HANDLERS[type];
   if (handler) handler(payload, seat);
+}
+
+// ============================================================
+// Podgląd rozkazu klienta — natychmiastowa, lokalna informacja zwrotna
+// ("rozkaz przyjęty"), ZANIM host zdąży go faktycznie wykonać i
+// odpowiedzieć nowym snapshotem (patrz maybeBroadcastSnapshot/
+// applyRenderSnapshot niżej) — bez tego opóźnienie sieci wyglądałoby jak
+// brak reakcji gry na kliknięcie. Znika samoistnie po NET_ORDER_PREVIEW_MAX_MS
+// (zwykle znacznie szybciej faktyczny rozkaz i tak już widoczny w kolejnym
+// odebranym snapshocie, ale to nie jest tu sprawdzane — prosty timeout
+// wystarcza, host odpowiada dużo szybciej niż ten limit).
+// ============================================================
+let orderPreviews = []; // {unitIds, target?/targetUnitId?/point?/curve?, expiresAt}
+function pushOrderPreview(type, payload) {
+  if (!['MOVE', 'ATTACK', 'FRONT', 'ROUTE', 'WAYPOINT_ADD'].includes(type)) return;
+  orderPreviews.push({ unitIds: payload.unitIds || [], target: payload.target, targetUnitId: payload.targetUnitId, point: payload.point, curve: payload.curve, expiresAt: performance.now() + NET_ORDER_PREVIEW_MAX_MS });
+}
+function drawOrderPreviews() {
+  if (orderPreviews.length === 0) return;
+  const now = performance.now();
+  orderPreviews = orderPreviews.filter((p) => p.expiresAt > now);
+  if (orderPreviews.length === 0) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 4]);
+  for (const p of orderPreviews) {
+    let target = p.target;
+    if (!target && p.targetUnitId != null) { const t = units.find((x) => x.id === p.targetUnitId); if (t) target = t; }
+    if (!target && p.point) target = p.point;
+    if (!target && p.curve && p.curve.length > 0) target = p.curve[p.curve.length - 1];
+    if (!target) continue;
+    for (const id of p.unitIds) {
+      const u = units.find((x) => x.id === id);
+      if (!u) continue;
+      ctx.beginPath();
+      ctx.moveTo(u.x, u.y);
+      ctx.lineTo(target.x, target.y);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 
 window.addEventListener('mouseup', (e) => {
@@ -5056,6 +5099,57 @@ function onAITick(fn) { aiTickCallbacks.push(fn); }
 let paused = false;
 let gameSpeedMultiplier = 1; // nadpisywane przez applySettings() z Ustawień
 
+// ============================================================
+// TRYB ONLINE — nadawanie stanu (HOST) i odbiór/interpolacja (CLIENT).
+// Serwer/protokół: patrz server/src/index.js i net.js. Prywatność
+// (osobny snapshot na gracza, bez cudzych tras/kolejek/złota) to Krok 6 —
+// na razie KAŻDY zdalny gracz dostaje ten sam, pełny snapshot.
+// ============================================================
+const NET_SNAPSHOT_HZ = 15; // "kilkanaście razy na sekundę" z prośby
+const NET_SNAPSHOT_INTERVAL_MS = 1000 / NET_SNAPSHOT_HZ;
+const NET_INTERPOLATION_DELAY_MS = 120; // ~1.8 odstępu między snapshotami — przeżywa pojedynczy zgubiony pakiet
+const NET_SNAPSHOT_BUFFER_MAX = 4;
+const NET_ORDER_PREVIEW_MAX_MS = 1500;
+
+let lastSnapshotSentAt = 0;
+let snapshotTick = 0;
+
+// HOST — zbiera stan potrzebny do WYŚWIETLENIA gry u innych graczy
+// (nie cały wewnętrzny stan silnika) i oddaje do net.js, które faktycznie
+// wysyła przez WebSocket (patrz EngineNetAPI.sendSnapshot).
+function maybeBroadcastSnapshot(now) {
+  if (!window.EngineNetAPI || !window.EngineNetAPI.sendSnapshot) return;
+  if (now - lastSnapshotSentAt < NET_SNAPSHOT_INTERVAL_MS) return;
+  lastSnapshotSentAt = now;
+  snapshotTick++;
+  window.EngineNetAPI.sendSnapshot(snapshotTick, {
+    units, cities: CITIES, tradeRoutes, gold, goldRate, stats, gameOver,
+  });
+}
+
+// CLIENT — pobiera interpolowany stan z net.js (bufor snapshotów, patrz
+// sampleRenderState) i wpisuje go w te same zmienne, które silnik już i
+// tak czyta do rysowania — draw* poniżej nie wiedzą i nie muszą wiedzieć,
+// skąd wzięły się dane. `selected` (czysto lokalny, wizualny stan gracza)
+// jest ZACHOWYWANY po id, żeby snapshot hosta nie kasował zaznaczenia
+// klienta 15 razy na sekundę.
+function applyRenderSnapshot(now) {
+  if (!window.EngineNetAPI || !window.EngineNetAPI.sampleRenderState) return;
+  const snap = window.EngineNetAPI.sampleRenderState(now);
+  if (!snap) return;
+  const prevSelected = new Map(units.map((u) => [u.id, u.selected]));
+  units = snap.units.map((su) => Object.assign({}, su, { selected: prevSelected.get(su.id) || false }));
+  for (const sc of snap.cities) {
+    const c = CITIES.find((x) => x.id === sc.id);
+    if (c) Object.assign(c, sc);
+  }
+  tradeRoutes = snap.tradeRoutes || [];
+  gold = snap.gold || gold;
+  goldRate = snap.goldRate || goldRate;
+  stats = snap.stats || stats;
+  if (snap.gameOver) gameOver = true;
+}
+
 let lastTime = performance.now();
 function gameLoop(now) {
   if (gameOver) return; // mecz zakończony — ostatnia klatka zamrożona pod #gameOverOverlay, pętla się nie wznawia
@@ -5063,7 +5157,10 @@ function gameLoop(now) {
   const rawDt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now; // aktualizowane ZAWSZE, także w pauzie — inaczej dt "skoczyłby" o czas pauzy przy wznowieniu
 
-  if (!paused) {
+  // Klient trybu online NIE liczy własnej symulacji — wyświetla tę hosta
+  // (patrz applyRenderSnapshot); host i tryb lokalny/AI liczą dokładnie
+  // jak dotąd, bez zmiany ani jednej linii tego bloku.
+  if (netRole !== 'CLIENT' && !paused) {
     const dt = rawDt * gameSpeedMultiplier;
     updateAttackOrders();
     updateChasePaths();
@@ -5080,6 +5177,11 @@ function gameLoop(now) {
     updateGoldPanel();
     updateAIDebugPanel();
   }
+  if (netRole === 'CLIENT') {
+    applyRenderSnapshot(now);
+    updateGoldPanel();
+  }
+  if (netRole === 'HOST') maybeBroadcastSnapshot(now);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
@@ -5103,6 +5205,7 @@ function gameLoop(now) {
   drawWaypointReachedEffects(now);
   drawUnitWaypointRoutes();
   drawPendingTradeRoute();
+  drawOrderPreviews();
   drawGestureFeedback();
   ctx.restore();
   drawOffScreenIndicators(now); // przestrzeń EKRANU, poza ctx.restore() — bez transformacji kamery
