@@ -1603,7 +1603,7 @@ function assignFrontFormation(selectedUnits, curvePoints) {
 // ============================================================
 // KLASYFIKACJA GESTU
 // ============================================================
-const FORMATION_SPACING = 18; // px — odstęp między jednostkami w rozstawieniu grupy
+const FORMATION_SPACING = 13; // px — odstęp między jednostkami w rozstawieniu grupy (18->13: bliżej sumy typowych collisionRadius, żeby grupa idąca w jeden punkt wyglądała zbita, nie rozlazła; resolveCollisions nadal rozsuwa, gdyby się zbytnio nałożyły)
 
 // Zwraca N przesunięć (dx,dy) wokół (0,0): środek + kolejne pierścienie,
 // żeby grupowy rozkaz "idź w punkt" nie kierował wszystkich w ten sam piksel
@@ -2299,12 +2299,12 @@ function updateAttackOrders() {
   }
 }
 
-// BŁĄD naprawiony tu: jednostka wręcz, której cel uciekł poza zasięg
-// ataku, zależała WYŁĄCZNIE od zewnętrznych, okresowych rozkazów ruchu
-// (AI/gracz) — dochodziła do STAREJ pozycji celu, zatrzymywała się i
-// czekała na kolejny rozkaz, więc pościg wyglądał jak "podbiega,
-// zatrzymuje się, rusza ponownie" (patrz zgłoszenie). Naprawa: dopóki
-// resolveCombat utrzymuje zaangażowanie jako "pościg w toku" (cel poza
+// Pościg poza zasięgiem ataku — WYŁĄCZNIE dla jawnie zleconego celu
+// (attackOrderTargetId, PPM atak gracza/AI). Automatyczne zaangażowanie
+// (bez jawnego rozkazu na TEN cel) resolveCombat zrywa natychmiast poza
+// zasięgiem — jednostka po prostu przestaje walczyć z uciekającym
+// wrogiem, zamiast automatycznie go ścigać. Dopóki resolveCombat
+// utrzymuje zaangażowanie jako "pościg w toku" (cel jawnie zlecony, poza
 // zasięgiem, ale w granicach MAX_CHASE_DISTANCE_PX od chaseAnchor — patrz
 // tam), ta funkcja W KAŻDEJ klatce dogania cel ciągłym przeliczaniem
 // trasy, tym samym wzorcem co już sprawdzony updateAttackOrders powyżej
@@ -3283,11 +3283,15 @@ function resolveCombat(allUnits, dt) {
         // zbliżanie ("napieranie" niżej) też wymaga bycia W zasięgu, więc
         // ścigający zależał wyłącznie od zewnętrznych, okresowych rozkazów
         // ruchu — stąd "podbiega do starej pozycji, zatrzymuje się").
-        // Zaangażowanie zostaje, dopóki mieścimy się w istniejącym
-        // MAX_CHASE_DISTANCE_PX od chaseAnchor — patrz updateChasePaths,
-        // która W KAŻDEJ klatce dogania cel ciągłym przeliczaniem trasy.
-        // Dystansowi nie gonią — utrata zasięgu jak dawniej kończy zaangażowanie.
-        if (ucfg.ranged) {
+        // Pościg poza zasięgiem WYŁĄCZNIE dla jawnie zleconego celu (PPM
+        // atak, attackOrderTargetId — patrz issueAttackOrder/updateAttackOrders,
+        // ten mechanizm ma WŁASNY, osobny, ograniczony pościg i zostaje bez
+        // zmian). Bez jawnego rozkazu na TEN konkretny cel, zaangażowanie
+        // kończy się natychmiast poza zasięgiem — jednostka przestaje
+        // walczyć z uciekającym wrogiem zamiast automatycznie go ścigać
+        // (patrz diagnoza F: "goń tylko gdy naciśnę PPM na przeciwnika").
+        // Dystansowi nie gonili nigdy — bez zmian.
+        if (ucfg.ranged || unit.attackOrderTargetId !== current.id) {
           current = null;
         } else if (Math.hypot(unit.x - unit.chaseAnchorX, unit.y - unit.chaseAnchorY) >= MAX_CHASE_DISTANCE_PX) {
           current = null;

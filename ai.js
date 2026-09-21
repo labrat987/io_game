@@ -75,6 +75,7 @@ const AI_CONFIG = {
   offensiveRetreatPowerFraction: 0.6, // spadek własnej siły poniżej tego ułamka stanu z początku ataku -> powrót do ROZBUDOWY
   garrisonMinUnits: 2, // pełny garnizon miasta pod bezpośrednim zagrożeniem
   garrisonPerCityMinUnits: 1, // minimalna obecność w KAŻDYM własnym mieście (nie tylko najbardziej zagrożonym)
+  garrisonTopUpMaxPerCycle: 1, // limit jednostek zabieranych z rezerwy na regularne uzupełnianie garnizonów, ŁĄCZNIE po wszystkich miastach, na CAŁY cykl decyzyjny — bez tego głoduje decideAdvance (patrz diagnoza A)
   cavalryFlankOffsetPx: 60, // odległość skrzydeł kawalerii od reszty formacji (rajd flankujący w decideAdvance)
   groupConsolidationRadius: 150, // px — rozrzut kandydatów do zaangażowania powyżej tego progu -> najpierw się zbierają, zanim ruszą razem
   counterCompositionThreshold: 0.4, // udział danego typu w WIDOCZNEJ armii wroga uznawany za wyraźny wzorzec do skontrowania
@@ -90,7 +91,8 @@ const AI_CONFIG = {
 
   // --- Warstwa strategiczna: postawa i wykrywanie okazji (assessPosture/
   // bestOpportunityScore/opportunityScoreFor) ---
-  postureAttackScoreThreshold: 0.15, // attackScore >= to -> postawa ATTACK
+  postureAttackScoreThreshold: 0.15, // attackScore >= to -> postawa ATTACK (WEJŚCIE)
+  postureLeaveHysteresis: 0.15, // WYJŚCIE z ATTACK wymaga attackScore < (postureAttackScoreThreshold - to) — histereza, żeby drobny wzrost siły wroga gdzieś z dala od walki nie przerywał trwającego natarcia (patrz diagnoza D)
   minEngageThresholdFloor: 0.5, // okazja NIGDY nie obniża progu zaangażowania (decideAdvance) poniżej tego — nigdy atak przy miażdżącej przewadze wroga
   opportunityWeights: { enemyElsewhere: 0.5, weakenedEnemy: 0.5, exposedRanged: 0.6, thinLine: 0.4, weakGarrison: 0.6, enemyHealing: 0.4 },
   opportunityWeakenedHpFraction: 0.6, // średnie HP celu poniżej tego ułamka = "osłabiony"
@@ -513,6 +515,13 @@ function frontCohesionOk(api, state, targetPoint) {
   const homeCenter = api.cityCenter(home);
   const myTotalPower = sumPower(api, myAliveUnits(api, state)) || 1;
   for (const cluster of clusterEnemyUnits(api, state)) {
+    // Pomiń klaster, jeśli to SAM CEL natarcia (centroid w promieniu
+    // clusterRadius od targetPoint) — inaczej gdy celem jest właśnie ten
+    // klaster wroga, cluster.centroid === targetPoint, więc jest
+    // TRYWIALNIE "na segmencie" (dystans 0) i silny cel zawsze blokował
+    // sam siebie jako rzekome zagrożenie odcięcia drogi powrotu (patrz
+    // diagnoza E). To sprawdzenie ma łapać siłę wroga PO DRODZE, nie sam cel.
+    if (dist(cluster.centroid, targetPoint) <= AI_CONFIG.clusterRadius) continue;
     if (!isNearSegment(cluster.centroid, homeCenter, targetPoint, AI_CONFIG.clusterRadius * 1.5)) continue;
     const clusterPower = sumPower(api, cluster.units);
     if (clusterPower >= myTotalPower * AI_CONFIG.frontCohesionBlockingPowerFraction) return false;
@@ -717,12 +726,21 @@ function decideDefense(api, state, now) {
   // TYLKO RAZ na przydzieloną paczkę: raz rozstawiony garnizon nigdy nie
   // dostaje kolejnego rozkazu, więc wypchnięcie przez przechodzące
   // jednostki nie wywołuje żadnego "powrotu" (patrz diagnoza, pkt 7).
-  for (const c of mine) {
+  // Limit na CAŁY cykl (nie na miasto) — bez tego to zachłanne "napełnij
+  // każde miasto od razu" zgarnia KAŻDĄ świeżą jednostkę z rezerwy
+  // wcześniej niż decideAdvance zdąży ją zobaczyć, głodząc trwający atak
+  // (patrz diagnoza A). Miasto już oznaczone jako threatenedCity idzie
+  // pierwsze, żeby realne zagrożenie nadal miało priorytet nad zwykłym
+  // uzupełnianiem.
+  const orderedCities = threatenedCity ? [threatenedCity, ...mine.filter((c) => c !== threatenedCity)] : mine;
+  let topUpBudget = AI_CONFIG.garrisonTopUpMaxPerCycle;
+  for (const c of orderedCities) {
+    if (topUpBudget <= 0) break;
     const center = api.cityCenter(c);
     const requiredMin = c === threatenedCity ? AI_CONFIG.garrisonMinUnits : AI_CONFIG.garrisonPerCityMinUnits;
     const assignedToThisCity = [...state.groups.defense].filter((u) => u.__garrisonCityId === c.id).length;
     if (assignedToThisCity >= requiredMin) continue;
-    let need = requiredMin - assignedToThisCity;
+    let need = Math.min(requiredMin - assignedToThisCity, topUpBudget);
     const newGuards = [];
     while (need > 0 && state.groups.reserve.size > 0) {
       const guard = [...state.groups.reserve][0];
@@ -731,6 +749,7 @@ function decideDefense(api, state, now) {
       state.groups.defense.add(guard);
       newGuards.push(guard);
       need--;
+      topUpBudget--;
     }
     if (newGuards.length > 0) issueLineOrder(api, newGuards, center, null);
   }
@@ -869,6 +888,24 @@ function decideAdvance(api, state, now, allowCityTargets) {
   if (state.advanceTarget && state.groups.offense.size > 0 && state.advanceCommittedAt != null) {
     const committedFor = (now - state.advanceCommittedAt) / 1000;
     if (committedFor < cfgVal('commitmentTime')) {
+      // Dociągnij świeżą rezerwę do TRWAJĄCEGO ataku, w ramach pozostałego
+      // budżetu mocy — bez tego natarcie zamraża się na składzie z
+      // pierwszej tury, a każda nowa jednostka trafia gdzie indziej
+      // pojedynczo (patrz diagnoza A: "pojedyncze jednostki zamiast
+      // zmasowanego ataku").
+      const totalPower = sumPower(api, myAliveUnits(api, state));
+      const maxCommitPower = totalPower * cfgVal('maxArmyCommitmentFraction');
+      let offensePower = sumPower(api, [...state.groups.offense]);
+      if (offensePower < maxCommitPower) {
+        for (const u of [...state.groups.reserve]) {
+          if (u.engagedTargetId != null) continue;
+          const p = unitPower(api, u);
+          if (offensePower + p > maxCommitPower) continue;
+          state.groups.reserve.delete(u);
+          state.groups.offense.add(u);
+          offensePower += p;
+        }
+      }
       issueFormationOrder(api, state.groups.offense, state.advanceTarget.point, homeFor(state.advanceTarget.point));
       return;
     }
@@ -1062,7 +1099,9 @@ function decideHealingRotation(api, state) {
 // jest wolna (rezerwowa) grupa. Aktywne od startu meczu.
 function decideConvoyRaid(api, state) {
   if (Math.random() >= cfgVal('convoyRaidChance')) return;
-  const spareReserve = [...state.groups.reserve];
+  // Wyłącznie wręcz/kawaleria — dystansowi nigdy nie idą sami w głąb
+  // terytorium wroga (patrz diagnoza B), ten sam wzorzec co decideArtilleryRaid.
+  const spareReserve = [...state.groups.reserve].filter((u) => !api.UNIT_TYPES[u.type].ranged);
   if (spareReserve.length === 0) return;
   const enemyConvoys = api.getUnits().filter((u) => u.type === 'CONVOY' && u.owner === state.enemyOwner && u.hp > 0);
   if (enemyConvoys.length === 0) return;
@@ -1102,7 +1141,9 @@ function decideArtilleryRaid(api, state) {
 // konwój — strata to koszt nękania/informacji, nie realnej siły.
 function decideProbe(api, state) {
   if (Math.random() >= cfgVal('probeChance')) return;
-  const spare = [...state.groups.reserve];
+  // Wyłącznie wręcz/kawaleria — sonda nie może wysłać dystansowych samych
+  // pod miasto wroga (patrz diagnoza B).
+  const spare = [...state.groups.reserve].filter((u) => !api.UNIT_TYPES[u.type].ranged);
   if (spare.length < 3) return; // zostaw margines, nie ogałacaj rezerwy do zera
   const probers = spare.slice(0, Math.min(2, spare.length - 2));
   if (probers.length === 0) return;
@@ -1230,6 +1271,13 @@ function decideEconomy(api, state) {
     const weakest = upgradable.sort((a, b) => a.level - b.level)[0];
     return api.upgradeCity(weakest);
   };
+
+  // Gwarantowane, JEDNORAZOWE sprawdzenie ulepszenia PRZED pętlą losową —
+  // bez tego produkcja (tania, kolejka rzadko pełna) prawie zawsze
+  // wygrywa losowanie i zdąży rozmienić złoto na drobne w tym samym
+  // cyklu, zanim drogie, jednorazowe ulepszenie w ogóle dostanie szansę
+  // (patrz diagnoza C — miasta AI nigdy się nie ulepszały).
+  tryUpgrade();
 
   for (let i = 0; i < 20; i++) {
     const preferProduction = Math.random() < productionShare;
@@ -1452,8 +1500,17 @@ function assessPosture(api, state, now) {
   const attackScore = powerRatioTerm + opportunity.score + timePressure + incomePressure;
   const ownConditionPoor = groupHpFraction(api, new Set(myAliveUnits(api, state))) < cfgVal('retreatGroupHpFraction');
 
+  // Histereza WYJŚCIA z ATTACK (patrz diagnoza D): utrzymana postawa
+  // ATTACK wymaga wyraźnego, utrzymującego się spadku attackScore, nie
+  // tylko przejściowego zejścia poniżej progu WEJŚCIA — inaczej drobny
+  // wzrost siły wroga gdzieś z dala od toczącej się walki (np. świeżo
+  // wyprodukowana jednostka gracza) przerywa trwające natarcie co turę.
+  const attackThreshold = state.posture === 'ATTACK'
+    ? AI_CONFIG.postureAttackScoreThreshold - AI_CONFIG.postureLeaveHysteresis
+    : AI_CONFIG.postureAttackScoreThreshold;
+
   let nextPosture, reason;
-  if (attackScore >= AI_CONFIG.postureAttackScoreThreshold) {
+  if (attackScore >= attackThreshold) {
     nextPosture = 'ATTACK';
     reason = opportunity.reasons.length > 0 ? opportunity.reasons.join(', ')
       : incomePressure > 0 ? 'przewaga dochodowa gracza'
