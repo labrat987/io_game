@@ -69,23 +69,25 @@ na konwojach między miastami).
   selekcji
 - PPM klik = ruch najszybszą trasą (kasuje aktywną sekwencję punktów
   nawigacyjnych); PPM przeciągnięcie po pustym terenie = tryb FRONT
-- Trasa dla jednostek — DWA równoległe sposoby wyznaczenia, jedna
-  logika ruchu pod spodem (narysowana krzywa jest wewnętrznie
-  upraszczana do listy punktów i zasila dokładnie ten sam mechanizm co
-  klikanie):
-  1. Ctrl+PPM na zaznaczonych jednostkach = punkt nawigacyjny, klik po
-     kliku. Pierwsze kliknięcie rusza całą grupę do punktu 1 dokładnie
-     jak zwykłe PPM. Kolejne Ctrl+kliknięcia dopisują następne punkty.
-  2. Zwykłe PPM-przeciągnięcie zaczęte NA zaznaczonej jednostce rysuje
-     krzywą (żółta, widoczna tylko podczas rysowania) — po puszczeniu
-     przycisku daje identyczny skutek co seria kliknięć Ctrl+PPM po
-     punktach tej krzywej.
-  W obu przypadkach: grupa idzie ZWARTYM szykiem (ten sam ścisły
-  "pierścień" formationOffsets, ZERO rozsunięcia bocznego — ma dać się
-  przeprowadzić przez wąskie przejście), sekwencja punktów nie jest
-  skracana ani prostowana, grupa rusza do kolejnego punktu dopiero, gdy
-  WSZYSCY żywi członkowie dotarli do bieżącego. Trasa widoczna tylko dla
-  właściciela, dopóki ją wykonuje.
+- Trasa dla jednostek — DWA równoległe, CELOWO RÓŻNE sposoby wyznaczenia
+  (różne mechanizmy pod spodem, nie jedna wspólna logika):
+  1. **Ctrl+PPM** na zaznaczonych jednostkach = punkt nawigacyjny, klik
+     po kliku (`waypointGroups`). Pierwsze kliknięcie rusza całą grupę
+     do punktu 1 dokładnie jak zwykłe PPM (ten sam ścisły "pierścień"
+     formationOffsets, ZERO rozsunięcia bocznego). Kolejne Ctrl+kliknięcia
+     dopisują następne punkty. Grupa rusza do kolejnego punktu dopiero,
+     gdy WSZYSCY żywi członkowie dotarli do bieżącego — nikt nie ucieka
+     do przodu, przydatne do przeprowadzenia oddziału przez wąskie
+     przejście. Sekwencja nie jest skracana ani prostowana.
+  2. **PPM-przeciągnięcie** zaczęte NA zaznaczonej jednostce rysuje
+     ciągłą krzywą (żółta, widoczna tylko podczas rysowania) — jak dawny
+     tryb TRASA / jak dziś konwoje na szlakach handlowych. Po puszczeniu
+     przycisku KAŻDA jednostka wchodzi na tę krzywą w najbliższym dla
+     siebie miejscu i podąża nią NIEZALEŻNIE, jednym ciągłym ruchem, BEZ
+     czekania na resztę oddziału przy żadnym punkcie — szybsza kawaleria
+     nigdy nie stoi, czekając na wolniejszą piechotę. Czekanie na całą
+     grupę dotyczy WYŁĄCZNIE Ctrl+PPM (metoda 1).
+  Trasa (obu metod) widoczna tylko dla właściciela, dopóki ją wykonuje.
 - Szlaki handlowe — TRZY równoległe sposoby, po zaznaczeniu miasta:
   zwykłe PPM na innym własnym mieście = trasa automatyczna (A*);
   Ctrl+PPM = trasa wyznaczona ręcznie punkt po punkcie, kończy ją
@@ -207,15 +209,21 @@ nietykalne.
 - Jednostki jako jednolite koła, kolor = GRACZ (nie typ); typ rozróżniany
   rozmiarem i obrysem
 - Teren w płaskich, nasyconych kolorach, bez gradientów i tekstur
-- Punkty nawigacyjne rysowane jako małe, dyskretne kropki (bez numeracji)
-  połączone przerywaną linią w tym samym kolorze co podgląd zwykłego
-  marszu — mają wyglądać jak naturalne przedłużenie ruchu, nie rzucać się
-  w oczy; osiągnięte punkty wygaszają się (pokazuje postęp trasy). Dotyczy
-  WYKONYWANEJ trasy niezależnie od metody wejścia (klik po kliku czy
-  przeciągnięcie) — to ta sama struktura danych pod spodem
+- Punkty nawigacyjne (WYŁĄCZNIE Ctrl+PPM — jednostki i ręcznie budowany
+  szlak handlowy w trakcie budowania) rysowane jako małe, dyskretne
+  kropki (bez numeracji) połączone przerywaną linią w tym samym kolorze
+  co podgląd zwykłego marszu — mają wyglądać jak naturalne przedłużenie
+  ruchu, nie rzucać się w oczy; osiągnięte punkty wygaszają się (pokazuje
+  postęp trasy)
+- Trasa jednostki narysowana przeciągnięciem (ciągła krzywa, nie punkty)
+  renderuje się w trakcie wykonywania jak zwykły podgląd marszu — zwykła,
+  biała linia, bez kropek — bo to fizycznie zwykły `path`, nie sekwencja
+  punktów. Ukończony szlak handlowy (dowolną z trzech metod) to zawsze
+  ciągła, kolorowa linia w barwie właściciela, też bez kropek.
 - Sam GEST rysowania trasy przeciągnięciem (dopóki trzymasz przycisk
   myszy) jest żółty i gruby — wyraźnie widoczny jako aktywna czynność,
-  w odróżnieniu od dyskretnej, wykonywanej już trasy opisanej wyżej
+  niezależnie od tego, czym się skończy (ciągła trasa jednostki czy
+  szlak handlowy)
 - Paleta graczy kontrastująca z zielenią i szarością terenu: czerwony,
   niebieski, ciemny fiolet, pomarańczowy
 

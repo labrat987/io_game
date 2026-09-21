@@ -230,7 +230,7 @@
   <h4>Sterowanie</h4>
   LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
   PPM: klik = idź do punktu (albo atak, jeśli trafi we wroga), przeciągnięcie po pustym terenie = <span style="color:#ff5533">FRONT (czerwona)</span><br>
-  Trasa dla jednostek — dwa równoległe sposoby, ten sam skutek: <span style="color:#ffd400">Ctrl+PPM</span> na zaznaczonych jednostkach dodaje kolejne punkty nawigacyjne, ALBO zwykłe <span style="color:#ffd400">PPM-przeciągnięcie zaczęte NA zaznaczonej jednostce</span> rysuje trasę — oba dają zwarty szyk, rozsuwa go wyłącznie kolizja<br>
+  Trasa dla jednostek — dwa równoległe, RÓŻNE sposoby: <span style="color:#ffd400">Ctrl+PPM</span> na zaznaczonych jednostkach dodaje kolejne punkty nawigacyjne — zwarty szyk, grupa czeka na wszystkich przy każdym punkcie; <span style="color:#ffd400">PPM-przeciągnięcie zaczęte NA zaznaczonej jednostce</span> rysuje ciągłą trasę — każda jednostka podąża nią NIEZALEŻNIE, szybsza nie czeka na wolniejszą<br>
   Miasto: LPM zaznacz. Szlak handlowy — trzy sposoby: zwykłe PPM na innym własnym mieście = automatyczny szlak, Ctrl+PPM = ręcznie punkt po punkcie, <span style="color:#ffd400">PPM-przeciągnięcie od zaznaczonego miasta do innego własnego</span> = szlak narysowaną krzywą<br>
   Tab: zmień priorytet celu zaznaczonych jednostek dystansowych (najbliższy / artyleria / ciężkie / najsłabszy) —
   LPM w miasto: zaznacz/panel produkcji i szlaków — Delete: usuń zaznaczony szlak
@@ -357,7 +357,7 @@
         <li>PPM przeciągnięcie po pustym terenie = tryb FRONT — jednostki rozstawiają się równomiernie wzdłuż linii</li>
         <li>PPM na jednostce wroga = rozkaz ataku na konkretny cel</li>
         <li><b>Ctrl+PPM</b> na zaznaczonych jednostkach = punkt nawigacyjny — kolejne Ctrl+kliknięcia dodają kolejne punkty; grupa przechodzi przez nie po kolei, zwartym szykiem (rozsuwa ją wyłącznie kolizja) — przydatne do przeprowadzenia oddziału przez wąskie przejście</li>
-        <li><b>PPM-przeciągnięcie zaczęte na zaznaczonej jednostce</b> = drugi, równoległy sposób wyznaczenia tej samej trasy — rysujesz krzywą zamiast klikać punkt po punkcie, efekt (zwarty szyk, sekwencja bez skracania) jest identyczny; trasa widoczna na żółto, dopóki rysujesz</li>
+        <li><b>PPM-przeciągnięcie zaczęte na zaznaczonej jednostce</b> = druga, równoległa metoda — rysujesz ciągłą krzywą (żółta, dopóki rysujesz); po puszczeniu przycisku KAŻDA jednostka podąża nią NIEZALEŻNIE (wchodzi w najbliższym dla siebie miejscu, nie czeka na resztę oddziału przy żadnym odcinku) — inaczej niż Ctrl+PPM, gdzie grupa idzie zwarta i czeka na wszystkich przy każdym punkcie</li>
         <li>PPM z własnego miasta poza jego marker = flaga zbiórki dla nowo wyprodukowanych jednostek</li>
         <li>Zaznaczone własne miasto, szlak handlowy — trzy sposoby: zwykłe PPM na innym własnym mieście = trasa automatyczna; <b>Ctrl+PPM</b> = trasa wyznaczona ręcznie punkt po punkcie, kończy kliknięcie na mieście docelowym; <b>PPM-przeciągnięcie</b> od zaznaczonego miasta do innego własnego = trasa narysowaną krzywą</li>
         <li>Punkt wskazany na górach zostaje automatycznie przesunięty na najbliższe dostępne miejsce (widoczny krótki sygnał)</li>
@@ -2225,12 +2225,28 @@ function advanceWaypointGroups() {
 }
 
 // Trasa narysowana przeciągnięciem (zaczętym NA zaznaczonej jednostce,
-// patrz dragStartHitSelectedUnit/mouseup) — druga metoda WEJŚCIA dla
-// dokładnie tego samego mechanizmu co Ctrl+PPM: krzywa jest już
-// uproszczona (simplifyCurve) przez wywołującego, więc to tylko cienka
-// nakładka na beginUnitWaypointGroup, zero zduplikowanej logiki ruchu.
+// patrz dragStartHitSelectedUnit/mouseup) — ŚWIADOMIE INNY mechanizm niż
+// punkty nawigacyjne: ciągła krzywa, jak dawny tryb TRASA / jak dziś
+// konwoje na szlakach handlowych (buildRoutePath, reużyte 1:1). KAŻDA
+// jednostka liczy WŁASNY, najtańszy punkt wejścia na krzywą
+// (findRouteEntryIndex) i podąża nią do końca jednym, ciągłym `path` —
+// bez dyskretnych przystanków, więc szybsza jednostka (np. kawaleria)
+// nigdy nie czeka na wolniejszą piechotę. To trzymanie prawego przycisku
+// ma dać dokładnie taką trasę, jaką dawał dawny tryb TRASA — nie serię
+// punktów nawigacyjnych (ta zostaje wyłącznie przy Ctrl+PPM).
 function issueUnitRouteOrder(unitList, curvePoints) {
-  beginUnitWaypointGroup(unitList, curvePoints);
+  if (unitList.length === 0 || curvePoints.length === 0) return;
+  const snapped = curvePoints.map(snapToPassableTerrain);
+  for (const u of unitList) {
+    u.waypointGroupId = null; // nowy rozkaz kasuje ewentualną trwającą sekwencję punktów nawigacyjnych
+    u.attackOrderTargetId = null;
+    const rawPath = buildRoutePath(u, snapped);
+    if (rawPath === null) {
+      pushOrderFailEffect(u);
+    } else {
+      u.path = finalizePath(u, rawPath);
+    }
+  }
 }
 
 // Rozkaz ataku na KONKRETNĄ wrogą jednostkę (PPM klik na niej przy
@@ -2439,15 +2455,14 @@ window.addEventListener('mouseup', (e) => {
         if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
         issueFrontOrder(selected, simplifyCurve(rawStrokePoints, 6));
       } else if (dragMode === 'ROUTE') {
-        // Druga metoda wejścia dla dokładnie tej samej mechaniki co
-        // Ctrl+PPM (patrz issueUnitRouteOrder) — narysowana krzywa
-        // upraszcza się do kilku punktów, reszta (zwarta grupa, snapping
-        // z gór, sekwencja bez skracania) dzieje się identycznie.
-        // rawStrokePoints[0] to pozycja NACIŚNIĘCIA, czyli sama jednostka
-        // (ROUTE startuje tylko z przeciągnięcia zaczętego na niej) —
-        // odrzucamy ten punkt, żeby pierwszym "prawdziwym" celem trasy
-        // był pierwszy faktycznie narysowany kawałek, nie "dojście" do
-        // własnej, bieżącej pozycji.
+        // Trasa ciągła (patrz issueUnitRouteOrder) — ŚWIADOMIE INNY
+        // mechanizm niż Ctrl+PPM: żadnych dyskretnych punktów/czekania na
+        // resztę oddziału, każda jednostka podąża narysowaną krzywą
+        // niezależnie, jak dawny tryb TRASA. rawStrokePoints[0] to
+        // pozycja NACIŚNIĘCIA, czyli sama jednostka (ROUTE startuje
+        // tylko z przeciągnięcia zaczętego na niej) — odrzucamy ten
+        // punkt, żeby krzywa zaczynała się od pierwszego faktycznie
+        // narysowanego kawałka, nie od pozycji jednostki sprzed ruchu.
         const last = rawStrokePoints[rawStrokePoints.length - 1];
         if (Math.hypot(pos.x - last.x, pos.y - last.y) > 4) rawStrokePoints.push(pos);
         issueUnitRouteOrder(selected, simplifyCurve(rawStrokePoints.slice(1), 6));
@@ -4792,11 +4807,14 @@ function drawGestureFeedback() {
     ctx.setLineDash([]);
     drawFrontTicks(pts, '#ff5533');
   } else if (dragMode === 'ROUTE' || dragMode === 'TRADE_ROUTE') {
-    // Żółty — WYŁĄCZNIE podczas trwania gestu (patrz issueUnitRouteOrder/
-    // TRADE_ROUTE branch w mouseup); po puszczeniu przycisku trasa staje
-    // się zwykłym wpisem w waypointGroups/tradeRoutes i renderuje się tak
-    // samo jak trasa zrobiona Ctrl+PPM (drawUnitWaypointRoutes/
-    // drawPendingTradeRoute) — to fizycznie ta sama struktura danych.
+    // Żółty — WYŁĄCZNIE podczas trwania gestu. Po puszczeniu przycisku:
+    // ROUTE (jednostki) staje się zwykłym, ciągłym `unit.path`
+    // (issueUnitRouteOrder/buildRoutePath) i renderuje się jak zwykły
+    // podgląd marszu w drawUnits (biała linia) — INNY mechanizm niż
+    // punkty nawigacyjne, świadomie bez wspólnej struktury z Ctrl+PPM.
+    // TRADE_ROUTE (szlak) staje się wpisem w tradeRoutes i renderuje się
+    // jak każdy inny szlak (drawTradeRoutes, w kolorze gracza) — to bez
+    // zmian, szlaki zawsze używały ciągłej krzywej (buildRoutePath).
     ctx.strokeStyle = '#ffd400';
     ctx.lineWidth = 3;
     ctx.setLineDash([8, 5]);
