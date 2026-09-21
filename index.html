@@ -1883,7 +1883,7 @@ function buildCityPanelButtons(city) {
     const cfg = UNIT_TYPES[type];
     const btn = document.createElement('button');
     btn.dataset.type = type;
-    btn.onclick = () => { queueProduction(city, type); };
+    btn.onclick = () => { dispatchOrder('PRODUCE', { cityId: city.id, unitType: type }); };
     btn.addEventListener('mouseenter', () => showUnitStatsTooltip(type));
     btn.addEventListener('mouseleave', hideUnitStatsTooltip);
     cityBuildButtonsEl.appendChild(btn);
@@ -1898,7 +1898,7 @@ function buildCityPanelButtons(city) {
 function buildCityUpgradeSection(city) {
   cityUpgradeSectionEl.innerHTML = '';
   const btn = document.createElement('button');
-  btn.onclick = () => { upgradeCity(city); };
+  btn.onclick = () => { dispatchOrder('UPGRADE', { cityId: city.id }); };
   cityUpgradeSectionEl.appendChild(btn);
 }
 
@@ -1920,11 +1920,7 @@ function buildCityRoutesList(city) {
     label.textContent = `→ ${otherId} `;
     const btn = document.createElement('button');
     btn.textContent = 'Usuń';
-    btn.onclick = () => {
-      tradeRoutes = tradeRoutes.filter(r => r !== route);
-      if (selectedTradeRoute === route) selectedTradeRoute = null;
-      buildCityRoutesList(city);
-    };
+    btn.onclick = () => { dispatchOrder('TRADE_ROUTE_DELETE', { routeId: route.id }); };
     row.appendChild(label);
     row.appendChild(btn);
     cityRoutesListEl.appendChild(row);
@@ -2064,11 +2060,7 @@ window.addEventListener('mouseup', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
-    for (const u of getSelectedUnits()) {
-      if (!UNIT_TYPES[u.type].ranged) continue;
-      const i = TARGET_PRIORITIES.indexOf(u.targetPriority);
-      u.targetPriority = TARGET_PRIORITIES[(i + 1) % TARGET_PRIORITIES.length];
-    }
+    dispatchOrder('TARGET_PRIORITY_CYCLE', { unitIds: getSelectedUnits().map((u) => u.id) });
   } else if (e.key === 'd' || e.key === 'D') {
     // tryb debug — liczba morale nad każdą jednostką, na stałe do balansowania.
     // Mirror do settings/localStorage, żeby checkbox w Ustawieniach i ten
@@ -2079,9 +2071,7 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === 'Delete' || e.key === 'Backspace') {
     if (selectedTradeRoute) {
       e.preventDefault();
-      tradeRoutes = tradeRoutes.filter(r => r !== selectedTradeRoute);
-      selectedTradeRoute = null;
-      if (selectedCity) buildCityRoutesList(selectedCity);
+      dispatchOrder('TRADE_ROUTE_DELETE', { routeId: selectedTradeRoute.id });
     }
   } else if (e.code === 'Space') {
     // Pauza — tylko w grze z AI, gdy mecz faktycznie trwa (nie w menu, nie
@@ -2424,6 +2414,83 @@ function createTradeRoute(cityFrom, cityTo, owner, curve) {
   return true;
 }
 
+// Trzy rozkazy, które wcześniej były inline mutacjami w handlerach myszy/
+// klawiatury (nie samodzielnymi funkcjami) — wydzielone, żeby mogły
+// przejść przez dispatchOrder/ORDER_HANDLERS jak wszystkie inne rozkazy
+// (patrz niżej).
+function setCityRallyPoint(city, point) {
+  city.rallyPoint = point; // point może być null — usunięcie flagi zbiórki
+}
+function deleteTradeRoute(routeId, owner) {
+  const route = tradeRoutes.find(r => r.id === routeId && r.owner === owner);
+  if (!route) return false;
+  tradeRoutes = tradeRoutes.filter(r => r !== route);
+  if (selectedTradeRoute === route) selectedTradeRoute = null;
+  if (selectedCity) buildCityRoutesList(selectedCity);
+  return true;
+}
+function cycleTargetPriority(unitList) {
+  for (const u of unitList) {
+    if (!UNIT_TYPES[u.type].ranged) continue;
+    const i = TARGET_PRIORITIES.indexOf(u.targetPriority);
+    u.targetPriority = TARGET_PRIORITIES[(i + 1) % TARGET_PRIORITIES.length];
+  }
+}
+
+// Rozwiązywanie ID -> żywe obiekty WŁASNOŚCI nadawcy — jedyny filtr
+// bezpieczeństwa rozkazów sieciowych (patrz dispatchOrder/applyRemoteOrder):
+// rozkaz działa WYŁĄCZNIE na jednostkach/miastach należących do tego, kto
+// go wydał. Pełna walidacja legalności rozkazu (np. "czy ten cel jest
+// faktycznie w zasięgu") zostaje wewnątrz funkcji issue*/queueProduction
+// jak dotąd — to jest odłożone na później (patrz CLAUDE.md, "Serwer
+// autorytatywny / anti-cheat").
+function ownedUnits(ids, owner) {
+  const idSet = new Set(ids);
+  return units.filter(u => idSet.has(u.id) && u.owner === owner && u.hp > 0);
+}
+function ownedCity(id, owner) {
+  const c = CITIES.find(c => c.id === id);
+  return (c && c.owner === owner) ? c : null;
+}
+
+// Jedyne miejsce, przez które przechodzi KAŻDY rozkaz gracza (myszy/
+// klawiatury) — patrz CLAUDE.md "Tryb online". AI (ai.js) NIE przechodzi
+// tędy: woła issue*/queueProduction wprost przez window.GameAPI, dokładnie
+// jak dziś, i działa wyłącznie na hoście (aiEnabled).
+const ORDER_HANDLERS = {
+  MOVE: (p, o) => issueMoveOrder(ownedUnits(p.unitIds, o), p.target),
+  FRONT: (p, o) => issueFrontOrder(ownedUnits(p.unitIds, o), p.curve),
+  ROUTE: (p, o) => issueUnitRouteOrder(ownedUnits(p.unitIds, o), p.curve),
+  WAYPOINT_ADD: (p, o) => addUnitWaypoint(ownedUnits(p.unitIds, o), p.point),
+  ATTACK: (p, o) => {
+    const t = units.find((u) => u.id === p.targetUnitId);
+    if (t && t.hp > 0 && t.owner !== o) issueAttackOrder(ownedUnits(p.unitIds, o), t);
+  },
+  PRODUCE: (p, o) => { const c = ownedCity(p.cityId, o); if (c) queueProduction(c, p.unitType); },
+  UPGRADE: (p, o) => { const c = ownedCity(p.cityId, o); if (c) upgradeCity(c); },
+  TRADE_ROUTE_CREATE: (p, o) => createTradeRoute(ownedCity(p.fromCityId, o), ownedCity(p.toCityId, o), o, p.curve),
+  TRADE_ROUTE_DELETE: (p, o) => deleteTradeRoute(p.routeId, o),
+  RALLY_SET: (p, o) => { const c = ownedCity(p.cityId, o); if (c) setCityRallyPoint(c, p.point); },
+  TARGET_PRIORITY_CYCLE: (p, o) => cycleTargetPriority(ownedUnits(p.unitIds, o)),
+};
+
+function dispatchOrder(type, payload) {
+  if (spectating) return false;
+  if (netRole === 'CLIENT') {
+    if (window.EngineNetAPI) window.EngineNetAPI.sendOrder(type, payload);
+    return true;
+  }
+  const handler = ORDER_HANDLERS[type];
+  return handler ? handler(payload, OWNED_PLAYER) !== false : false;
+}
+// Rozkaz zdalnego gracza, odebrany przez hosta — ta SAMA funkcja-handler
+// co dla lokalnego wejścia (dispatchOrder), tylko na cudzym `owner`.
+function applyRemoteOrder(seat, type, payload) {
+  if (!ACTIVE_PLAYERS.includes(seat)) return;
+  const handler = ORDER_HANDLERS[type];
+  if (handler) handler(payload, seat);
+}
+
 window.addEventListener('mouseup', (e) => {
   if (!dragButton) return;
   const pos = getMousePos(e);
@@ -2474,14 +2541,15 @@ window.addEventListener('mouseup', (e) => {
     if (selected.length > 0) {
       if (!wasDrag) {
         const hitAny = findUnitAt(pos.x, pos.y);
+        const selectedIds = selected.map((u) => u.id);
         if (hitAny && hitAny.owner !== OWNED_PLAYER && hitAny.hp > 0) {
-          issueAttackOrder(selected, hitAny);
+          dispatchOrder('ATTACK', { unitIds: selectedIds, targetUnitId: hitAny.id });
         } else {
-          issueMoveOrder(selected, pos); // zwykłe PPM — kasuje trasę punktów nawigacyjnych (patrz issueMoveOrder)
+          dispatchOrder('MOVE', { unitIds: selectedIds, target: pos }); // zwykłe PPM — kasuje trasę punktów nawigacyjnych (patrz issueMoveOrder)
         }
       } else if (dragMode === 'FRONT') {
         if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-        issueFrontOrder(selected, simplifyCurve(rawStrokePoints, 6));
+        dispatchOrder('FRONT', { unitIds: selected.map((u) => u.id), curve: simplifyCurve(rawStrokePoints, 6) });
       } else if (dragMode === 'ROUTE') {
         // Trasa ciągła (patrz issueUnitRouteOrder) — ŚWIADOMIE INNY
         // mechanizm niż Ctrl+PPM: żadnych dyskretnych punktów/czekania na
@@ -2493,7 +2561,7 @@ window.addEventListener('mouseup', (e) => {
         // narysowanego kawałka, nie od pozycji jednostki sprzed ruchu.
         const last = rawStrokePoints[rawStrokePoints.length - 1];
         if (Math.hypot(pos.x - last.x, pos.y - last.y) > 4) rawStrokePoints.push(pos);
-        issueUnitRouteOrder(selected, simplifyCurve(rawStrokePoints.slice(1), 6));
+        dispatchOrder('ROUTE', { unitIds: selected.map((u) => u.id), curve: simplifyCurve(rawStrokePoints.slice(1), 6) });
       }
     } else if (selectedCity) {
       if (!wasDrag) {
@@ -2504,14 +2572,14 @@ window.addEventListener('mouseup', (e) => {
           // buildRoutePath i tak liczy A* między kolejnymi punktami krzywej
           // w chwili ruchu konwoju (patrz spawnCityConvoy) — nie trzeba
           // wcześniej niczego "spłaszczać".
-          createTradeRoute(selectedCity, cityHit, OWNED_PLAYER, [cityCenter(selectedCity), cityCenter(cityHit)]);
+          dispatchOrder('TRADE_ROUTE_CREATE', { fromCityId: selectedCity.id, toCityId: cityHit.id, curve: [cityCenter(selectedCity), cityCenter(cityHit)] });
           pendingTradeRouteSourceCity = null;
           pendingTradeRoutePoints = null;
         } else {
           // Punkt zbiórki: klik na samo (zaznaczone) miasto usuwa flagę,
           // klik gdzie indziej ją ustawia/przenosi — patrz updateEconomy
           // (nowe jednostki dostają od razu rozkaz marszu tam).
-          selectedCity.rallyPoint = (cityHit === selectedCity) ? null : pos;
+          dispatchOrder('RALLY_SET', { cityId: selectedCity.id, point: (cityHit === selectedCity) ? null : pos });
         }
       } else if (dragMode === 'TRADE_ROUTE') {
         // Trzecia metoda wyznaczenia szlaku (obok auto-PPM i ręcznego
@@ -2525,7 +2593,7 @@ window.addEventListener('mouseup', (e) => {
           const curve = simplifyCurve(rawStrokePoints, 6).map(snapToPassableTerrain);
           curve[0] = cityCenter(selectedCity);
           curve[curve.length - 1] = cityCenter(cityHit);
-          createTradeRoute(selectedCity, cityHit, OWNED_PLAYER, curve);
+          dispatchOrder('TRADE_ROUTE_CREATE', { fromCityId: selectedCity.id, toCityId: cityHit.id, curve });
           pendingTradeRouteSourceCity = null;
           pendingTradeRoutePoints = null;
         }
@@ -2534,7 +2602,7 @@ window.addEventListener('mouseup', (e) => {
   } else if (dragButton === 'RIGHT_CTRL') {
     const selected = getSelectedUnits();
     if (selected.length > 0) {
-      addUnitWaypoint(selected, pos);
+      dispatchOrder('WAYPOINT_ADD', { unitIds: selected.map((u) => u.id), point: pos });
     } else if (selectedCity) {
       const cityHit = findCityAt(pos.x, pos.y);
       if (!pendingTradeRouteSourceCity) {
@@ -2544,7 +2612,7 @@ window.addEventListener('mouseup', (e) => {
       if (cityHit && cityHit.owner === OWNED_PLAYER && cityHit !== pendingTradeRouteSourceCity) {
         // Kliknięcie na mieście docelowym kończy ręcznie wyznaczaną trasę.
         const curve = [cityCenter(pendingTradeRouteSourceCity), ...pendingTradeRoutePoints, cityCenter(cityHit)];
-        createTradeRoute(pendingTradeRouteSourceCity, cityHit, OWNED_PLAYER, curve);
+        dispatchOrder('TRADE_ROUTE_CREATE', { fromCityId: pendingTradeRouteSourceCity.id, toCityId: cityHit.id, curve });
         pendingTradeRouteSourceCity = null;
         pendingTradeRoutePoints = null;
       } else {
