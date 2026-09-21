@@ -52,25 +52,43 @@ na konwojach między miastami).
 - Zawsze najpierw przedstaw plan, czekaj na akceptację, dopiero potem koduj
 - Nie dodawaj funkcji, o które nie prosiłem (bez scope creep)
 
-## Terminologia — dwie różne "linie"
-- **Linia rozkazu** — krzywa narysowana przez gracza, do której jednostki
-  nacierają i na której stają. Tymczasowa, znika po wykonaniu rozkazu.
+## Terminologia — "linia frontu" i punkty nawigacyjne
 - **Linia frontu** — emergentna granica między strefami wpływu graczy,
   wynikająca z rozmieszczenia jednostek. Nikt jej nie rysuje, przesuwa się
   sama wraz z ruchem jednostek.
+- **Punkty nawigacyjne** — dawny tryb TRASA (rysowanie krzywej
+  przeciągnięciem) został zastąpiony systemem punktów: Ctrl+PPM dodaje
+  kolejny punkt do sekwencji, obowiązuje to samo dla jednostek i dla
+  szlaków handlowych (patrz niżej). Punkty są trwałe (nie znikają po
+  jednym rozkazie) i grupa/konwój przechodzi przez nie po kolei, bez
+  skracania trasy.
 
 ## Sterowanie (rdzeń rozgrywki)
 - LPM klik w pustkę = odznacz wszystko; LPM klik w jednostkę = zaznacz
   jedną; Shift+LPM = dodaj do zaznaczenia; LPM przeciągnięcie = prostokąt
   selekcji
-- PPM klik = ruch najszybszą trasą; PPM przeciągnięcie OD zaznaczonej
-  jednostki = tryb TRASA; PPM przeciągnięcie po pustym terenie = tryb FRONT
-- Tryb TRASA: jednostki idą PO NARYSOWANEJ KRZYWEJ, nie najkrótszą drogą.
-  A* służy tylko do omijania przeszkód między punktami kontrolnymi. To
-  podstawowa mechanika gry.
+- PPM klik = ruch najszybszą trasą (kasuje aktywną sekwencję punktów
+  nawigacyjnych); PPM przeciągnięcie po pustym terenie = tryb FRONT
+- Ctrl+PPM na zaznaczonych jednostkach = punkt nawigacyjny. Pierwsze
+  kliknięcie rusza całą grupę do punktu 1 dokładnie jak zwykłe PPM
+  (ten sam ścisły "pierścień" formationOffsets, ZERO rozsunięcia
+  bocznego — grupa ma pozostać zwarta, żeby dało się ją przeprowadzić
+  przez wąskie przejście). Kolejne Ctrl+kliknięcia dopisują następne
+  punkty. Grupa rusza do kolejnego punktu dopiero, gdy WSZYSCY żywi
+  członkowie dotarli do bieżącego — nikt nie ucieka do przodu. Trasa
+  jednostek widoczna tylko dla właściciela, dopóki ją wykonuje.
+- Szlaki handlowe: po zaznaczeniu miasta zwykłe PPM na innym własnym
+  mieście tworzy szlak z automatycznie wyznaczoną trasą (A*); Ctrl+PPM
+  pozwala wyznaczyć trasę ręcznie punkt po punkcie, kończy ją kliknięcie
+  na mieście docelowym. Konwoje podążają dokładnie wyznaczoną trasą
+  (między kolejnymi punktami A* z uwzględnieniem terenu), nie skracają
+  jej. Jeden szlak na parę miast — nowy zastępuje stary.
+- Punkt (jednostki albo szlaku) wskazany na nieprzechodnim terenie (góry)
+  zostaje automatycznie przesunięty na najbliższe dostępne miejsce, z
+  krótkim sygnałem wizualnym.
 - Tryb FRONT: jednostki rozstawiają się równomiernie wzdłuż narysowanej
   krzywej, każda idzie do swojego punktu najszybszą trasą. Po dotarciu
-  stają.
+  stają. Bez zmian względem poprzedniej wersji.
 
 ## Ruch i teren
 - Pozycje jednostek ciągłe (float), siatka wyłącznie do pathfindingu i
@@ -170,7 +188,8 @@ nietykalne.
 - Jednostki jako jednolite koła, kolor = GRACZ (nie typ); typ rozróżniany
   rozmiarem i obrysem
 - Teren w płaskich, nasyconych kolorach, bez gradientów i tekstur
-- Linia rozkazu gruba i czarna, strzałki kierunku
+- Punkty nawigacyjne rysowane jako numerowane znaczniki połączone linią,
+  osiągnięte punkty wygaszają się (pokazuje postęp trasy)
 - Paleta graczy kontrastująca z zielenią i szarością terenu: czerwony,
   niebieski, ciemny fiolet, pomarańczowy
 

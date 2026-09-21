@@ -229,9 +229,9 @@
   <button id="legendCloseBtn" title="Zamknij legendę">✕</button>
   <h4>Sterowanie</h4>
   LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = lasso (Shift = dodaj)<br>
-  PPM: klik = idź do punktu, przeciągnięcie z jednostki = <span style="color:#ffd400">TRASA (żółta)</span>,
-  przeciągnięcie po terenie = <span style="color:#ff5533">FRONT (czerwona)</span>,
-  przeciągnięcie z własnego miasta do innego = <span style="color:#2f6fed">SZLAK HANDLOWY</span><br>
+  PPM: klik = idź do punktu (albo atak, jeśli trafi we wroga), przeciągnięcie po pustym terenie = <span style="color:#ff5533">FRONT (czerwona)</span><br>
+  <span style="color:#ffd400">Ctrl+PPM</span> na zaznaczonych jednostkach = dodaj punkt nawigacyjny (kolejne kliknięcia dodają kolejne — grupa idzie przez nie po kolei, zwartym szykiem)<br>
+  Miasto: LPM zaznacz, zwykłe PPM na innym własnym mieście = automatyczny szlak handlowy, Ctrl+PPM = szlak wyznaczony ręcznie punkt po punkcie (kończy kliknięcie na mieście docelowym)<br>
   Tab: zmień priorytet celu zaznaczonych jednostek dystansowych (najbliższy / artyleria / ciężkie / najsłabszy) —
   LPM w miasto: zaznacz/panel produkcji i szlaków — Delete: usuń zaznaczony szlak
 
@@ -352,12 +352,13 @@
       <h3>Sterowanie</h3>
       <ul>
         <li>LPM: klik = zaznacz jednostkę, Shift+klik = dodaj/usuń, przeciągnięcie = zaznaczenie prostokątem (Shift = dodaj)</li>
-        <li>PPM klik na pustym terenie = idź do punktu najszybszą trasą</li>
-        <li>PPM przeciągnięcie OD zaznaczonej jednostki = tryb TRASA — jednostki idą po narysowanej krzywej, nie na skróty</li>
+        <li>PPM klik na pustym terenie = idź do punktu najszybszą trasą (kasuje ewentualną trasę punktów nawigacyjnych)</li>
         <li>PPM przeciągnięcie po pustym terenie = tryb FRONT — jednostki rozstawiają się równomiernie wzdłuż linii</li>
         <li>PPM na jednostce wroga = rozkaz ataku na konkretny cel</li>
+        <li><b>Ctrl+PPM</b> na zaznaczonych jednostkach = punkt nawigacyjny — kolejne Ctrl+kliknięcia dodają kolejne punkty; grupa przechodzi przez nie po kolei, zwartym szykiem (rozsuwa ją wyłącznie kolizja) — przydatne do przeprowadzenia oddziału przez wąskie przejście</li>
         <li>PPM z własnego miasta poza jego marker = flaga zbiórki dla nowo wyprodukowanych jednostek</li>
-        <li>PPM przeciągnięcie z jednego własnego miasta do innego = szlak handlowy</li>
+        <li>Zaznaczone własne miasto: zwykłe PPM na innym własnym mieście = szlak handlowy z automatyczną trasą; <b>Ctrl+PPM</b> = szlak wyznaczony ręcznie punkt po punkcie, kończy kliknięcie na mieście docelowym</li>
+        <li>Punkt wskazany na górach zostaje automatycznie przesunięty na najbliższe dostępne miejsce (widoczny krótki sygnał)</li>
         <li>Tab = zmień priorytet celu zaznaczonych jednostek dystansowych</li>
       </ul>
     </div>
@@ -978,7 +979,20 @@ let gameOver = false;
 let tradeRoutes = []; // {id, owner, cityAId, cityBId, curve:[{x,y}]}
 let nextTradeRouteId = 1;
 let selectedTradeRoute = null; // do usunięcia klawiszem Delete/Backspace albo przyciskiem w panelu
-let dragStartOwnCity = null; // własne miasto, na którym zaczęto PPM przeciągnięcie — rozstrzyga TRADE_ROUTE vs ROUTE/FRONT
+
+// ============================================================
+// PUNKTY NAWIGACYJNE — zastępują dawny tryb TRASA (rysowanie krzywej) i
+// szlaki-przez-przeciągnięcie. Ctrl+PPM dodaje kolejny punkt (jednostki:
+// sekwencja zwykłych rozkazów PPM; miasta: punkty pośrednie szlaku).
+// ============================================================
+let nextWaypointGroupId = 1;
+const waypointGroups = new Map(); // groupId -> {remaining:[{x,y}], memberIds:Set<unitId>}
+let pendingTradeRouteSourceCity = null; // miasto źródłowe podczas budowania RĘCZNEGO szlaku (Ctrl+PPM)
+let pendingTradeRoutePoints = null; // [{x,y},...] punkty pośrednie dodane dotąd (null = nie budujemy ręcznie)
+const TERRAIN_SNAP_EFFECT_DURATION_MS = 600;
+let terrainSnapEffects = []; // {x, y, startTime} — krótki sygnał, gdy klikniety punkt przesunięto z gór na najbliższe dostępne miejsce
+const WAYPOINT_REACHED_EFFECT_DURATION_MS = 800;
+let waypointReachedEffects = []; // {x, y, startTime} — wygaszający się znacznik osiągniętego punktu trasy
 
 // Baner alertów (u góry ekranu) — komunikaty widoczne ZAWSZE, niezależnie
 // od otwartego panelu miasta (np. przejęcie/utrata konwoju musi być
@@ -1049,6 +1063,7 @@ function spawnUnit(type, col, row, owner) {
     engagementDuration: 0, // s trwania AKTUALNEGO zaangażowania — im dłużej trwa, tym bardziej zanika bonus za flankowanie/tył (patrz flankBonusFor)
     chaseAnchorX: null, chaseAnchorY: null, // pozycja w momencie nawiązania AKTUALNEGO zaangażowania — limit dystansu "napierania"/pościgu, patrz MAX_CHASE_DISTANCE_PX w resolveCombat
     chaseLastTargetX: null, chaseLastTargetY: null, // ostatnia pozycja celu, do której policzono trasę pościgu — patrz updateChasePaths
+    waypointGroupId: null, // patrz waypointGroups/addUnitWaypoint/advanceWaypointGroups — punkty nawigacyjne (Ctrl+PPM)
     attackOrderTargetId: null, // wymuszony przez gracza cel ataku (PPM na wrogiej jednostce) — patrz issueAttackOrder/updateAttackOrders/resolveCombat
     attackOrderAnchorX: null, attackOrderAnchorY: null, // pozycja w momencie WYDANIA rozkazu ataku — limit pościgu, ten sam MAX_CHASE_DISTANCE_PX co napieranie
     attackOrderLastTargetX: null, attackOrderLastTargetY: null, // ostatnia pozycja celu, do której liczono trasę — próg przeliczenia, patrz ATTACK_ORDER_REPATH_DIST_PX
@@ -1089,11 +1104,13 @@ function spawnDefaultArmies() {
   spawnUnit('CAVALRY', 23, 12, 'P2');
 }
 
-// Gest myszy
-let dragMode = null; // 'SELECT' | 'ROUTE' | 'FRONT' | null
+// Gest myszy — tryb TRASA (rysowanie krzywej) i szlaki-przez-przeciągnięcie
+// zastąpione systemem punktów nawigacyjnych (Ctrl+PPM, patrz sekcja PUNKTY
+// NAWIGACYJNE) — dragMode obsługuje już tylko zaznaczanie i FRONT.
+let dragMode = null; // 'SELECT' | 'FRONT' | null
 let dragStart = null; // {x,y}
 let dragCurrent = null; // {x,y}
-let rawStrokePoints = []; // dla ROUTE/FRONT
+let rawStrokePoints = []; // dla FRONT
 let lassoPoints = []; // dla SELECT (lasso)
 
 // ============================================================
@@ -1128,6 +1145,18 @@ function nearestPassableTile(col, row) {
     }
   }
   return { col, row };
+}
+
+// Punkt nawigacyjny (jednostki lub szlak) wskazany na nieprzechodnim
+// terenie (góry) — przesuwa go na najbliższe dostępne miejsce i zgłasza
+// krótki efekt wizualny w miejscu ORYGINALNEGO kliknięcia, żeby gracz
+// widział, że coś się przesunęło (patrz terrainSnapEffects, drawGestureFeedback).
+function snapToPassableTerrain(point) {
+  const tile = worldToTile(point.x, point.y);
+  if (isPassable(tile.col, tile.row)) return point;
+  const snapped = nearestPassableTile(tile.col, tile.row);
+  terrainSnapEffects.push({ x: point.x, y: point.y, startTime: performance.now() });
+  return tileToWorld(snapped.col, snapped.row);
 }
 
 const PATH_CORNER_MARGIN = 8; // px — margines od narożnika przeszkody, mniej niż pół kafla (16px)
@@ -1389,15 +1418,18 @@ function pointAtArcLength(points, dist) {
 }
 
 // ============================================================
-// ROZKAZY RUCHU — TRYB A (trasa) / TRYB B (front)
+// ROZKAZY RUCHU — pojedynczy punkt / FRONT (jednostki), krzywa punktów
+// nawigacyjnych (KONWOJE na szlakach handlowych — patrz spawnCityConvoy;
+// dawny tryb TRASA dla jednostek zastąpiony systemem punktów nawigacyjnych,
+// patrz addUnitWaypoint/advanceWaypointGroups)
 // ============================================================
 const ORDER_FAIL_EFFECT_DURATION_MS = 700;
 let orderFailEffects = []; // {x, y, startTime} — czerwony "X" gdy rozkaz nie ma jak dojść do celu
 
-// Jednostka w ruchu, której wydano nowy rozkaz TRASA, mogła już minąć
-// początek narysowanej krzywej — bez tego szukałaby drogi z powrotem do
-// startu. Szukamy punktu na krzywej najtańszego do osiągnięcia (koszt A*
-// ważony terenem, nie linia prosta) zamiast zawsze brać punkt 0.
+// Konwój, któremu wydano trasę szlaku, mógł już minąć początek jej
+// pierwszego odcinka — bez tego szukałby drogi z powrotem do startu.
+// Szukamy punktu na krzywej najtańszego do osiągnięcia (koszt A* ważony
+// terenem, nie linia prosta) zamiast zawsze brać punkt 0.
 const ROUTE_ENTRY_SAMPLE_STEP = 3; // co N-ty punkt krzywej jako kandydat (wydajność)
 const ROUTE_ENTRY_MAX_CANDIDATE_DIST = 300; // px, tani wstępny filtr linią prostą przed A*
 const ROUTE_ENTRY_MAX_REASONABLE_COST = 20; // próg kosztu A* — powyżej: cała trasa od początku (świadomy zamiar gracza)
@@ -1909,6 +1941,10 @@ function hideCityPanel() {
   selectedCity = null;
   cityPanelEl.style.display = 'none';
   hideUnitStatsTooltip();
+  // Odznaczenie miasta w trakcie ręcznego wyznaczania szlaku (Ctrl+PPM)
+  // porzuca niedokończoną trasę — bez tego zostałaby dziwna, martwa referencja.
+  pendingTradeRouteSourceCity = null;
+  pendingTradeRoutePoints = null;
 }
 
 closeCityPanelBtnEl.addEventListener('click', hideCityPanel);
@@ -1925,8 +1961,7 @@ function getMousePos(e) {
   return { x: (screenX - viewOffsetX) / viewScale, y: (screenY - viewOffsetY) / viewScale };
 }
 
-let dragButton = null; // 'LEFT' | 'RIGHT' | null
-let dragStartHitSelectedUnit = false; // dla PPM, liczone przy mousedown
+let dragButton = null; // 'LEFT' | 'RIGHT' | 'RIGHT_CTRL' | null
 const CLICK_DRAG_THRESHOLD = 5; // px — poniżej tego to klik, nie przeciągnięcie
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -2013,12 +2048,15 @@ canvas.addEventListener('mousedown', (e) => {
   if (e.button === 0) {
     dragButton = 'LEFT';
   } else if (e.button === 2) {
-    dragButton = 'RIGHT';
-    const hit = findUnitAt(pos.x, pos.y);
-    dragStartHitSelectedUnit = !!(hit && hit.selected);
-    const cityHit = findCityAt(pos.x, pos.y);
-    dragStartOwnCity = (cityHit && cityHit.owner === OWNED_PLAYER) ? cityHit : null;
-    rawStrokePoints = [pos];
+    if (e.ctrlKey) {
+      // Punkt nawigacyjny (jednostki lub szlak) — ZAWSZE klik, nigdy
+      // przeciągnięcie: ruch myszy między naciśnięciem a puszczeniem nie
+      // ma znaczenia, liczy się wyłącznie pozycja zwolnienia (patrz mouseup).
+      dragButton = 'RIGHT_CTRL';
+    } else {
+      dragButton = 'RIGHT';
+      rawStrokePoints = [pos];
+    }
   } else {
     dragButton = null;
   }
@@ -2037,7 +2075,7 @@ window.addEventListener('mousemove', (e) => {
       dragMode = 'SELECT';
       lassoPoints = [dragStart];
     } else if (dragButton === 'RIGHT') {
-      dragMode = dragStartOwnCity ? 'TRADE_ROUTE' : (dragStartHitSelectedUnit ? 'ROUTE' : 'FRONT');
+      dragMode = 'FRONT';
     }
   }
 
@@ -2046,7 +2084,7 @@ window.addEventListener('mousemove', (e) => {
     if (Math.hypot(pos.x - last.x, pos.y - last.y) > 5) lassoPoints.push(pos);
   }
 
-  if (dragButton === 'RIGHT' && (dragMode === 'ROUTE' || dragMode === 'FRONT' || dragMode === 'TRADE_ROUTE')) {
+  if (dragButton === 'RIGHT' && dragMode === 'FRONT') {
     const last = rawStrokePoints[rawStrokePoints.length - 1];
     if (Math.hypot(pos.x - last.x, pos.y - last.y) > 6) rawStrokePoints.push(pos);
   }
@@ -2065,7 +2103,13 @@ function pushOrderFailEffect(u) {
   orderFailEffects.push({ x: u.x, y: u.y, startTime: performance.now() });
 }
 
-function issueMoveOrder(unitList, target) {
+// movePlain to surowa logika "idź do punktu" (formationOffsets + A*),
+// współdzielona przez issueMoveOrder (rozkaz gracza/AI — zawsze KASUJE
+// aktywną sekwencję punktów nawigacyjnych) i wewnętrzny mechanizm
+// kolejnych odcinków trasy (advanceWaypointGroups niżej — NIE kasuje,
+// bo to WŁAŚNIE kontynuacja tej samej sekwencji). Identyczna dla obu —
+// to jest sedno "zachowanie identyczne jak przy zwykłym PPM" z prośby.
+function movePlain(unitList, target) {
   const offsets = formationOffsets(unitList.length, FORMATION_SPACING);
   unitList.forEach((u, i) => {
     u.attackOrderTargetId = null; // nowy rozkaz zawsze kasuje wymuszony cel ataku
@@ -2078,36 +2122,12 @@ function issueMoveOrder(unitList, target) {
     }
   });
 }
-// BŁĄD naprawiony tu: dawniej KAŻDA jednostka dostawała dokładnie tę samą
-// krzywą — findRouteEntryIndex/buildRoutePath już wyliczał per-jednostkę
-// najbliższy punkt WEJŚCIA na trasę, ale poza tym wszystkie podążały
-// identyczną, współdzieloną linią, więc zbiegały się na niej i grzęzły w
-// sobie nawzajem (patrz zgłoszenie). Naprawa: każda jednostka dostaje
-// WŁASNĄ, równoległą kopię krzywej przesuniętą bocznie (prostopadle do
-// ogólnego kierunku trasy) o wielokrotność FORMATION_SPACING, licząc od
-// środka grupy — jadą obok siebie w luźnym szyku, nie jedna po drugiej.
-function issueRouteOrder(unitList, curve) {
-  const n = unitList.length;
-  const dirStart = curve[0], dirEnd = curve[curve.length - 1];
-  const ddx = dirEnd.x - dirStart.x, ddy = dirEnd.y - dirStart.y;
-  const dlen = Math.hypot(ddx, ddy) || 1;
-  const perpX = -ddy / dlen, perpY = ddx / dlen;
-
-  unitList.forEach((u, i) => {
-    u.attackOrderTargetId = null;
-    const lane = i - (n - 1) / 2;
-    const offset = lane * FORMATION_SPACING;
-    const shiftedCurve = offset === 0 ? curve : curve.map(p => ({ x: p.x + perpX * offset, y: p.y + perpY * offset }));
-    const rawPath = buildRoutePath(u, shiftedCurve);
-    if (rawPath === null) {
-      pushOrderFailEffect(u);
-    } else {
-      u.path = finalizePath(u, rawPath);
-    }
-  });
+function issueMoveOrder(unitList, target) {
+  for (const u of unitList) u.waypointGroupId = null; // zwykły rozkaz kasuje trasę punktów nawigacyjnych
+  movePlain(unitList, target);
 }
 function issueFrontOrder(unitList, curve) {
-  for (const u of unitList) u.attackOrderTargetId = null;
+  for (const u of unitList) { u.attackOrderTargetId = null; u.waypointGroupId = null; }
   const assignments = assignFrontFormation(unitList, curve);
   for (const { unit, target } of assignments) {
     const rawPath = findPath(worldToTile(unit.x, unit.y), worldToTile(target.x, target.y), target);
@@ -2116,6 +2136,44 @@ function issueFrontOrder(unitList, curve) {
     } else {
       unit.path = finalizePath(unit, rawPath);
     }
+  }
+}
+
+// ============================================================
+// PUNKTY NAWIGACYJNE DLA JEDNOSTEK (Ctrl+PPM) — patrz stan na górze pliku
+// (waypointGroups/nextWaypointGroupId). Pierwszy punkt sekwencji rusza
+// GRUPĘ natychmiast (dokładnie jak zwykłe PPM, przez movePlain — ten sam
+// formationOffsets, ten sam "ściśnięty pierścień", ŻADNEGO rozsunięcia
+// bocznego); kolejne Ctrl+kliknięcia tylko dopisują punkty do kolejki.
+// advanceWaypointGroups (wołane co klatkę) rusza CAŁĄ grupę do kolejnego
+// punktu dopiero, gdy WSZYSCY żywi członkowie dotarli do bieżącego —
+// nikt nie ucieka do przodu, więc grupa realnie przechodzi ciasne
+// przejścia razem, nie w rozstrzelonych częściach.
+// ============================================================
+function addUnitWaypoint(unitList, rawPoint) {
+  if (unitList.length === 0) return;
+  const point = snapToPassableTerrain(rawPoint);
+  const existingGroupId = unitList[0].waypointGroupId;
+  const hasGroup = existingGroupId != null && waypointGroups.has(existingGroupId);
+  if (hasGroup) {
+    waypointGroups.get(existingGroupId).remaining.push(point);
+  } else {
+    const groupId = nextWaypointGroupId++;
+    for (const u of unitList) u.waypointGroupId = groupId;
+    waypointGroups.set(groupId, { current: point, remaining: [], memberIds: new Set(unitList.map(u => u.id)) });
+    movePlain(unitList, point); // punkt 1 — rusza natychmiast, jak zwykłe PPM
+  }
+}
+function advanceWaypointGroups() {
+  for (const [groupId, group] of waypointGroups) {
+    const members = units.filter(u => u.hp > 0 && u.waypointGroupId === groupId);
+    if (members.length === 0) { waypointGroups.delete(groupId); continue; }
+    const allArrived = members.every(u => u.path.length === 0);
+    if (!allArrived) continue;
+    if (group.remaining.length === 0) { waypointGroups.delete(groupId); continue; }
+    waypointReachedEffects.push({ x: group.current.x, y: group.current.y, startTime: performance.now() });
+    group.current = group.remaining.shift();
+    movePlain(members, group.current);
   }
 }
 
@@ -2304,45 +2362,55 @@ window.addEventListener('mouseup', (e) => {
       }
     }
   } else if (dragButton === 'RIGHT') {
-    if (dragMode === 'TRADE_ROUTE') {
-      const destCity = findCityAt(pos.x, pos.y);
-      if (!destCity || destCity.owner !== OWNED_PLAYER) {
-        showAlert('Szlak musi kończyć się na własnym mieście');
-      } else if (destCity === dragStartOwnCity) {
-        showAlert('Wybierz inne miasto niż źródłowe');
-      } else {
-        // Jeden szlak na parę miast — nowa trasa zastępuje starą między tą
-        // samą parą (w dowolnej kolejności cityA/cityB), bez potrzeby
-        // ręcznego usuwania. Czysto geometryczny opis — żadnego licznika
-        // tutaj. Licznik wysyłki żyje na MIEŚCIE (city.timeSinceLastConvoy),
-        // którego to utworzenie/usunięcie/zmiana szlaku NIGDY nie dotyka
-        // (patrz updateTradeRoutes) — zabezpieczenie przed exploitem
-        // odświeżania konwojów przerysowywaniem tras.
-        createTradeRoute(dragStartOwnCity, destCity, OWNED_PLAYER, simplifyCurve(rawStrokePoints, 6));
-      }
-    } else {
-      const selected = getSelectedUnits();
-      if (selected.length > 0) {
-        if (!wasDrag) {
-          const hitAny = findUnitAt(pos.x, pos.y);
-          if (hitAny && hitAny.owner !== OWNED_PLAYER && hitAny.hp > 0) {
-            issueAttackOrder(selected, hitAny);
-          } else {
-            issueMoveOrder(selected, pos);
-          }
-        } else if (dragMode === 'ROUTE') {
-          if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-          issueRouteOrder(selected, simplifyCurve(rawStrokePoints, 6));
-        } else if (dragMode === 'FRONT') {
-          if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
-          issueFrontOrder(selected, simplifyCurve(rawStrokePoints, 6));
+    const selected = getSelectedUnits();
+    if (selected.length > 0) {
+      if (!wasDrag) {
+        const hitAny = findUnitAt(pos.x, pos.y);
+        if (hitAny && hitAny.owner !== OWNED_PLAYER && hitAny.hp > 0) {
+          issueAttackOrder(selected, hitAny);
+        } else {
+          issueMoveOrder(selected, pos); // zwykłe PPM — kasuje trasę punktów nawigacyjnych (patrz issueMoveOrder)
         }
-      } else if (!wasDrag && selectedCity) {
+      } else if (dragMode === 'FRONT') {
+        if (Math.hypot(pos.x - rawStrokePoints[0].x, pos.y - rawStrokePoints[0].y) > 4) rawStrokePoints.push(pos);
+        issueFrontOrder(selected, simplifyCurve(rawStrokePoints, 6));
+      }
+    } else if (!wasDrag && selectedCity) {
+      const cityHit = findCityAt(pos.x, pos.y);
+      if (cityHit && cityHit.owner === OWNED_PLAYER && cityHit !== selectedCity) {
+        // Zwykłe PPM na innym własnym mieście = szlak z automatycznie
+        // wyznaczoną trasą — dwa punkty (środki miast) wystarczą, bo
+        // buildRoutePath i tak liczy A* między kolejnymi punktami krzywej
+        // w chwili ruchu konwoju (patrz spawnCityConvoy) — nie trzeba
+        // wcześniej niczego "spłaszczać".
+        createTradeRoute(selectedCity, cityHit, OWNED_PLAYER, [cityCenter(selectedCity), cityCenter(cityHit)]);
+        pendingTradeRouteSourceCity = null;
+        pendingTradeRoutePoints = null;
+      } else {
         // Punkt zbiórki: klik na samo (zaznaczone) miasto usuwa flagę,
         // klik gdzie indziej ją ustawia/przenosi — patrz updateEconomy
         // (nowe jednostki dostają od razu rozkaz marszu tam).
-        const cityHit = findCityAt(pos.x, pos.y);
         selectedCity.rallyPoint = (cityHit === selectedCity) ? null : pos;
+      }
+    }
+  } else if (dragButton === 'RIGHT_CTRL') {
+    const selected = getSelectedUnits();
+    if (selected.length > 0) {
+      addUnitWaypoint(selected, pos);
+    } else if (selectedCity) {
+      const cityHit = findCityAt(pos.x, pos.y);
+      if (!pendingTradeRouteSourceCity) {
+        pendingTradeRouteSourceCity = selectedCity;
+        pendingTradeRoutePoints = [];
+      }
+      if (cityHit && cityHit.owner === OWNED_PLAYER && cityHit !== pendingTradeRouteSourceCity) {
+        // Kliknięcie na mieście docelowym kończy ręcznie wyznaczaną trasę.
+        const curve = [cityCenter(pendingTradeRouteSourceCity), ...pendingTradeRoutePoints, cityCenter(cityHit)];
+        createTradeRoute(pendingTradeRouteSourceCity, cityHit, OWNED_PLAYER, curve);
+        pendingTradeRouteSourceCity = null;
+        pendingTradeRoutePoints = null;
+      } else {
+        pendingTradeRoutePoints.push(snapToPassableTerrain(pos));
       }
     }
   }
@@ -2351,7 +2419,6 @@ window.addEventListener('mouseup', (e) => {
   dragMode = null;
   dragStart = null;
   dragCurrent = null;
-  dragStartOwnCity = null;
   rawStrokePoints = [];
   lassoPoints = [];
 });
@@ -3320,8 +3387,9 @@ const CONVOY_ARRIVAL_RADIUS = 24; // px od środka miasta uznawane za "dotarł"
 // Wysyła jeden konwój Z danego miasta, losując JEDEN z jego szlaków (o
 // ile ma więcej niż jeden) — więcej szlaków daje więcej możliwych
 // kierunków, NIGDY więcej konwojów. Reużywa buildRoutePath/finalizePath,
-// DOKŁADNIE ten sam pipeline co TRASA dla jednostek, więc konwój podąża
-// po krzywej, nie po najkrótszej drodze. Wołane cyklicznie przez
+// więc konwój podąża DOKŁADNIE po punktach nawigacyjnych szlaku
+// (auto albo ręcznych, patrz createTradeRoute/addUnitWaypoint-analogia
+// dla miast), nie po najkrótszej drodze. Wołane cyklicznie przez
 // updateTradeRoutes, bez udziału gracza i bez żadnego kosztu.
 function spawnCityConvoy(city) {
   const cityRoutes = tradeRoutes.filter(r => r.cityAId === city.id || r.cityBId === city.id);
@@ -4402,6 +4470,82 @@ function drawOrderFailEffects(now) {
   }
 }
 
+// Krótki sygnał, gdy klikniety punkt (trasa jednostek albo szlak) był na
+// nieprzechodnim terenie i został przesunięty na najbliższe dostępne miejsce.
+function drawTerrainSnapEffects(now) {
+  terrainSnapEffects = terrainSnapEffects.filter(e => now - e.startTime < TERRAIN_SNAP_EFFECT_DURATION_MS);
+  for (const e of terrainSnapEffects) {
+    const t = (now - e.startTime) / TERRAIN_SNAP_EFFECT_DURATION_MS;
+    ctx.strokeStyle = '#ffa500';
+    ctx.globalAlpha = 1 - t;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, 6 + t * 14, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Punkt trasy jednostek właśnie osiągnięty przez grupę — krótko wygasający
+// znacznik, żeby widać było postęp (patrz advanceWaypointGroups).
+function drawWaypointReachedEffects(now) {
+  waypointReachedEffects = waypointReachedEffects.filter(e => now - e.startTime < WAYPOINT_REACHED_EFFECT_DURATION_MS);
+  for (const e of waypointReachedEffects) {
+    const t = (now - e.startTime) / WAYPOINT_REACHED_EFFECT_DURATION_MS;
+    ctx.fillStyle = PLAYERS[OWNED_PLAYER].color;
+    ctx.globalAlpha = (1 - t) * 0.7;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, 5 + t * 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawNumberedWaypointPath(startPoint, points, color) {
+  if (points.length === 0) return;
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.85;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 5]);
+  ctx.beginPath();
+  ctx.moveTo(startPoint.x, startPoint.y);
+  for (const p of points) ctx.lineTo(p.x, p.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  points.forEach((p, i) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(i + 1), p.x, p.y + 1);
+  });
+  ctx.globalAlpha = 1;
+}
+
+// Trasa WŁASNYCH jednostek — widoczna, dopóki grupa ją wykonuje (patrz
+// waypointGroups; AI nigdy nie zasila tej struktury, więc trasy
+// przeciwnika są tu strukturalnie niewidoczne, bez dodatkowego filtra).
+function drawUnitWaypointRoutes() {
+  for (const [groupId, group] of waypointGroups) {
+    const members = units.filter(u => u.hp > 0 && u.waypointGroupId === groupId);
+    if (members.length === 0) continue;
+    const centroid = { x: members.reduce((s, u) => s + u.x, 0) / members.length, y: members.reduce((s, u) => s + u.y, 0) / members.length };
+    drawNumberedWaypointPath(centroid, [group.current, ...group.remaining], '#ffd400');
+  }
+}
+
+// Szlak handlowy w trakcie ręcznego wyznaczania (Ctrl+PPM na mieście) —
+// widoczny tylko podczas budowania, tak jak reszta panelu miasta wymaga
+// zaznaczenia (patrz zasada widoczności szlaków w drawTradeRoutes).
+function drawPendingTradeRoute() {
+  if (!pendingTradeRouteSourceCity) return;
+  drawNumberedWaypointPath(cityCenter(pendingTradeRouteSourceCity), pendingTradeRoutePoints, PLAYERS[OWNED_PLAYER].color);
+}
+
 function drawAttackLines() {
   for (const { attacker, target } of currentAttacks) {
     ctx.strokeStyle = PLAYERS[attacker.owner].color;
@@ -4479,16 +4623,7 @@ function drawGestureFeedback() {
   const pts = rawStrokePoints;
   if (pts.length < 2) return;
 
-  if (dragMode === 'ROUTE') {
-    ctx.strokeStyle = '#ffd400';
-    ctx.lineWidth = 3;
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-    ctx.stroke();
-    drawDirectionArrows(pts, '#ffd400');
-  } else if (dragMode === 'FRONT') {
+  if (dragMode === 'FRONT') {
     ctx.strokeStyle = '#ff5533';
     ctx.lineWidth = 4;
     ctx.setLineDash([10, 6]);
@@ -4498,38 +4633,6 @@ function drawGestureFeedback() {
     ctx.stroke();
     ctx.setLineDash([]);
     drawFrontTicks(pts, '#ff5533');
-  } else if (dragMode === 'TRADE_ROUTE') {
-    ctx.strokeStyle = PLAYERS[OWNED_PLAYER].color;
-    ctx.globalAlpha = 0.8;
-    ctx.lineWidth = 2.5;
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-}
-
-function drawDirectionArrows(pts, color) {
-  const spacing = 40;
-  let acc = 0;
-  ctx.fillStyle = color;
-  for (let i = 1; i < pts.length; i++) {
-    const a = pts[i-1], b = pts[i];
-    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
-    acc += segLen;
-    if (acc >= spacing) {
-      acc = 0;
-      const angle = Math.atan2(b.y - a.y, b.x - a.x);
-      ctx.save();
-      ctx.translate(b.x, b.y);
-      ctx.rotate(angle);
-      ctx.beginPath();
-      ctx.moveTo(0, 0); ctx.lineTo(-8, -4); ctx.lineTo(-8, 4); ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
   }
 }
 
@@ -4567,7 +4670,7 @@ function onAITick(fn) { aiTickCallbacks.push(fn); }
 
 // Pauza (tylko w grze z AI, patrz sekcja MENU/START GRY): zamraża
 // WYŁĄCZNIE ten blok symulacji poniżej — rysowanie i obsługa myszy/
-// klawiatury (a więc wydawanie rozkazów: selekcja, TRASA/FRONT, rozkaz
+// klawiatury (a więc wydawanie rozkazów: selekcja, punkty nawigacyjne/FRONT, rozkaz
 // ataku, flaga zbiórki, produkcja, szlaki) działają bez zmian, bo są
 // osobnymi listenerami mutującymi stan (unit.path/city.queue/...), nie
 // częścią tej pętli. Rozkaz wydany w pauzie po prostu czeka na
@@ -4586,6 +4689,7 @@ function gameLoop(now) {
     const dt = rawDt * gameSpeedMultiplier;
     updateAttackOrders();
     updateChasePaths();
+    advanceWaypointGroups();
     for (const u of units) updateUnit(u, dt);
     for (let i = 0; i < COLLISION_RESOLVE_ITERATIONS; i++) resolveCollisions(units);
     units = resolveCombat(units, dt);
@@ -4616,6 +4720,10 @@ function gameLoop(now) {
   drawConvoyArrivalEffects(now);
   drawCaptureAlertEffects(now);
   drawOrderFailEffects(now);
+  drawTerrainSnapEffects(now);
+  drawWaypointReachedEffects(now);
+  drawUnitWaypointRoutes();
+  drawPendingTradeRoute();
   drawGestureFeedback();
   ctx.restore();
   drawOffScreenIndicators(now); // przestrzeń EKRANU, poza ctx.restore() — bez transformacji kamery
@@ -4970,7 +5078,7 @@ window.GameAPI = {
   isGameOver: () => gameOver,
   findPath, finalizePath, buildRoutePath, assignFrontTargets, simplifyCurve, formationOffsets,
   worldToTile, tileToWorld, cityCenter, terrainAt, effectiveAttackRange, isDefendingOwnCityZone,
-  issueMoveOrder, issueRouteOrder, issueFrontOrder, queueProduction, upgradeCity, createTradeRoute, setTargetPriority,
+  issueMoveOrder, issueFrontOrder, queueProduction, upgradeCity, createTradeRoute, setTargetPriority,
   onTick: onAITick,
 };
 
