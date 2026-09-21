@@ -190,6 +190,41 @@
   .howToSection p, .howToSection li { color: #ccc; font-size: 12px; line-height: 1.6; margin: 0 0 4px; }
   .howToSection ul { margin: 4px 0; padding-left: 18px; }
 
+  /* Tryb online — lista lobby, formularz tworzenia, poczekalnia. Reużywa
+     .menuButton/.menuPanel, dokłada tylko to, czego tam brakuje (wiersze
+     listy, pola tekstowe, kropki gotowości/kolor gracza). */
+  .lobbyListRow {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #232323; border: 1px solid #444; border-radius: 5px;
+    padding: 10px 14px; margin-bottom: 8px; cursor: pointer;
+  }
+  .lobbyListRow:hover { border-color: #888; }
+  .lobbyListRow .lobbyName { color: #eee; font-size: 13px; }
+  .lobbyListRow .lobbyMeta { color: #999; font-size: 11px; margin-top: 2px; }
+  .lobbyEmptyHint { color: #999; font-size: 12px; text-align: center; padding: 16px 0; }
+  .netTextInput {
+    width: 100%; padding: 10px 12px; margin: 6px 0 14px; box-sizing: border-box;
+    background: #1a1a1a; color: #eee; border: 1px solid #555; border-radius: 5px;
+    font: 14px monospace;
+  }
+  .modeToggleRow { display: flex; gap: 10px; margin-bottom: 14px; }
+  .modeToggleBtn {
+    flex: 1; padding: 12px; border: 2px solid #555; border-radius: 6px;
+    background: #232323; color: #eee; cursor: pointer; font: 13px monospace; text-align: center;
+  }
+  .modeToggleBtn.selected { border-color: #ffcc66; background: #2e2a1c; }
+  .seatRow {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 12px; margin-bottom: 6px; border-radius: 5px;
+    background: #232323; border: 1px solid #3a3a3a;
+  }
+  .seatColorDot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; flex-shrink: 0; }
+  .seatName { color: #eee; font-size: 13px; }
+  .seatReady { font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+  .seatReady.isReady { background: #1f4a1f; color: #7fdc7f; }
+  .seatReady.notReady { background: #4a3a1f; color: #dcb87f; }
+  .seatEmpty { color: #777; font-style: italic; font-size: 12px; }
+
   #pauseButton {
     position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
     z-index: 90; color: #eee; font: 12px monospace; cursor: pointer;
@@ -325,6 +360,18 @@
     </div>
     <button class="menuButton" id="difficultyStartBtn" style="text-align:center;">Rozpocznij</button>
     <div class="menuBackRow"><button class="menuButton" id="difficultyBackBtn">Wstecz</button></div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Tryb online — cała treść renderowana dynamicznie przez net.js
+     (lista lobby / formularz tworzenia / poczekalnia), ten sam wzorzec co
+     #settingsRows. Jeden overlay, wymieniana WYŁĄCZNIE zawartość
+     #onlineContent — patrz net.js renderLobbyList/renderCreateForm/renderLobbyRoom.
+     ============================================================ -->
+<div id="onlineOverlay" class="fullscreenOverlay">
+  <div class="menuPanel wide">
+    <div id="onlineContent"></div>
   </div>
 </div>
 
@@ -5605,5 +5652,6 @@ function startGame(config) {
 if (HEADLESS) hideOverlay(mainMenuOverlayEl);
 </script>
 <script type="module" src="ai.js"></script>
+<script type="module" src="net.js"></script>
 </body>
 </html>
