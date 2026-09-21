@@ -69,20 +69,31 @@ na konwojach między miastami).
   selekcji
 - PPM klik = ruch najszybszą trasą (kasuje aktywną sekwencję punktów
   nawigacyjnych); PPM przeciągnięcie po pustym terenie = tryb FRONT
-- Ctrl+PPM na zaznaczonych jednostkach = punkt nawigacyjny. Pierwsze
-  kliknięcie rusza całą grupę do punktu 1 dokładnie jak zwykłe PPM
-  (ten sam ścisły "pierścień" formationOffsets, ZERO rozsunięcia
-  bocznego — grupa ma pozostać zwarta, żeby dało się ją przeprowadzić
-  przez wąskie przejście). Kolejne Ctrl+kliknięcia dopisują następne
-  punkty. Grupa rusza do kolejnego punktu dopiero, gdy WSZYSCY żywi
-  członkowie dotarli do bieżącego — nikt nie ucieka do przodu. Trasa
-  jednostek widoczna tylko dla właściciela, dopóki ją wykonuje.
-- Szlaki handlowe: po zaznaczeniu miasta zwykłe PPM na innym własnym
-  mieście tworzy szlak z automatycznie wyznaczoną trasą (A*); Ctrl+PPM
-  pozwala wyznaczyć trasę ręcznie punkt po punkcie, kończy ją kliknięcie
-  na mieście docelowym. Konwoje podążają dokładnie wyznaczoną trasą
-  (między kolejnymi punktami A* z uwzględnieniem terenu), nie skracają
-  jej. Jeden szlak na parę miast — nowy zastępuje stary.
+- Trasa dla jednostek — DWA równoległe sposoby wyznaczenia, jedna
+  logika ruchu pod spodem (narysowana krzywa jest wewnętrznie
+  upraszczana do listy punktów i zasila dokładnie ten sam mechanizm co
+  klikanie):
+  1. Ctrl+PPM na zaznaczonych jednostkach = punkt nawigacyjny, klik po
+     kliku. Pierwsze kliknięcie rusza całą grupę do punktu 1 dokładnie
+     jak zwykłe PPM. Kolejne Ctrl+kliknięcia dopisują następne punkty.
+  2. Zwykłe PPM-przeciągnięcie zaczęte NA zaznaczonej jednostce rysuje
+     krzywą (żółta, widoczna tylko podczas rysowania) — po puszczeniu
+     przycisku daje identyczny skutek co seria kliknięć Ctrl+PPM po
+     punktach tej krzywej.
+  W obu przypadkach: grupa idzie ZWARTYM szykiem (ten sam ścisły
+  "pierścień" formationOffsets, ZERO rozsunięcia bocznego — ma dać się
+  przeprowadzić przez wąskie przejście), sekwencja punktów nie jest
+  skracana ani prostowana, grupa rusza do kolejnego punktu dopiero, gdy
+  WSZYSCY żywi członkowie dotarli do bieżącego. Trasa widoczna tylko dla
+  właściciela, dopóki ją wykonuje.
+- Szlaki handlowe — TRZY równoległe sposoby, po zaznaczeniu miasta:
+  zwykłe PPM na innym własnym mieście = trasa automatyczna (A*);
+  Ctrl+PPM = trasa wyznaczona ręcznie punkt po punkcie, kończy ją
+  kliknięcie na mieście docelowym; PPM-przeciągnięcie od zaznaczonego
+  miasta do innego własnego = trasa narysowaną krzywą (żółta podczas
+  rysowania). Konwoje podążają dokładnie wyznaczoną trasą (między
+  kolejnymi punktami A* z uwzględnieniem terenu), nie skracają jej.
+  Jeden szlak na parę miast — nowy zastępuje stary.
 - Punkt (jednostki albo szlaku) wskazany na nieprzechodnim terenie (góry)
   zostaje automatycznie przesunięty na najbliższe dostępne miejsce, z
   krótkim sygnałem wizualnym.
@@ -199,7 +210,12 @@ nietykalne.
 - Punkty nawigacyjne rysowane jako małe, dyskretne kropki (bez numeracji)
   połączone przerywaną linią w tym samym kolorze co podgląd zwykłego
   marszu — mają wyglądać jak naturalne przedłużenie ruchu, nie rzucać się
-  w oczy; osiągnięte punkty wygaszają się (pokazuje postęp trasy)
+  w oczy; osiągnięte punkty wygaszają się (pokazuje postęp trasy). Dotyczy
+  WYKONYWANEJ trasy niezależnie od metody wejścia (klik po kliku czy
+  przeciągnięcie) — to ta sama struktura danych pod spodem
+- Sam GEST rysowania trasy przeciągnięciem (dopóki trzymasz przycisk
+  myszy) jest żółty i gruby — wyraźnie widoczny jako aktywna czynność,
+  w odróżnieniu od dyskretnej, wykonywanej już trasy opisanej wyżej
 - Paleta graczy kontrastująca z zielenią i szarością terenu: czerwony,
   niebieski, ciemny fiolet, pomarańczowy
 

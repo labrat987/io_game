@@ -23,23 +23,40 @@
 // jest identyczna na każdym poziomie. Poziomy (AI_LEVELS, EASY/MEDIUM/
 // HARD/EXPERT) różnią się WYŁĄCZNIE parametrami czytanymi przez cfgVal()
 // — szybkością reakcji I TEMPEM decyzji (decisionIntervalSeconds/
-// commitmentTime — dawniej błędnie wspólne dla wszystkich poziomów),
-// dokładnością wykonania (tacticalSkill: formacje, wykorzystanie terenu,
-// konsolidacja sił, ochrona artylerii, dobór składu — wszystko gated
+// postureIntervalSeconds/commitmentTime), dokładnością wykonania
+// (tacticalSkill: formacje, wykorzystanie terenu, konsolidacja sił,
+// ochrona artylerii, dobór składu, wybór drogi natarcia — wszystko gated
 // jednym rzutem "czy dowódca wykonał to dobrze"), szansą na aktywny błąd
-// (mistakeChance), progami podjęcia walki i intensywnością presji (sondy,
-// rajdy, stała obecność do przodu). Żaden poziom nie dostaje bonusów do
-// złota/produkcji/prędkości/obrażeń ani wiedzy o niewidocznych jednostkach
-// — różnica to WYŁĄCZNIE jakość i szybkość tych samych decyzji.
+// (mistakeChance, w tym błędny wybór POSTAWY), czujnością na okazje
+// (opportunityAwareness), progami podjęcia walki, skłonnością do
+// dokańczania zwycięstw (pressAdvantageChance) i intensywnością presji
+// (sondy, rajdy, stała obecność do przodu). Żaden poziom nie dostaje
+// bonusów do złota/produkcji/prędkości/obrażeń ani wiedzy o niewidocznych
+// jednostkach — różnica to WYŁĄCZNIE jakość i szybkość tych samych decyzji.
+//
+// WARSTWA STRATEGICZNA — POSTAWA: co postureIntervalSeconds (zależne od
+// poziomu) AI ocenia sytuację i wybiera POSTAWĘ — ATTACK/BUILD/DEFENSE
+// (patrz assessPosture) — determinującą wszystkie niższe decyzje
+// (produkcję, cele natarcia, gotowość do ryzyka). Trzyma się wybranej
+// postawy przez commitmentTime, chyba że sytuacja zmieni się drastycznie
+// (miasto realnie zagrożone -> natychmiastowa DEFENSE, z pominięciem
+// commitmentTime). Domyślnie AI buduje przewagę (BUILD) — atak jest
+// wyjątkiem wymagającym uzasadnienia (przewaga sił, wykryta okazja,
+// narastająca presja czasu), nigdy odruchem.
 //
 // "AI widzi tylko to, co widziałby gracz" — silnik nie ma fog of war
 // (potwierdzone), więc to WYŁĄCZNIE dyscyplina kodu poniżej. Pozycje,
 // typ, HP, morale, routed i owner KAŻDEJ jednostki są zawsze widoczne
 // na mapie (paski HP/morale rysowane dla wszystkich) — to uczciwa
 // wiedza, identyczna z tym, co widzi człowiek grający przeciwko AI, więc
-// ocena siły wroga na podstawie getUnits() NIE jest oszustwem. Za to
-// AI NIGDY nie czyta gold/kolejki/postępu ulepszenia CUDZYCH miast —
-// gracz też tego nie widzi (panel miasta pokazuje wyłącznie własne).
+// ocena siły wroga na podstawie getUnits() NIE jest oszustwem. AI NIGDY
+// nie czyta gold/kolejki/postępu ulepszenia CUDZYCH miast — gracz też
+// tego nie widzi (panel miasta pokazuje wyłącznie własne). JEDEN,
+// ŚWIADOMY wyjątek od tej zasady (assessPosture, presja dochodowa):
+// porównanie WŁASNEGO tempa dochodu (goldRate) z tempem dochodu gracza —
+// to jedna, zagregowana liczba (nie gold/kolejka/poziom miast), wprost
+// proszona funkcja ("czas działa na niekorzyść, gdy gracz zarabia
+// wyraźnie więcej"), nie przeoczenie reguły powyżej.
 // AI podlega tym samym mechanikom co gracz bez wyjątków: morale,
 // leczenie wyłącznie w strefie miasta, bonus "ostatniej szansy".
 // ============================================================
@@ -53,25 +70,9 @@
 const AI_CONFIG = {
   clusterRadius: 100, // px — promień grupowania widocznych jednostek wroga w "armie" (klastry)
   frontCohesionBlockingPowerFraction: 0.5, // jeśli siła wroga "za plecami" (między domem a celem) >= tyle razy CAŁA siła AI, wstrzymaj głębokie natarcie
-  midToOffensivePowerRatioFloor: 1.15, // dolny limit progu po złagodzeniu przy patcie — mecz ma się kończyć, niezależnie od poziomu
-  // Minimalny WŁASNY dochód (zł/s) wymagany do rozważenia ofensywy.
-  // BŁĄD naprawiony tu: GameAPI.goldRate to WYŁĄCZNIE wygładzone tempo
-  // płaskiego dochodu z miast (index.html/updateEconomy) — konwoje
-  // (dominujące, skokowe źródło zysku) NIGDY go nie zasilają
-  // (updateConvoys dopisuje do gold[], nie do goldRate[]). Przy
-  // CITY_BASE_INCOME_PER_SECOND=0.11 i realistycznych 2-3 miastach
-  // osiągalne goldRate to ~0.22-0.33 zł/s — próg 1.0 był NIEOSIĄGALNY
-  // bez desperackiego bonusu "ostatniego miasta", więc AI praktycznie
-  // nigdy nie wchodziło w fazę OFFENSIVE (potwierdzone empirycznie: 12
-  // minut realnej walki, zero przejść do OFFENSIVE na żadnym poziomie).
-  // 0.15 jest osiągalne już przy 2 miastach (0.22 zł/s), wciąż wymaga
-  // rzeczywistej, nie tylko chwilowej, gospodarki.
-  midToOffensiveMinOwnIncome: 0.15,
   bigVictoryEnemyPowerDrop: 120, // nagły spadek widocznej siły wroga między turami uznawany za "dużą bitwę"
-  bigVictoryWindowSeconds: 90, // jak długo "świeże zwycięstwo" liczy się jako samodzielny powód wejścia w ofensywę
-  offensiveRetreatPowerFraction: 0.6, // spadek własnej siły poniżej tego ułamka stanu z początku ofensywy -> powrót do fazy środkowej
-  stalemateSofteningStartSeconds: 360, // 6 minut bez wejścia w ofensywę -> zacznij łagodzić próg przewagi
-  stalemateSofteningRatePerSecond: 0.001, // tempo łagodzenia progu ponad powyższy czas
+  bigVictoryWindowSeconds: 90, // jak długo "świeże zwycięstwo" liczy się jako samodzielny powód dalszego naciskania
+  offensiveRetreatPowerFraction: 0.6, // spadek własnej siły poniżej tego ułamka stanu z początku ataku -> powrót do ROZBUDOWY
   garrisonMinUnits: 2, // pełny garnizon miasta pod bezpośrednim zagrożeniem
   garrisonPerCityMinUnits: 1, // minimalna obecność w KAŻDYM własnym mieście (nie tylko najbardziej zagrożonym)
   cavalryFlankOffsetPx: 60, // odległość skrzydeł kawalerii od reszty formacji (rajd flankujący w decideAdvance)
@@ -86,6 +87,23 @@ const AI_CONFIG = {
     CANNON: 0.1,
     CAVALRY: 0.15,
   },
+
+  // --- Warstwa strategiczna: postawa i wykrywanie okazji (assessPosture/
+  // bestOpportunityScore/opportunityScoreFor) ---
+  postureAttackScoreThreshold: 0.15, // attackScore >= to -> postawa ATTACK
+  minEngageThresholdFloor: 0.5, // okazja NIGDY nie obniża progu zaangażowania (decideAdvance) poniżej tego — nigdy atak przy miażdżącej przewadze wroga
+  opportunityWeights: { enemyElsewhere: 0.5, weakenedEnemy: 0.5, exposedRanged: 0.6, thinLine: 0.4, weakGarrison: 0.6, enemyHealing: 0.4 },
+  opportunityWeakenedHpFraction: 0.6, // średnie HP celu poniżej tego ułamka = "osłabiony"
+  opportunityExposedRangedRadiusPx: 70, // brak sojuszniczej (dla wroga) jednostki wręcz bliżej niż to = "odsłonięty"
+  opportunityThinLineSpacingPx: 45, // średnia odległość do najbliższego sąsiada powyżej tego = "rozciągnięta linia"
+  opportunityElsewhereDistancePx: 300, // najbliższy INNY klaster wroga dalej niż to = "zaangażowany/oddalony gdzie indziej"
+  matchDurationPressureStartSeconds: 240, // od tylu sekund meczu zaczyna rosnąć ciągła presja czasu w attackScore
+  matchDurationPressurePerSecond: 0.0008, // tempo narastania presji czasu ponad powyższy próg
+  incomeDisadvantageThreshold: 1.2, // dochód gracza / dochód AI >= to -> "czas działa na niekorzyść AI"
+  incomeDisadvantagePressureBonus: 0.2, // wkład tej przesłanki do attackScore
+  routeFlankOffsetPx: 70, // przesunięcie kandydackich dróg natarcia przy wyborze drogi (decideAdvance)
+  forestFlankBias: 0.2, // bazowa nagroda za drogę omijającą przez las (per-poziom nadpisuje, patrz AI_LEVELS)
+  minEscortMeleeCount: 1, // minimalna eskorta wręcz dla dystansowych w zgrupowaniu ataku — nigdy sami dystansowi
 };
 
 // ------------------------------------------------------------
@@ -109,6 +127,7 @@ const AI_CONFIG = {
 const AI_LEVELS = {
   EASY: {
     decisionIntervalSeconds: 6,
+    postureIntervalSeconds: 22,
     commitmentTime: 60,
     regroupDurationSeconds: 40,
     retreatCooldownSeconds: 20,
@@ -124,14 +143,17 @@ const AI_LEVELS = {
     probeChance: 0.05,
     convoyRaidChance: 0.10,
     openingArmyPowerThreshold: 400,
-    midToOffensivePowerRatio: 2.0,
     forwardDefenseFraction: 0,
     maxForwardPositions: 1,
-    economySplitByPhase: { OPENING: 0.65, MIDGAME: 0.70, OFFENSIVE: 0.80 },
+    opportunityAwareness: 0.25,
+    forestFlankBias: 0,
+    pressAdvantageChance: 0.30,
+    economySplitByPosture: { OPENING: 0.65, BUILD: 0.70, ATTACK: 0.80 },
     economySplitUnderPressure: 0.85,
   },
   MEDIUM: {
     decisionIntervalSeconds: 4,
+    postureIntervalSeconds: 15,
     commitmentTime: 40,
     regroupDurationSeconds: 30,
     retreatCooldownSeconds: 15,
@@ -147,14 +169,17 @@ const AI_LEVELS = {
     probeChance: 0.15,
     convoyRaidChance: 0.20,
     openingArmyPowerThreshold: 300,
-    midToOffensivePowerRatio: 1.6,
     forwardDefenseFraction: 0.10,
     maxForwardPositions: 1,
-    economySplitByPhase: { OPENING: 0.55, MIDGAME: 0.75, OFFENSIVE: 0.85 },
+    opportunityAwareness: 0.55,
+    forestFlankBias: 0.15,
+    pressAdvantageChance: 0.60,
+    economySplitByPosture: { OPENING: 0.55, BUILD: 0.75, ATTACK: 0.85 },
     economySplitUnderPressure: 0.90,
   },
   HARD: {
     decisionIntervalSeconds: 2.5,
+    postureIntervalSeconds: 10,
     commitmentTime: 25,
     regroupDurationSeconds: 20,
     retreatCooldownSeconds: 10,
@@ -170,14 +195,17 @@ const AI_LEVELS = {
     probeChance: 0.30,
     convoyRaidChance: 0.30,
     openingArmyPowerThreshold: 220,
-    midToOffensivePowerRatio: 1.3,
     forwardDefenseFraction: 0.20,
     maxForwardPositions: 2,
-    economySplitByPhase: { OPENING: 0.50, MIDGAME: 0.78, OFFENSIVE: 0.88 },
+    opportunityAwareness: 0.80,
+    forestFlankBias: 0.30,
+    pressAdvantageChance: 0.85,
+    economySplitByPosture: { OPENING: 0.50, BUILD: 0.78, ATTACK: 0.88 },
     economySplitUnderPressure: 0.93,
   },
   EXPERT: {
     decisionIntervalSeconds: 1.5,
+    postureIntervalSeconds: 7,
     commitmentTime: 15,
     regroupDurationSeconds: 12,
     retreatCooldownSeconds: 6,
@@ -193,10 +221,12 @@ const AI_LEVELS = {
     probeChance: 0.45,
     convoyRaidChance: 0.45,
     openingArmyPowerThreshold: 180,
-    midToOffensivePowerRatio: 1.15,
     forwardDefenseFraction: 0.35,
     maxForwardPositions: 3,
-    economySplitByPhase: { OPENING: 0.45, MIDGAME: 0.80, OFFENSIVE: 0.90 },
+    opportunityAwareness: 0.97,
+    forestFlankBias: 0.50,
+    pressAdvantageChance: 1.00,
+    economySplitByPosture: { OPENING: 0.45, BUILD: 0.80, ATTACK: 0.90 },
     economySplitUnderPressure: 0.95,
   },
 };
@@ -230,15 +260,21 @@ function createState() {
       offense: new Set(),
       reserve: new Set(),
     },
-    // Faza operacyjna — patrz updatePhase. Przejścia oparte o sytuację,
-    // nie zegar (poza łagodzeniem progu przy bardzo długim patcie).
-    phase: 'OPENING',
-    phaseSince: 0,
+    // Postawa strategiczna — patrz assessPosture. Przejścia oparte o
+    // sytuację (attackScore/zagrożenie miasta), nie zegar — poza
+    // otwarciem (inOpening) i cadencją ponownej oceny (postureTimer).
+    posture: 'BUILD',
+    postureSince: 0,
+    postureReason: 'otwarcie',
+    postureTimer: 0, // osobny zegar od decisionTimer — ocena postawy jest RZADSZA (postureIntervalSeconds) niż wykonawcze decyzje
+    inOpening: true, // dopóki true, posture zawsze BUILD (spokojne otwarcie) — patrz assessPosture, jednokierunkowe przejście jak dawny OPENING->MIDGAME
     gameStartTime: null,
     // Cel natarcia trzymany przez commitmentTime — {point:{x,y}, kind:'ARMY'|'CITY'}
     advanceTarget: null,
     advanceCommittedAt: null,
-    // Po dużym zwycięstwie: nie rusza dalej do tego czasu (wraca się leczyć/przegrupować)
+    // Po dużym zwycięstwie, gdy AI NIE naciska dalej (patrz
+    // handleBigVictoryAndPressAdvantage): nie rusza dalej do tego czasu
+    // (wraca się leczyć/przegrupować)
     regroupUntil: 0,
     // Po WYRAŹNIE przegranym starciu: symetryczne schłodzenie — nie
     // rzuca świeżo cofniętych/rezerwowych jednostek z powrotem w TĘ SAMĄ
@@ -249,9 +285,9 @@ function createState() {
     lastEnemyPower: null,
     lastMyPower: null,
     recentVictoryUntil: 0,
-    // Do wykrycia "utrata miasta"/"załamanie armii" po wejściu w ofensywę
-    myCityCountAtOffenseStart: null,
-    offensivePowerAtStart: null,
+    // Do wykrycia "utrata miasta"/"załamanie armii" po wejściu w ATAK
+    myCityCountAtAttackStart: null,
+    attackPowerAtStart: null,
     siegeNoticedAt: new Map(), // cityId -> { besiegingOwner, firstSeenAt (ms) }
   };
 }
@@ -737,29 +773,85 @@ function decideForwardPresence(api, state) {
   const desiredPowerPerPosition = (totalPower * fraction) / pairs.length;
 
   for (const { home, enemyCity, key } of pairs) {
-    let assignedPower = sumPower(api, [...state.groups.defense].filter((u) => u.__forwardPositionId === key));
+    const alreadyAssigned = [...state.groups.defense].filter((u) => u.__forwardPositionId === key);
+    let assignedPower = sumPower(api, alreadyAssigned);
     if (assignedPower >= desiredPowerPerPosition) continue;
     const homeCenter = api.cityCenter(home);
     const point = findChokePoint(api, homeCenter, api.cityCenter(enemyCity));
     const newGuards = [];
-    while (assignedPower < desiredPowerPerPosition && state.groups.reserve.size > 0) {
-      const guard = [...state.groups.reserve][0];
+    // Dystansowi nigdy sami, także na SAMOTNEJ pozycji do przodu (punkt 5
+    // prośby) — melee pierwszy z rezerwy, dystansowy dołącza do paczki
+    // TYLKO gdy w tej pozycji jest już (albo właśnie dołącza) eskorta wręcz;
+    // brak dostępnej eskorty = dystansowi zostają w rezerwie, nie stoją sami.
+    let hasMelee = alreadyAssigned.some((u) => !api.UNIT_TYPES[u.type].ranged);
+    const reservePool = [...state.groups.reserve].sort(
+      (a, b) => Number(api.UNIT_TYPES[a.type].ranged) - Number(api.UNIT_TYPES[b.type].ranged));
+    for (const guard of reservePool) {
+      if (assignedPower >= desiredPowerPerPosition) break;
+      const isRanged = api.UNIT_TYPES[guard.type].ranged;
+      if (isRanged && !hasMelee) continue;
       state.groups.reserve.delete(guard);
       guard.__forwardPositionId = key;
       state.groups.defense.add(guard);
       newGuards.push(guard);
       assignedPower += unitPower(api, guard);
+      if (!isRanged) hasMelee = true;
     }
     if (newGuards.length > 0) issueLineOrder(api, newGuards, point, homeCenter);
   }
 }
 
+// Wybór drogi natarcia (punkt 4 prośby) — lekka heurystyka, NIE pełne
+// planowanie grafowe: porównuje `target` wprost z dwoma kandydatami
+// przesuniętymi prostopadle o routeFlankOffsetPx (podejście z boku).
+// Koszt liczony PRAWDZIWYM A* (api.estimatePathCost — już uwzględnia
+// karę terenu ogólnie), plus DODATKOWA kara za FOREST/WATER na próbkach
+// odcinka, ale TYLKO gdy w grupie są dystansowi/kawaleria (piechota lekka
+// bez kary — może "podejść niepostrzeżenie przez las"). Boczny kandydat,
+// który akurat OMIJA las na trasie, dostaje forestFlankBias jako premię
+// (obejście silnej pozycji/oskrzydlenie) — skalowaną tacticalSkill, więc
+// tylko wprawni dowódcy świadomie z tego korzystają. Porażka rzutu
+// tacticalSkill -> zawsze wprost, naiwnie (jak dawniej).
+function chooseApproachPoint(api, state, engageUnits, home, target) {
+  if (Math.random() >= cfgVal('tacticalSkill')) return target;
+  const dx = target.x - home.x, dy = target.y - home.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const perpX = -dy / len, perpY = dx / len;
+  const offset = AI_CONFIG.routeFlankOffsetPx;
+  const candidates = [
+    target,
+    { x: target.x + perpX * offset, y: target.y + perpY * offset },
+    { x: target.x - perpX * offset, y: target.y - perpY * offset },
+  ];
+  const compositionCaresAboutTerrain = engageUnits.some((u) => api.UNIT_TYPES[u.type].ranged || u.type === 'CAVALRY');
+  let best = target, bestScore = Infinity;
+  for (const candidate of candidates) {
+    const cost = api.estimatePathCost(api.worldToTile(home.x, home.y), api.worldToTile(candidate.x, candidate.y));
+    if (!Number.isFinite(cost)) continue;
+    let terrainPenalty = 0, throughForest = false;
+    const samples = 3;
+    for (let i = 1; i <= samples; i++) {
+      const t = i / (samples + 1);
+      const p = { x: home.x + dx * t, y: home.y + dy * t };
+      if (isForestAt(api, p)) { throughForest = true; if (compositionCaresAboutTerrain) terrainPenalty += 12; }
+      if (isWaterAt(api, p) && compositionCaresAboutTerrain) terrainPenalty += 20;
+    }
+    const flankBonus = candidate !== target && throughForest ? AI_CONFIG.forestFlankBias * cfgVal('tacticalSkill') * 40 : 0;
+    const score = cost + terrainPenalty - flankBonus;
+    if (score < bestScore) { bestScore = score; best = candidate; }
+  }
+  return best;
+}
+
 // ------------------------------------------------------------
-// Natarcie — cel to WYŁĄCZNIE klastry widocznej armii wroga w fazach
-// OPENING/MIDGAME (teren premiuje/karze wybór), a w OFFENSIVE dodatkowo
-// miasta wroga (próg wyższy niż zwykłe starcie). Miasto to nagroda za
-// wygraną bitwę, nigdy cel sam w sobie. Wołane w KAŻDEJ fazie — AI ma
-// stale szukać starcia, nie czekać bezczynnie na próg mocy.
+// Natarcie — cel to WYŁĄCZNIE klastry widocznej armii wroga poza postawą
+// ATTACK (teren premiuje/karze wybór), a w ATTACK dodatkowo miasta wroga
+// (próg wyższy niż zwykłe starcie). Miasto to nagroda za wygraną bitwę,
+// nigdy cel sam w sobie. Wołane w KAŻDEJ postawie — AI ma stale szukać
+// starcia, nie czekać bezczynnie na próg mocy (decideDefense/
+// decideForwardPresence już wcześniej w kolejce wołania zabrały z
+// rezerwy to, czego naprawdę potrzebują pod DEFENSE, więc naturalnie
+// ogranicza to, ile decideAdvance może tu jeszcze zaangażować).
 // ------------------------------------------------------------
 function decideAdvance(api, state, now, allowCityTargets) {
   if (now < state.regroupUntil) return; // przegrupowanie po zwycięstwie — nie rusza dalej
@@ -793,12 +885,29 @@ function decideAdvance(api, state, now, allowCityTargets) {
     candidates.sort((a, b) => (b.hp / api.UNIT_TYPES[b.type].maxHp) - (a.hp / api.UNIT_TYPES[a.type].maxHp));
   }
   let committedPower = 0;
-  const engageUnits = [];
+  let engageUnits = [];
   for (const u of candidates) {
     const p = unitPower(api, u);
     if (committedPower + p > maxCommitPower && engageUnits.length > 0) break;
     engageUnits.push(u);
     committedPower += p;
+  }
+  if (engageUnits.length === 0) return;
+
+  // Eskorta dystansowych (punkt 5 prośby) — NIGDY sami dystansowi: jeśli
+  // budżet wybrał same jednostki dystansowe, dociągnij eskortę wręcz z
+  // rezerwy (poza budżetem mocy — bezpieczeństwo ważniejsze niż ścisłe
+  // trzymanie limitu), a gdy naprawdę nie ma kim eskortować, dystansowi
+  // zostają w rezerwie/obronie zamiast iść samotnie.
+  const rangedInEngage = engageUnits.filter((u) => api.UNIT_TYPES[u.type].ranged);
+  const meleeInEngage = engageUnits.filter((u) => !api.UNIT_TYPES[u.type].ranged);
+  if (rangedInEngage.length > 0 && meleeInEngage.length === 0) {
+    const reserveMelee = [...state.groups.reserve].filter((u) => !api.UNIT_TYPES[u.type].ranged && u.engagedTargetId == null && !engageUnits.includes(u));
+    if (reserveMelee.length > 0) {
+      engageUnits = engageUnits.concat(reserveMelee.slice(0, AI_CONFIG.minEscortMeleeCount));
+    } else {
+      engageUnits = engageUnits.filter((u) => !api.UNIT_TYPES[u.type].ranged);
+    }
   }
   if (engageUnits.length === 0) return;
 
@@ -821,7 +930,7 @@ function decideAdvance(api, state, now, allowCityTargets) {
     }
   }
 
-  let bestTarget = null, bestScore = -Infinity, bestKind = null, bestRatio = 0;
+  let bestTarget = null, bestScore = -Infinity, bestKind = null, bestRatio = 0, bestOpportunity = 0;
   for (const cluster of clusterEnemyUnits(api, state)) {
     const clusterPower = sumPower(api, cluster.units) || 1;
     const ratio = committedPower / clusterPower;
@@ -829,8 +938,9 @@ function decideAdvance(api, state, now, allowCityTargets) {
     let terrainScore = 0;
     if (isHillsAt(api, centroid)) terrainScore += 0.3;
     if (isForestAt(api, centroid)) terrainScore -= 0.3;
-    const score = ratio + terrainScore;
-    if (score > bestScore) { bestScore = score; bestTarget = centroid; bestKind = 'ARMY'; bestRatio = ratio; }
+    const opportunity = opportunityScoreFor(api, state, centroid, cluster.units, false).score;
+    const score = ratio + terrainScore + opportunity;
+    if (score > bestScore) { bestScore = score; bestTarget = centroid; bestKind = 'ARMY'; bestRatio = ratio; bestOpportunity = opportunity; }
   }
   if (allowCityTargets) {
     for (const city of enemyCities(api, state)) {
@@ -838,13 +948,15 @@ function decideAdvance(api, state, now, allowCityTargets) {
       const defenders = enemyAliveUnits(api, state).filter((u) => dist(u, center) <= api.CITY_ZONE_RADIUS + 60);
       const defenderPower = sumPower(api, defenders) || 1;
       const ratio = committedPower / defenderPower;
-      if (ratio > bestScore) { bestScore = ratio; bestTarget = center; bestKind = 'CITY'; bestRatio = ratio; }
+      const opportunity = opportunityScoreFor(api, state, center, defenders, true).score;
+      const score = ratio + opportunity;
+      if (score > bestScore) { bestScore = score; bestTarget = center; bestKind = 'CITY'; bestRatio = ratio; bestOpportunity = opportunity; }
     }
   }
   if (!bestTarget) {
     // Brak widocznego celu: wysuń GŁÓWNE siły na rozsądną pozycję
     // (przełęcz) zamiast stać bezczynnie — "wysuwa siły na front", ale
-    // bez atakowania czegokolwiek. Działa w KAŻDEJ fazie.
+    // bez atakowania czegokolwiek. Działa w KAŻDEJ postawie.
     const enemyRef = enemyCities(api, state)[0];
     const homeCity = myCities(api, state)[0];
     if (enemyRef && homeCity) {
@@ -854,10 +966,13 @@ function decideAdvance(api, state, now, allowCityTargets) {
     return;
   }
 
-  const threshold = bestKind === 'CITY' ? cfgVal('offenseSuperiorityThreshold') : cfgVal('midEngageSuperiorityThreshold');
-  const meets = bestRatio >= threshold;
+  // Okazja obniża próg zaangażowania (nigdy poniżej minEngageThresholdFloor
+  // — okazja nie usprawiedliwia ataku na miażdżącą przewagę wroga).
+  const baseThreshold = bestKind === 'CITY' ? cfgVal('offenseSuperiorityThreshold') : cfgVal('midEngageSuperiorityThreshold');
+  const effectiveThreshold = Math.max(AI_CONFIG.minEngageThresholdFloor, baseThreshold - bestOpportunity);
+  const meets = bestRatio >= effectiveThreshold;
   const mistake = Math.random() < cfgVal('mistakeChance');
-  if (!meets && !mistake) return; // czeka na choćby lekką przewagę, nie rzuca się bez niej
+  if (!meets && !mistake) return; // czeka na choćby lekką przewagę (albo wyraźną okazję), nie rzuca się bez niej
 
   if (!frontCohesionOk(api, state, bestTarget)) return; // wróg mógłby odciąć drogę powrotu — poczekaj, nie idź w głąb
 
@@ -869,19 +984,20 @@ function decideAdvance(api, state, now, allowCityTargets) {
   state.advanceCommittedAt = now;
 
   const home = homeFor(bestTarget);
+  const approachTarget = chooseApproachPoint(api, state, engageUnits, home, bestTarget);
   const cavalry = engageUnits.filter((u) => u.type === 'CAVALRY');
   const rest = engageUnits.filter((u) => u.type !== 'CAVALRY');
 
   if (cavalry.length > 0 && Math.random() < cfgVal('flankAttemptChance')) {
-    const dx = bestTarget.x - home.x, dy = bestTarget.y - home.y;
+    const dx = approachTarget.x - home.x, dy = approachTarget.y - home.y;
     const len = Math.hypot(dx, dy) || 1;
     const perpX = -dy / len, perpY = dx / len;
     const side = Math.random() < 0.5 ? 1 : -1;
-    const flankTarget = { x: bestTarget.x + perpX * side * 80, y: bestTarget.y + perpY * side * 80 };
+    const flankTarget = { x: approachTarget.x + perpX * side * 80, y: approachTarget.y + perpY * side * 80 };
     api.issueMoveOrder(cavalry, flankTarget);
-    issueFormationOrder(api, new Set(rest), bestTarget, home);
+    issueFormationOrder(api, new Set(rest), approachTarget, home);
   } else {
-    issueFormationOrder(api, new Set(engageUnits), bestTarget, home);
+    issueFormationOrder(api, new Set(engageUnits), approachTarget, home);
   }
 }
 
@@ -955,6 +1071,29 @@ function decideConvoyRaid(api, state) {
   api.issueMoveOrder(raiders, { x: convoy.x, y: convoy.y });
   // Celowo NIE usuwamy z rezerwy — to jednorazowe "spojrzenie w tamtą
   // stronę", nie trwałe przeznaczenie grupy do rajdów.
+}
+
+// Rajd kawalerii na odsłoniętą artylerię/łuczników wroga (punkt 5 prośby
+// — "kawaleria może działać samodzielnie WYŁĄCZNIE przy rajdach na
+// konwoje lub odsłoniętą artylerię"), wzorem decideConvoyRaid: okazjonalny,
+// wymaga wolnej (rezerwowej) kawalerii, celowo NIE usuwa jej trwale z
+// rezerwy. Wykorzystuje TĘ SAMĄ detekcję "odsłonięci dystansowi" co
+// opportunityScoreFor, więc jest spójny z tym, co realnie napędza postawę
+// ATTACK.
+function decideArtilleryRaid(api, state) {
+  if (Math.random() >= cfgVal('flankAttemptChance')) return;
+  const spareCavalry = [...state.groups.reserve].filter((u) => u.type === 'CAVALRY');
+  if (spareCavalry.length === 0) return;
+  for (const cluster of clusterEnemyUnits(api, state)) {
+    const rangedUnits = cluster.units.filter((u) => api.UNIT_TYPES[u.type].ranged);
+    const exposed = rangedUnits.filter((r) =>
+      !cluster.units.some((m) => !api.UNIT_TYPES[m.type].ranged && dist(m, r) <= AI_CONFIG.opportunityExposedRangedRadiusPx));
+    if (exposed.length === 0) continue;
+    const raiders = spareCavalry.slice(0, Math.min(2, spareCavalry.length));
+    const target = exposed[0];
+    api.issueMoveOrder(raiders, { x: target.x, y: target.y });
+    return; // jeden rajd na cykl decyzyjny
+  }
 }
 
 // Sondowanie: odrywa 1-2 jednostki z NADWYŻKI rezerwy (nie rusza
@@ -1070,9 +1209,14 @@ function decideEconomy(api, state) {
   const mine = myCities(api, state);
   if (mine.length === 0) return;
   const underPressure = isUnderPressure(api, state);
+  // Klucz ekonomii: OPENING dopóki trwa spokojne otwarcie (state.inOpening,
+  // patrz assessPosture), inaczej postawa (ATTACK/BUILD) — DEFENSE nie ma
+  // własnego wpisu, bo z definicji ("miasto zagrożone") niemal zawsze
+  // pokrywa się z isUnderPressure, które już ma pierwszeństwo powyżej.
+  const postureKey = state.inOpening ? 'OPENING' : state.posture;
   const productionShare = underPressure
     ? cfgVal('economySplitUnderPressure')
-    : (cfgVal('economySplitByPhase')[state.phase] ?? 0.7);
+    : (cfgVal('economySplitByPosture')[postureKey] ?? cfgVal('economySplitByPosture').BUILD);
 
   const tryProduce = () => {
     const type = pickProductionType(api, state);
@@ -1096,26 +1240,124 @@ function decideEconomy(api, state) {
 }
 
 // ------------------------------------------------------------
-// Maszyna stanów faz — przejścia oparte o SYTUACJĘ, nie zegar (poza
-// łagodzeniem progu przy bardzo długim patcie). OPENING już nie
-// blokuje decideAdvance (patrz runDecisionCycle) — wpływa WYŁĄCZNIE na
-// podział ekonomii i na to, kiedy odblokowuje się MIDGAME/OFFENSIVE
-// (a więc ataki na miasta).
+// Okazje do ataku — patrz nagłówek pliku/prośba: kilka jednoczesnych
+// okazji wyraźnie zwiększa gotowość do ataku. Każdy sygnał osobno
+// bramkowany opportunityAwareness (per poziom) — Łatwy systematycznie
+// przegapia większość, Ekspert łapie prawie wszystkie. Jedna funkcja,
+// używana zarówno przez assessPosture (czy W OGÓLE jest jakaś okazja —
+// wpływa na attackScore), jak i decideAdvance (który KONKRETNY cel ma
+// bonus — obniża efektywny próg zaangażowania dla TEGO kandydata).
 // ------------------------------------------------------------
-function updatePhase(api, state, now) {
-  const myPower = sumPower(api, myAliveUnits(api, state));
-  const enemyPower = sumPower(api, enemyAliveUnits(api, state));
+function nearestNeighborAvgSpacing(list) {
+  if (list.length < 2) return 0;
+  let total = 0;
+  for (const u of list) {
+    let best = Infinity;
+    for (const o of list) {
+      if (o === u) continue;
+      const d = dist(u, o);
+      if (d < best) best = d;
+    }
+    total += best;
+  }
+  return total / list.length;
+}
 
-  // Wykrycie "świeżo wygranej dużej bitwy": nagły spadek widocznej siły
-  // wroga bez porównywalnego spadku siły własnej między turami decyzyjnymi.
-  // Po wygranej bitwie grupa natarcia NIE rusza dalej — wraca się leczyć
-  // i przegrupować (regroupUntil).
+function opportunityScoreFor(api, state, point, targetUnits, isCity) {
+  const awareness = cfgVal('opportunityAwareness');
+  const notice = () => Math.random() < awareness;
+  const w = AI_CONFIG.opportunityWeights;
+  let score = 0;
+  const reasons = [];
+
+  let nearestOtherClusterDist = Infinity;
+  for (const c of clusterEnemyUnits(api, state)) {
+    if (c.units === targetUnits) continue; // pomiń klaster będący samym kandydatem
+    const d = dist(point, c.centroid);
+    if (d < nearestOtherClusterDist) nearestOtherClusterDist = d;
+  }
+  const enemyElsewhere = nearestOtherClusterDist > AI_CONFIG.opportunityElsewhereDistancePx;
+  if (enemyElsewhere && Number.isFinite(nearestOtherClusterDist) && notice()) {
+    score += w.enemyElsewhere;
+    reasons.push('wróg zaangażowany gdzie indziej');
+  }
+
+  if (targetUnits.length > 0) {
+    const avgHpFrac = targetUnits.reduce((s, u) => s + u.hp / api.UNIT_TYPES[u.type].maxHp, 0) / targetUnits.length;
+    if (avgHpFrac < AI_CONFIG.opportunityWeakenedHpFraction && notice()) {
+      score += w.weakenedEnemy;
+      reasons.push('osłabieni po starciu');
+    }
+    const rangedUnits = targetUnits.filter((u) => api.UNIT_TYPES[u.type].ranged);
+    const exposedRanged = rangedUnits.filter((r) =>
+      !targetUnits.some((m) => !api.UNIT_TYPES[m.type].ranged && dist(m, r) <= AI_CONFIG.opportunityExposedRangedRadiusPx));
+    if (exposedRanged.length > 0 && notice()) {
+      score += w.exposedRanged;
+      reasons.push('odsłonięci dystansowi');
+    }
+    if (nearestNeighborAvgSpacing(targetUnits) > AI_CONFIG.opportunityThinLineSpacingPx && notice()) {
+      score += w.thinLine;
+      reasons.push('rozciągnięta linia');
+    }
+    if (targetUnits.some((u) => u.routed || u.hp / api.UNIT_TYPES[u.type].maxHp < AI_CONFIG.opportunityWeakenedHpFraction) && notice()) {
+      score += w.enemyHealing;
+      reasons.push('wycofują się/leczą');
+    }
+  }
+
+  if (isCity && enemyElsewhere && notice()) {
+    score += w.weakGarrison;
+    reasons.push('słaby garnizon, główne siły daleko');
+  }
+
+  return { score, reasons };
+}
+
+// Najlepszy pojedynczy kandydat (klaster wroga w polu LUB miasto wroga) —
+// jedno źródło prawdy, reużywane przez assessPosture (ocena "czy w ogóle
+// jest okazja") i decideAdvance (który cel dostaje bonus).
+function bestOpportunityScore(api, state) {
+  let best = { score: 0, reasons: [] };
+  for (const cluster of clusterEnemyUnits(api, state)) {
+    const r = opportunityScoreFor(api, state, cluster.centroid, cluster.units, false);
+    if (r.score > best.score) best = r;
+  }
+  for (const city of enemyCities(api, state)) {
+    const center = api.cityCenter(city);
+    const defenders = enemyAliveUnits(api, state).filter((u) => dist(u, center) <= api.CITY_ZONE_RADIUS + 60);
+    const r = opportunityScoreFor(api, state, center, defenders, true);
+    if (r.score > best.score) best = r;
+  }
+  return best;
+}
+
+// Dokańczanie zwycięstw (punkt 6 prośby) — zastępuje dawne "duża bitwa ->
+// zawsze wycofaj się i lecz". Sprawdzane KAŻDY cykl, niezależnie od
+// postureTimer/commitmentTime (świeże zwycięstwo to zdarzenie, nie stan
+// do okresowej oceny). Naciska dalej TYLKO gdy własna grupa nie jest
+// mocno uszczuplona I w pobliżu nie widać porównywalnie silnych, świeżych
+// posiłków wroga — inaczej stare zachowanie (regroupUntil, powrót do
+// leczenia). pressAdvantageChance (per poziom) — Ekspert kończy niemal
+// zawsze, Łatwy często nadal się cofa mimo wygranej.
+function handleBigVictoryAndPressAdvantage(api, state, now, myPower, enemyPower) {
   if (state.lastEnemyPower != null) {
     const enemyDrop = state.lastEnemyPower - enemyPower;
     const myDrop = state.lastMyPower - myPower;
-    if (enemyDrop >= AI_CONFIG.bigVictoryEnemyPowerDrop && myDrop < enemyDrop * 0.5) {
+    if (enemyDrop >= AI_CONFIG.bigVictoryEnemyPowerDrop && myDrop < enemyDrop * 0.5 && state.groups.offense.size > 0) {
       state.recentVictoryUntil = now + AI_CONFIG.bigVictoryWindowSeconds * 1000;
-      if (state.groups.offense.size > 0) {
+      const offenseHpOk = groupHpFraction(api, state.groups.offense) >= cfgVal('retreatGroupHpFraction');
+      const myOffensePower = sumPower(api, [...state.groups.offense]);
+      const freshEnemyNearby = clusterEnemyUnits(api, state).some((c) => sumPower(api, c.units) >= myOffensePower * 0.5);
+      const enemyTarget = enemyCities(api, state)[0];
+      if (offenseHpOk && !freshEnemyNearby && enemyTarget && Math.random() < cfgVal('pressAdvantageChance')) {
+        state.posture = 'ATTACK';
+        state.postureSince = now;
+        state.postureReason = 'dokańcza zwycięstwo';
+        state.attackPowerAtStart = myPower;
+        state.myCityCountAtAttackStart = myCities(api, state).length;
+        state.advanceTarget = { point: api.cityCenter(enemyTarget), kind: 'CITY' };
+        state.advanceCommittedAt = now;
+      } else {
         const list = [...state.groups.offense];
         const centroid = { x: list.reduce((s, u) => s + u.x, 0) / list.length, y: list.reduce((s, u) => s + u.y, 0) / list.length };
         const home = nearestCity(centroid, myCities(api, state), api);
@@ -1123,81 +1365,149 @@ function updatePhase(api, state, now) {
         state.groups.offense.clear();
         state.advanceTarget = null;
         state.advanceCommittedAt = null;
+        state.regroupUntil = now + cfgVal('regroupDurationSeconds') * 1000;
       }
-      state.regroupUntil = now + cfgVal('regroupDurationSeconds') * 1000;
     }
   }
   state.lastEnemyPower = enemyPower;
   state.lastMyPower = myPower;
+}
 
+// ------------------------------------------------------------
+// Warstwa strategiczna — POSTAWA (ATTACK/BUILD/DEFENSE), zastępuje dawną
+// maszynę stanów faz (OPENING/MIDGAME/OFFENSIVE). Kolejność sprawdzeń:
+// (1) otwarcie — spokojne, zawsze BUILD, dopóki armia i miasta nie są
+// zabezpieczone; (2) dokańczanie zwycięstw — zdarzeniowe, co cykl;
+// (3) drastyczne odwrócenie ATTACK (utrata miasta/załamanie armii w
+// trakcie ataku) — natychmiastowe, co cykl; (4) miasto realnie zagrożone
+// — natychmiastowa DEFENSE, pomija resztę; (5) pełna ocena attackScore —
+// TYLKO co postureIntervalSeconds, a zmiana postawy dodatkowo wymaga
+// upłynięcia commitmentTime od poprzedniej zmiany (chyba że to właśnie
+// (3)/(4), które są z definicji "drastyczną zmianą sytuacji").
+// ------------------------------------------------------------
+function assessPosture(api, state, now) {
   if (state.gameStartTime == null) state.gameStartTime = now;
-  const stalledSeconds = Math.max(0, (now - state.gameStartTime) / 1000 - AI_CONFIG.stalemateSofteningStartSeconds);
-  const effectiveOffenseRatio = Math.max(
-    AI_CONFIG.midToOffensivePowerRatioFloor,
-    cfgVal('midToOffensivePowerRatio') - stalledSeconds * AI_CONFIG.stalemateSofteningRatePerSecond,
-  );
+  const myPower = sumPower(api, myAliveUnits(api, state));
+  const enemyPower = sumPower(api, enemyAliveUnits(api, state));
 
-  if (state.phase === 'OPENING') {
-    // Tolerancja jednego miasta wciąż "w drodze" (garnizon wysłany, ale
-    // jeszcze nie dotarł) — bez tego jeden pechowy przydział mógłby
-    // blokować przejście w nieskończoność.
-    const mineCities = myCities(api, state);
-    const securedCount = mineCities.filter(
+  const publish = () => api.setAIDebugInfo({ posture: state.posture, reason: state.postureReason });
+
+  if (state.inOpening) {
+    const mine = myCities(api, state);
+    const securedCount = mine.filter(
       (c) => countUnitsNear(api, state, api.cityCenter(c), api.CITY_ZONE_RADIUS) >= AI_CONFIG.garrisonPerCityMinUnits,
     ).length;
-    const citiesSecured = securedCount >= mineCities.length - 1;
+    const citiesSecured = securedCount >= mine.length - 1; // tolerancja jednego miasta "w drodze"
     if (myPower >= cfgVal('openingArmyPowerThreshold') && citiesSecured) {
-      state.phase = 'MIDGAME';
-      state.phaseSince = now;
+      state.inOpening = false;
+    } else {
+      state.posture = 'BUILD';
+      state.postureReason = 'otwarcie';
+      publish();
+      return;
     }
-    return;
   }
 
-  if (state.phase === 'MIDGAME') {
-    const incomeOk = (api.goldRate[state.owner] || 0) >= AI_CONFIG.midToOffensiveMinOwnIncome;
-    // enemyPower===0 (żaden wróg widoczny na mapie) samo w sobie spełnia
-    // warunek przewagi — nie ma czego się bać, próg przewagi jest wtedy bez znaczenia.
-    const powerOk = myPower > 0 && (enemyPower === 0 || myPower / enemyPower >= effectiveOffenseRatio);
-    const victoryOk = now < state.recentVictoryUntil;
-    if ((powerOk && incomeOk) || victoryOk) {
-      state.phase = 'OFFENSIVE';
-      state.phaseSince = now;
-      state.offensivePowerAtStart = myPower;
-      state.myCityCountAtOffenseStart = myCities(api, state).length;
-      state.advanceTarget = null;
-      state.advanceCommittedAt = null;
-    }
-    return;
-  }
+  handleBigVictoryAndPressAdvantage(api, state, now, myPower, enemyPower);
 
-  if (state.phase === 'OFFENSIVE') {
-    const lostCity = state.myCityCountAtOffenseStart != null && myCities(api, state).length < state.myCityCountAtOffenseStart;
-    const armyCrashed = state.offensivePowerAtStart && myPower < state.offensivePowerAtStart * AI_CONFIG.offensiveRetreatPowerFraction;
+  if (state.posture === 'ATTACK' && state.attackPowerAtStart != null) {
+    const lostCity = state.myCityCountAtAttackStart != null && myCities(api, state).length < state.myCityCountAtAttackStart;
+    const armyCrashed = myPower < state.attackPowerAtStart * AI_CONFIG.offensiveRetreatPowerFraction;
     if (lostCity || armyCrashed) {
-      state.phase = 'MIDGAME';
-      state.phaseSince = now;
+      state.posture = 'BUILD';
+      state.postureSince = now;
+      state.postureReason = lostCity ? 'utracono miasto' : 'armia załamana w ataku';
+      state.attackPowerAtStart = null;
+      state.myCityCountAtAttackStart = null;
       state.advanceTarget = null;
       state.advanceCommittedAt = null;
+      publish();
+      return;
     }
   }
+
+  const cityThreatened = myCities(api, state).some(
+    (c) => c.besiegingOwner && countUnitsNear(api, state, api.cityCenter(c), api.CITY_ZONE_RADIUS) < AI_CONFIG.garrisonMinUnits,
+  );
+  if (cityThreatened) {
+    if (state.posture !== 'DEFENSE') { state.posture = 'DEFENSE'; state.postureSince = now; }
+    state.postureReason = 'miasto zagrożone';
+    state.postureTimer = 0;
+    publish();
+    return;
+  }
+
+  state.postureTimer += cfgVal('decisionIntervalSeconds');
+  if (state.postureTimer < cfgVal('postureIntervalSeconds')) { publish(); return; } // za wcześnie na ponowną pełną ocenę
+  state.postureTimer = 0;
+
+  const opportunity = bestOpportunityScore(api, state);
+  const matchDuration = (now - state.gameStartTime) / 1000;
+  const timePressure = Math.max(0, (matchDuration - AI_CONFIG.matchDurationPressureStartSeconds) * AI_CONFIG.matchDurationPressurePerSecond);
+  const myIncome = api.goldRate[state.owner] || 0;
+  const enemyIncome = api.goldRate[state.enemyOwner] || 0;
+  const incomePressure = (myIncome > 0 && enemyIncome / myIncome >= AI_CONFIG.incomeDisadvantageThreshold)
+    ? AI_CONFIG.incomeDisadvantagePressureBonus : 0;
+  const powerRatioTerm = myPower > 0 ? myPower / Math.max(enemyPower, 1) - 1 : -1;
+  const attackScore = powerRatioTerm + opportunity.score + timePressure + incomePressure;
+  const ownConditionPoor = groupHpFraction(api, new Set(myAliveUnits(api, state))) < cfgVal('retreatGroupHpFraction');
+
+  let nextPosture, reason;
+  if (attackScore >= AI_CONFIG.postureAttackScoreThreshold) {
+    nextPosture = 'ATTACK';
+    reason = opportunity.reasons.length > 0 ? opportunity.reasons.join(', ')
+      : incomePressure > 0 ? 'przewaga dochodowa gracza'
+      : timePressure > 0 ? 'presja czasu'
+      : 'przewaga sił';
+  } else if (ownConditionPoor) {
+    nextPosture = 'BUILD';
+    reason = 'armia do naprawy';
+  } else {
+    nextPosture = 'BUILD';
+    reason = 'buduje przewagę';
+  }
+
+  if (Math.random() < cfgVal('mistakeChance')) {
+    const others = ['ATTACK', 'BUILD', 'DEFENSE'].filter((p) => p !== nextPosture);
+    nextPosture = others[Math.floor(Math.random() * others.length)];
+    reason = 'błąd oceny';
+  }
+
+  const committedFor = (now - state.postureSince) / 1000;
+  if (nextPosture === state.posture) {
+    state.postureReason = reason;
+  } else if (committedFor >= cfgVal('commitmentTime')) {
+    state.posture = nextPosture;
+    state.postureSince = now;
+    state.postureReason = reason;
+    if (nextPosture === 'ATTACK') {
+      state.attackPowerAtStart = myPower;
+      state.myCityCountAtAttackStart = myCities(api, state).length;
+    }
+  } // inaczej: trzyma się obecnej postawy do końca commitmentTime
+
+  publish();
 }
 
 // ------------------------------------------------------------
 // Pętla decyzyjna — wołana z gameLoop (index.html) przez GameAPI.onTick,
 // raz na klatkę, ale WEWNĘTRZNIE działa co decisionIntervalSeconds
 // (zależne od poziomu — patrz cfgVal w makeTick). decideAdvance/
-// decideForwardPresence/decideProbe/decideConvoyRaid działają w KAŻDEJ
-// fazie — AI ma stale wywierać presję, nie czekać bezczynnie na próg mocy.
+// decideForwardPresence/decideProbe/decideConvoyRaid/decideArtilleryRaid
+// działają w KAŻDEJ postawie — AI ma stale wywierać presję, nie czekać
+// bezczynnie na próg mocy (patrz nagłówek pliku/prośba pkt 7 — brak
+// długich okresów bezczynności poza samym otwarciem).
 // ------------------------------------------------------------
 function runDecisionCycle(api, state, now) {
   refreshGroups(api, state);
-  updatePhase(api, state, now);
+  assessPosture(api, state, now);
   decideHealingRotation(api, state);
   decideRetreat(api, state, now);
   decideDefense(api, state, now);
   decideForwardPresence(api, state);
-  decideAdvance(api, state, now, state.phase === 'OFFENSIVE');
+  decideAdvance(api, state, now, state.posture === 'ATTACK');
   decideProtectRanged(api, state);
+  decideArtilleryRaid(api, state);
   decideProbe(api, state);
   decideConvoyRaid(api, state);
   decideEconomy(api, state);
