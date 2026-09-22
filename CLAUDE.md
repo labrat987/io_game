@@ -43,6 +43,11 @@ na konwojach między miastami).
 ## Decyzje projektowe (NIE zmieniaj ich bez pytania)
 - Lobby: 2-4 graczy
 - Miasta: predefiniowane na mapie, gracze ich NIE budują
+- Kolejność kluczy w `PLAYERS` musi zostać P1→P4 — `ai.js` wiąże się przy
+  starcie modułu z pierwszym kluczem różnym od `OWNED_PLAYER`, więc host
+  jest zawsze P1, a bot (gdy jest) zawsze P2. Boty dostępne WYŁĄCZNIE w
+  lobby 1v1 (tam zawsze jest dokładnie jeden przeciwnik — zgodne z
+  założeniem `ai.js`); w Deathmatchu puste miejsca zostają puste.
 
 (Teren i typy jednostek — patrz „Ruch i teren” i „System jednostek” niżej.)
 
@@ -102,6 +107,8 @@ na konwojach między miastami).
 - Tryb FRONT: jednostki rozstawiają się równomiernie wzdłuż narysowanej
   krzywej, każda idzie do swojego punktu najszybszą trasą. Po dotarciu
   stają. Bez zmian względem poprzedniej wersji.
+- Tryb online nie ma pauzy — przycisk pauzy/Spacja działają wyłącznie w
+  trybie z AI (`config.mode === 'AI'`), w meczu sieciowym są ukryte.
 
 ## Ruch i teren
 - Pozycje jednostek ciągłe (float), siatka wyłącznie do pathfindingu i
@@ -170,10 +177,17 @@ atakująca jako druga nie otrzymuje obrażeń (znany błąd w War of Dots).
 ## Zasady techniczne
 - Wszystkie statystyki jednostek i parametry balansu TRZYMAJ W OSOBNYM
   PLIKU KONFIGURACYJNYM (JSON/JS config), nigdy zahardkodowane w logice
-- Prototyp: vanilla JS + canvas, jeden plik, bez frameworków, bez build
-  stepu
-- Docelowy backend: Cloudflare Workers + Durable Objects (jeden pokój gry
-  = jeden Durable Object, WebSocket)
+- Prototyp: vanilla JS + canvas, jeden plik (`index.html`), bez
+  frameworków, bez build stepu. AI (`ai.js`) i sieć (`net.js`) to osobne
+  moduły ES, ładowane obok — komunikują się z silnikiem WYŁĄCZNIE przez
+  dwa oddzielne mosty (`window.GameAPI` dla AI, `window.EngineNetAPI` dla
+  sieci), celowo nierozdzielone, żeby zmiany w jednym nigdy nie mogły
+  przypadkiem wpłynąć na drugi.
+- Backend: Cloudflare Workers + Durable Objects, DWIE klasy — `LobbyDirectory`
+  (jeden, globalny, lista aktywnych lobby, limit 5) i `LobbyRoom` (jeden na
+  lobby/mecz, WebSocket przez Hibernation API — połączenia bezczynne nic
+  nie kosztują i przeżywają wyładowanie instancji). Backend WYŁĄCZNIE na
+  SQLite (jedyna opcja na darmowym planie). Kod: `/server/src/index.js`.
 
 ## Ekonomia
 - Wyłącznie konwoje między miastami, BRAK pasywnego dochodu z kopalń
@@ -224,8 +238,39 @@ nietykalne.
   myszy) jest żółty i gruby — wyraźnie widoczny jako aktywna czynność,
   niezależnie od tego, czym się skończy (ciągła trasa jednostki czy
   szlak handlowy)
-- Paleta graczy kontrastująca z zielenią i szarością terenu: czerwony,
-  niebieski, ciemny fiolet, pomarańczowy
+- Paleta graczy kontrastująca z zielenią i szarością terenu: P1 niebieski
+  (`#2f6fed`), P2 czerwony (`#e63946`), P3 ciemny fiolet (`#6f42c1`), P4
+  pomarańczowy (`#ff8c1a`); miasta neutralne (bez właściciela) — szary
+  (`#9aa0a6`)
+
+## Tryb online (host autorytatywny)
+Gra online (lobby, pojedynek 1v1, Deathmatch do 4 graczy) działa w
+modelu **host autorytatywny**, prostym językiem:
+- Przeglądarka gracza, który założył lobby (host), liczy CAŁĄ symulację —
+  dokładnie tę samą, co dziś w grze lokalnej, bez żadnych zmian w logice
+  walki/ekonomii/AI.
+- Pozostali gracze (klienci) wysyłają WYŁĄCZNIE rozkazy (ruch, trasy,
+  front, produkcja, szlaki, ulepszenia) i dostają od hosta obraz gry do
+  wyświetlenia — ok. kilkanaście razy na sekundę, wygładzany
+  (interpolowany) między odświeżeniami, żeby ruch wyglądał płynnie mimo
+  opóźnień sieci. Własny rozkaz gracz widzi na ekranie natychmiast
+  (podgląd lokalny), zanim jeszcze host zdąży go faktycznie wykonać.
+- Serwer (Cloudflare Workers + Durable Objects) to WYŁĄCZNIE poczekalnia
+  lobby i przekaźnik wiadomości — nigdy nie liczy samej gry.
+- Prywatność: każdy gracz widzi tylko własne plany (trasy, kolejkę
+  produkcji, złoto, szlaki) — dokładnie ta sama zasada "przeciwnik nie
+  widzi Twoich zamiarów", co dziś obowiązuje wobec AI.
+- Rozłączenie: gracz ma 30s na powrót. Jeśli nie wróci — w 1v1 pozostały
+  gracz od razu wygrywa; w Deathmatchu jego miasta stają się neutralne
+  (traci ekonomię, ale front i tak może je potem przejąć normalnie), a on
+  sam wypada z gry, gdy w efekcie straci wszystkie miasta. Rozłączenie
+  hosta kończy mecz dla wszystkich (host liczy jedyną kopię gry).
+- Deathmatch jest dziś ograniczony do 2 graczy — mapa ma tylko dwie
+  predefiniowane strefy startowe (tę samą, co pojedynek 1v1). Docelowa,
+  ręcznie zaprojektowana mapa na 4 strefy startowe to osobna sesja
+  projektowa (patrz "Kolejność budowy" niżej) — dopiero po niej
+  Deathmatch realnie zagra się w 3-4 osoby.
+- Boty — wyłącznie w lobby 1v1 (patrz "Decyzje projektowe" wyżej).
 
 ## Priorytety produktowe (ważniejsze niż lista mechanik)
 - Pierwsze 3 minuty decydują o wszystkim. Gracz musi wykonać sensowny
@@ -245,13 +290,19 @@ grywalny. Test przy każdym pomyśle: czy bez tego dwie osoby mogą rozegrać
 mecz? Jeśli tak — na listę, nie do kodu.
 
 ## Kolejność budowy
-1. Prototyp ruchu (trasy + fronty) ← obecny etap
+1. Prototyp ruchu (trasy + fronty)
 2. Siatka terytorium i emergentna linia frontu
 3. Mechanika okrążania
 4. Przejmowanie miast przez front
 5. Ekonomia konwojów + bandyci
 6. Multiplayer (Cloudflare Workers + Durable Objects, jeden pokój = jeden
-   Durable Object)
+   Durable Object) — W TRAKCIE BUDOWY. Model host-autorytatywny, lobby,
+   1v1 i Deathmatch (patrz "Tryb online" wyżej) zaimplementowane i
+   przetestowane; pozostaje wdrożenie na docelowy adres Cloudflare i
+   pełny test manualny w kilku oknach przeglądarki.
+7. Ręcznie zaprojektowana mapa 4-strefowa pod pełny Deathmatch (osobna
+   sesja projektowa — do tego czasu Deathmatch ograniczony do 2 graczy,
+   patrz "Tryb online")
 
 ## Otwarte decyzje (do rozstrzygnięcia po testach)
 - Czy linia frontu ma konsekwencje mechaniczne (bezpieczeństwo konwojów
@@ -260,3 +311,10 @@ mecz? Jeśli tak — na listę, nie do kodu.
   punktach zaplecza?
 - Czy 5 typów jednostek, czy 4?
 - Balans przeciwwag okrążania (długość karencji, siła bonusu przebicia)
+- **Serwer autorytatywny / ochrona przed oszustwami (ODŁOŻONE)**: dziś
+  host liczy grę we własnej, modyfikowalnej przeglądarce — zmodyfikowany
+  klient hosta mógłby oszukiwać (np. cofnąć rozkaz, podejrzeć cudze dane
+  przed wysłaniem filtra prywatności). Akceptowalne do grania ze
+  znajomymi, NIE do rankingu/publicznych meczów. Docelowo cała symulacja
+  przenosi się do Durable Object (serwer autorytatywny) — to też jedyny
+  sposób, żeby rozłączenie hosta nie kończyło meczu dla wszystkich.
