@@ -3990,22 +3990,44 @@ function removePlayerFromBoard(owner) {
   units = units.filter(u => u.owner !== owner);
   tradeRoutes = tradeRoutes.filter(r => r.owner !== owner);
   for (const c of CITIES) if (c.besiegingOwner === owner) { c.besiegingOwner = null; c.siegeProgress = 0; }
+  notifyOwner(owner, { alert: 'Zostałeś wyeliminowany — obserwujesz dalszy przebieg meczu', log: 'Eliminacja', x: 0, y: 0, color: '#ffffff', spectate: true });
 }
 
-// Zamraża symulację (gameLoop przestaje ją aktualizować, ale dorysowuje
-// jeszcze tę klatkę pod overlayem) i pokazuje ekran końca gry ze
-// statystykami meczu — podstawa telemetrii na przyszłość (patrz CLAUDE.md).
+// Wygasła karencja na powrót rozłączonego gracza (patrz net.js,
+// PLAYER_TIMED_OUT) — WYŁĄCZNIE host mutuje stan gry, klienci dowiedzą się
+// z kolejnego snapshotu. W 1v1 nie ma kogo neutralizować — pozostały
+// gracz od razu wygrywa. W Deathmatchu miasta rozłączonego stają się
+// neutralne (owner=null, wyczyszczona ekonomia) — dalej obsługiwane przez
+// JUŻ istniejący mechanizm przejmowania miast bez żadnych dodatkowych
+// zmian (0 obrońców -> przejęcie), checkElimination usuwa go z gry, gdy
+// w efekcie zostanie bez miast (co jest natychmiastowe, bo właśnie
+// stracił wszystkie na raz).
+function handlePlayerTimeout(seat) {
+  if (netRole !== 'HOST' || gameOver) return;
+  if (gameConfig && gameConfig.lobbyMode === 'ONE_V_ONE') {
+    triggerGameOver(ACTIVE_PLAYERS.find((p) => p !== seat) || null);
+    return;
+  }
+  for (const c of CITIES) {
+    if (c.owner !== seat) continue;
+    c.owner = null; c.queue = []; c.rallyPoint = null; c.upgradeRemaining = 0; c.siegeProgress = 0; c.besiegingOwner = null;
+  }
+  checkElimination(seat);
+}
+
+// Buduje i pokazuje ekran końca gry z gotowych danych — wydzielone z
+// triggerGameOver, żeby TA SAMA funkcja mogła zbudować identyczny ekran
+// zarówno lokalnie (host/LOCAL, dane świeże) jak i na zdalnym kliencie
+// (dane odebrane wiadomością GAME_OVER, patrz triggerGameOver/net.js).
 // Kolumny: zwycięzca, potem wyeliminowani od najpóźniej do najwcześniej —
 // dla dokładnie 2 graczy to [winner, loser], IDENTYCZNE z dawnym
 // dwukolumnowym ekranem (eliminationHtml wtedy pusty).
-function triggerGameOver(winner) {
-  gameOver = true;
-  const durationSeconds = (performance.now() - matchStartTime) / 1000;
-  const columns = winner ? [winner, ...[...eliminationOrder].reverse().filter(p => p !== winner)] : [...eliminationOrder].reverse();
-  const headerCells = columns.map(p => `<th>${p}</th>`).join('');
-  const row = (label, field, fmt = (v) => v) => `<tr><td>${label}</td>${columns.map(p => `<td>${fmt(stats[p][field])}</td>`).join('')}</tr>`;
-  const eliminationHtml = ACTIVE_PLAYERS.length > 2
-    ? `<div>Kolejność eliminacji: ${eliminationOrder.map((p, i) => `${i + 1}. ${p}`).join(', ')}</div>` : '';
+function renderGameOverOverlay({ winner, eliminationOrder: elimOrder, activePlayers, stats: finalStats, durationSeconds }) {
+  const columns = winner ? [winner, ...[...elimOrder].reverse().filter((p) => p !== winner)] : [...elimOrder].reverse();
+  const headerCells = columns.map((p) => `<th>${p}</th>`).join('');
+  const row = (label, field, fmt = (v) => v) => `<tr><td>${label}</td>${columns.map((p) => `<td>${fmt(finalStats[p][field])}</td>`).join('')}</tr>`;
+  const eliminationHtml = activePlayers.length > 2
+    ? `<div>Kolejność eliminacji: ${elimOrder.map((p, i) => `${i + 1}. ${p}`).join(', ')}</div>` : '';
   gameOverOverlayEl.innerHTML = `
     <div>
       <h2>Zwycięstwo: ${winner ?? 'brak'}</h2>
@@ -4026,8 +4048,30 @@ function triggerGameOver(winner) {
   // (units/CITIES/gold/stats/tradeRoutes/kamera/stan AI...) — przeładowanie
   // strony daje dokładnie ten sam efekt co "powrót do menu": świeży,
   // spójny stan, menu główne jako pierwszy ekran. Ustawienia przetrwają
-  // (localStorage), patrz sekcja MENU/START GRY.
+  // (localStorage), patrz sekcja MENU/START GRY. Dla zdalnego klienta
+  // przeładowanie też jest bezpieczne — zamyka WebSocket i wraca do menu.
   document.getElementById('gameOverMenuBtn').onclick = () => location.reload();
+}
+
+// Zamraża symulację (gameLoop przestaje ją aktualizować, ale dorysowuje
+// jeszcze tę klatkę pod overlayem) i pokazuje ekran końca gry ze
+// statystykami meczu. W trybie online (HOST) dodatkowo rozsyła te SAME
+// dane do wszystkich zdalnych graczy (GAME_OVER), żeby zobaczyli
+// identyczny ekran zamiast się dowiedzieć wyłącznie z zamrożonej klatki.
+function triggerGameOver(winner) {
+  gameOver = true;
+  const durationSeconds = (performance.now() - matchStartTime) / 1000;
+  const result = { winner, eliminationOrder: [...eliminationOrder], activePlayers: ACTIVE_PLAYERS, stats, durationSeconds };
+  renderGameOverOverlay(result);
+  if (netRole === 'HOST' && window.EngineNetAPI && window.EngineNetAPI.sendGameOver) window.EngineNetAPI.sendGameOver(result);
+}
+
+// Wołane na KLIENCIE po odebraniu wiadomości GAME_OVER od hosta (patrz
+// net.js) — ten sam ekran, zbudowany z danych hosta zamiast lokalnie
+// policzonych (klient i tak nigdy nie liczy stats/eliminationOrder sam).
+function applyRemoteGameOver(result) {
+  gameOver = true;
+  renderGameOverOverlay(result);
 }
 
 // Dochód bazowy z posiadanych miast, tempo dochodu do UI, produkcja
@@ -4361,11 +4405,11 @@ function drawCityDefenseZones() {
     const c = cityCenter(city);
     ctx.beginPath();
     ctx.arc(c.x, c.y, CITY_ZONE_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = PLAYERS[city.owner].color;
+    ctx.fillStyle = ownerColor(city.owner);
     ctx.globalAlpha = 0.08;
     ctx.fill();
     ctx.globalAlpha = 0.25;
-    ctx.strokeStyle = PLAYERS[city.owner].color;
+    ctx.strokeStyle = ownerColor(city.owner);
     ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.globalAlpha = 1;
@@ -4399,7 +4443,7 @@ function drawCities() {
     ctx.arc(c.x, c.y, CITY_MARKER_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = '#f4c430';
     ctx.fill();
-    ctx.strokeStyle = PLAYERS[city.owner].color;
+    ctx.strokeStyle = ownerColor(city.owner);
     ctx.lineWidth = 3;
     ctx.stroke();
 
@@ -5106,13 +5150,23 @@ let pendingNotices = {}; // seat -> [{alert?, log?, x, y, color, ring?}]
 // każdym z tych miejsc (zero zmiany zachowania lokalnego/AI). Dla gracza
 // zdalnego (host, tryb online) odkłada do jego prywatnej kolejki zamiast
 // pokazywać cudzy alert na naszym ekranie.
-function notifyOwner(owner, { alert, log, x, y, color, ring } = {}) {
+// Stosuje JEDNO powiadomienie lokalnie — współdzielone przez notifyOwner
+// (gdy adresat to OWNED_PLAYER, także na hoście) i drainSnapshotNotices
+// (gdy odebrane siecią). `spectate: true` przełącza gracza w tryb
+// obserwatora (patrz removePlayerFromBoard) — ta sama ścieżka obsługuje
+// to, czy eliminacja dotyczy hosta (lokalnie) czy zdalnego klienta
+// (przez snapshot), bez rozdzielania logiki.
+function applyNotice(n) {
+  if (n.alert) showAlert(n.alert);
+  if (n.ring) captureAlertEffects.push({ x: n.x, y: n.y, startTime: performance.now(), color: n.color });
+  if (n.log) logGameEvent(n.log, n.x, n.y, n.color || '#ffffff');
+  if (n.spectate) spectating = true;
+}
+function notifyOwner(owner, notice = {}) {
   if (owner === OWNED_PLAYER) {
-    if (alert) showAlert(alert);
-    if (ring) captureAlertEffects.push({ x, y, startTime: performance.now(), color });
-    if (log) logGameEvent(log, x, y, color || '#ffffff');
+    applyNotice(notice);
   } else if (netRole === 'HOST' && ACTIVE_PLAYERS.includes(owner)) {
-    (pendingNotices[owner] = pendingNotices[owner] || []).push({ alert, log, x, y, color, ring });
+    (pendingNotices[owner] = pendingNotices[owner] || []).push(notice);
   }
 }
 
@@ -5179,11 +5233,7 @@ function maybeBroadcastSnapshot(now) {
 // snapshotu (nie dopiero tego wybranego do interpolacji), żeby żadne
 // zdarzenie nigdy nie "zniknęło" pomiędzy buforowanymi klatkami.
 function drainSnapshotNotices(notices) {
-  for (const n of notices) {
-    if (n.alert) showAlert(n.alert);
-    if (n.ring) captureAlertEffects.push({ x: n.x, y: n.y, startTime: performance.now(), color: n.color });
-    if (n.log) logGameEvent(n.log, n.x, n.y, n.color || '#ffffff');
-  }
+  for (const n of notices) applyNotice(n);
 }
 
 // CLIENT — pobiera interpolowany stan z net.js (bufor snapshotów, patrz

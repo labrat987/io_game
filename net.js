@@ -206,13 +206,16 @@ function handleMessage(raw) {
     case 'PLAYER_DISCONNECTED':
       console.log(`[online] gracz ${msg.seat} rozłączony (${msg.graceMs}ms na powrót)`);
       if (lobbyStatus === 'waiting') renderLobbyRoom();
+      else if (window.showAlert) window.showAlert(`Gracz ${msg.seat} rozłączony — ${Math.round((msg.graceMs || 0) / 1000)}s na powrót`);
       break;
     case 'PLAYER_RECONNECTED':
       console.log(`[online] gracz ${msg.seat} wrócił`);
+      if (lobbyStatus !== 'waiting' && window.showAlert) window.showAlert(`Gracz ${msg.seat} wrócił do gry`);
       break;
     case 'PLAYER_TIMED_OUT':
       console.log(`[online] gracz ${msg.seat} nie wrócił — wypadł`);
-      // Eliminacja/neutralizacja miast w trakcie meczu — patrz Krok 7.
+      if (lobbyStatus !== 'waiting' && window.showAlert) window.showAlert(`Gracz ${msg.seat} nie wrócił — wypadł z gry`);
+      // Eliminacja/neutralizacja miast w trakcie meczu — WYŁĄCZNIE host mutuje stan.
       if (window.handlePlayerTimeout) window.handlePlayerTimeout(msg.seat);
       break;
     case 'HOST_LEFT':
@@ -221,8 +224,7 @@ function handleMessage(raw) {
       location.reload();
       break;
     case 'GAME_OVER':
-      // Ekran końca gry dla trybu online — patrz Krok 7.
-      console.log('[online] GAME_OVER', msg.result);
+      if (window.applyRemoteGameOver) window.applyRemoteGameOver(msg.result);
       break;
     default:
       break;
@@ -303,6 +305,7 @@ function enterMatch(startMsg) {
   window.hideOverlay(overlayEl());
   window.startGame({
     mode: isHost ? 'ONLINE_HOST' : 'ONLINE_CLIENT',
+    lobbyMode: lobbyMode,
     activePlayers: startMsg.activePlayers,
     ownSeat: mySeat,
     aiSeat: isHost && !!startMsg.bots.P2,
@@ -400,6 +403,12 @@ window.EngineNetAPI = {
   },
   sampleRenderState,
   onSnapshotFrame,
+  // Wołane przez triggerGameOver (index.html, HOST) — relay już wspierany
+  // przez serwer od Kroku 3, zero zmian po stronie serwera potrzebne.
+  sendGameOver(result) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ t: 'GAME_OVER', result }));
+  },
 };
 
 document.getElementById('menuOnlineBtn').onclick = () => {
