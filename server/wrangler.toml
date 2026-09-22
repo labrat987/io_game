@@ -1,0 +1,18 @@
+name = "warconvoy-server"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# Darmowy plan Cloudflare Workers udostępnia Durable Objects WYŁĄCZNIE z
+# backendem SQLite (new_sqlite_classes) — stąd ta migracja, nie
+# new_classes (KV-backed), która wymaga płatnego planu.
+[[durable_objects.bindings]]
+name = "LOBBY_DIRECTORY"
+class_name = "LobbyDirectory"
+
+[[durable_objects.bindings]]
+name = "LOBBY_ROOM"
+class_name = "LobbyRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LobbyDirectory", "LobbyRoom"]
