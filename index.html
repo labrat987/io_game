@@ -2413,16 +2413,17 @@ function setAIDebugInfo(info) {
 
 // Produkcja/ulepszenie miasta — ta sama logika co przyciski panelu miasta
 // (patrz buildCityPanelButtons/buildCityUpgradeSection), wydzielona żeby
-// AI mogło jej użyć bez klikania DOM. showAlert TYLKO dla własnego miasta
-// gracza — inaczej AI spamowałoby jego baner swoimi brakami złota.
+// AI mogło jej użyć bez klikania DOM. Powiadomienie TYLKO do właściciela
+// miasta (notifyOwner) — inaczej AI/zdalny gracz spamowałby CUDZY baner
+// swoimi brakami złota; dla gracza online trafia do jego snapshotu.
 function queueProduction(city, type) {
   const cfg = UNIT_TYPES[type];
   if (city.queue.length >= CITY_QUEUE_MAX_LENGTH) {
-    if (city.owner === OWNED_PLAYER) showAlert('Kolejka produkcji pełna');
+    notifyOwner(city.owner, { alert: 'Kolejka produkcji pełna' });
     return false;
   }
   if (gold[city.owner] < cfg.cost) {
-    if (city.owner === OWNED_PLAYER) showAlert(`Za mało złota (potrzeba ${cfg.cost}, masz ${Math.floor(gold[city.owner])})`);
+    notifyOwner(city.owner, { alert: `Za mało złota (potrzeba ${cfg.cost}, masz ${Math.floor(gold[city.owner])})` });
     return false;
   }
   gold[city.owner] -= cfg.cost;
@@ -2435,7 +2436,7 @@ function upgradeCity(city) {
   if (next > CITY_LEVEL_MAX || city.upgradeRemaining > 0) return false;
   const cost = CITY_LEVELS[next].upgradeCost;
   if (gold[city.owner] < cost) {
-    if (city.owner === OWNED_PLAYER) showAlert(`Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})`);
+    notifyOwner(city.owner, { alert: `Za mało złota (potrzeba ${cost}, masz ${Math.floor(gold[city.owner])})` });
     return false;
   }
   gold[city.owner] -= cost;
@@ -3357,7 +3358,7 @@ function updateMorale(allUnits, attacks, pendingDamage, hitCategoryOf, rangedHit
           u.routed = true;
           u.path = []; // porzuca stary rozkaz, gracz i tak nią teraz nie kieruje
           u.timeSafeFromEnemy = 0;
-          if (u.owner === OWNED_PLAYER) logGameEvent('Oddział załamał się!', u.x, u.y, '#ffffff');
+          notifyOwner(u.owner, { log: 'Oddział załamał się!', x: u.x, y: u.y, color: '#ffffff' });
         }
       }
     } else if (u.routed && u.morale >= MORALE_RECOVER_THRESHOLD) {
@@ -3845,11 +3846,7 @@ function updateConvoyCaptures(dt, now) {
     if (u.capturingOwner !== nearestEnemy.owner) {
       u.capturingOwner = nearestEnemy.owner;
       u.captureProgress = 0;
-      if (u.owner === OWNED_PLAYER) {
-        showAlert('Twój konwój jest przejmowany!');
-        captureAlertEffects.push({ x: u.x, y: u.y, startTime: now, color: '#ff8800' });
-        logGameEvent('Konwój jest przejmowany', u.x, u.y, '#ff8800');
-      }
+      notifyOwner(u.owner, { alert: 'Twój konwój jest przejmowany!', log: 'Konwój jest przejmowany', x: u.x, y: u.y, color: '#ff8800', ring: true });
     }
 
     u.captureProgress += dt;
@@ -3877,11 +3874,7 @@ function updateConvoyCaptures(dt, now) {
         u.path = rawPath !== null ? finalizePath(u, rawPath) : [];
       }
 
-      if (lostOwner === OWNED_PLAYER) {
-        showAlert(`Utracono konwój na rzecz ${u.owner}! -${Math.round(lostValue)} złota`);
-        captureAlertEffects.push({ x: u.x, y: u.y, startTime: now, color: '#ff2222' });
-        logGameEvent(`Utracono konwój (-${Math.round(lostValue)} zł)`, u.x, u.y, '#ff2222');
-      }
+      notifyOwner(lostOwner, { alert: `Utracono konwój na rzecz ${u.owner}! -${Math.round(lostValue)} złota`, log: `Utracono konwój (-${Math.round(lostValue)} zł)`, x: u.x, y: u.y, color: '#ff2222', ring: true });
     }
   }
 }
@@ -3915,11 +3908,7 @@ function updateCityCaptures(dt, now) {
       if (city.besiegingOwner !== besiegerOwner) {
         city.besiegingOwner = besiegerOwner;
         city.siegeProgress = 0; // nowe oblężenie (inny atakujący) — nie kontynuuje poprzedniego
-        if (city.owner === OWNED_PLAYER) {
-          showAlert(`Miasto ${city.id} jest atakowane!`);
-          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: PLAYERS[besiegerOwner].color });
-          logGameEvent(`Miasto ${city.id} atakowane`, center.x, center.y, PLAYERS[besiegerOwner].color);
-        }
+        notifyOwner(city.owner, { alert: `Miasto ${city.id} jest atakowane!`, log: `Miasto ${city.id} atakowane`, x: center.x, y: center.y, color: PLAYERS[besiegerOwner].color, ring: true });
       }
       const multiplier = Math.min(1 + (count - 1) * CITY_CAPTURE_ATTACKER_BONUS_PER_UNIT, CITY_CAPTURE_MAX_ATTACKER_MULTIPLIER);
       city.siegeProgress += dt * multiplier;
@@ -3956,16 +3945,8 @@ function updateCityCaptures(dt, now) {
         }
 
         stats[city.owner].citiesCaptured++;
-        if (oldOwner === OWNED_PLAYER) {
-          showAlert(`Utracono miasto ${city.id}!`);
-          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: '#ff2222' });
-          logGameEvent(`Utracono miasto ${city.id}`, center.x, center.y, '#ff2222');
-        }
-        if (city.owner === OWNED_PLAYER) {
-          showAlert(`Zdobyto miasto ${city.id}!`);
-          captureAlertEffects.push({ x: center.x, y: center.y, startTime: now, color: '#33ff33' });
-          logGameEvent(`Zdobyto miasto ${city.id}`, center.x, center.y, '#33ff33');
-        }
+        notifyOwner(oldOwner, { alert: `Utracono miasto ${city.id}!`, log: `Utracono miasto ${city.id}`, x: center.x, y: center.y, color: '#ff2222', ring: true });
+        notifyOwner(city.owner, { alert: `Zdobyto miasto ${city.id}!`, log: `Zdobyto miasto ${city.id}`, x: center.x, y: center.y, color: '#33ff33', ring: true });
 
         if (checkElimination(oldOwner)) return; // gra zakończona — reszta miast w tej klatce nieistotna
       }
@@ -5114,17 +5095,95 @@ const NET_ORDER_PREVIEW_MAX_MS = 1500;
 let lastSnapshotSentAt = 0;
 let snapshotTick = 0;
 
-// HOST — zbiera stan potrzebny do WYŚWIETLENIA gry u innych graczy
-// (nie cały wewnętrzny stan silnika) i oddaje do net.js, które faktycznie
-// wysyła przez WebSocket (patrz EngineNetAPI.sendSnapshot).
+// Powiadomienia skierowane do zdalnych graczy, odłożone do najbliższego
+// snapshotu TEGO gracza (patrz buildSnapshotFor) — drenowane (i czyszczone)
+// przy każdym zbudowaniu jego snapshotu, więc nic się nie duplikuje ani nie gubi.
+let pendingNotices = {}; // seat -> [{alert?, log?, x, y, color, ring?}]
+
+// Powiadomienie skierowane do KONKRETNEGO gracza (złamanie morale, konwój,
+// miasto — patrz 6 wywołań niżej w pliku). Dla OWNED_PLAYER robi DOKŁADNIE
+// to, co dawniej robił inline blok "if (owner === OWNED_PLAYER) {...}" w
+// każdym z tych miejsc (zero zmiany zachowania lokalnego/AI). Dla gracza
+// zdalnego (host, tryb online) odkłada do jego prywatnej kolejki zamiast
+// pokazywać cudzy alert na naszym ekranie.
+function notifyOwner(owner, { alert, log, x, y, color, ring } = {}) {
+  if (owner === OWNED_PLAYER) {
+    if (alert) showAlert(alert);
+    if (ring) captureAlertEffects.push({ x, y, startTime: performance.now(), color });
+    if (log) logGameEvent(log, x, y, color || '#ffffff');
+  } else if (netRole === 'HOST' && ACTIVE_PLAYERS.includes(owner)) {
+    (pendingNotices[owner] = pendingNotices[owner] || []).push({ alert, log, x, y, color, ring });
+  }
+}
+
+// Pola jednostki/miasta, które NIE mogą trafić do snapshotu gracza, który
+// ich nie jest właścicielem — trasy/cele/priorytety to "zamiary", kolejka/
+// ulepszenie/punkt zbiórki to prywatna ekonomia miasta (ta sama zasada,
+// jaką ai.js stosuje wobec przeciwnika, teraz egzekwowana faktycznie na
+// serwerze/hoście, nie tylko konwencją odczytu — patrz CLAUDE.md).
+function publicUnitFields(u) {
+  const copy = Object.assign({}, u);
+  copy.path = []; // podgląd trasy i tak renderowany tylko dla własnych jednostek (patrz drawUnits), ale nie ujawniamy go nawet w danych
+  delete copy.waypointGroupId;
+  delete copy.targetPriority;
+  delete copy.attackOrderTargetId;
+  delete copy.chaseAnchorX; delete copy.chaseAnchorY;
+  delete copy.chaseLastTargetX; delete copy.chaseLastTargetY;
+  delete copy.attackOrderAnchorX; delete copy.attackOrderAnchorY;
+  delete copy.attackOrderLastTargetX; delete copy.attackOrderLastTargetY;
+  return copy;
+}
+function publicCityFields(c) {
+  const copy = Object.assign({}, c);
+  delete copy.queue; delete copy.upgradeRemaining; delete copy.timeSinceLastConvoy; delete copy.rallyPoint;
+  return copy;
+}
+
+// Snapshot PRZEFILTROWANY dla jednego konkretnego gracza — własne jednostki/
+// miasta/szlaki/złoto w pełni, cudze wyłącznie w zakresie tego, co i tak
+// widać na mapie (pozycja/HP/morale/właściciel/poziom miasta...).
+function buildSnapshotFor(seat) {
+  const notices = pendingNotices[seat] || [];
+  pendingNotices[seat] = [];
+  return {
+    units: units.map((u) => (u.owner === seat ? u : publicUnitFields(u))),
+    cities: CITIES.map((c) => (c.owner === seat ? c : publicCityFields(c))),
+    tradeRoutes: tradeRoutes.filter((r) => r.owner === seat),
+    gold: { [seat]: gold[seat] },
+    goldRate: { [seat]: goldRate[seat] },
+    stats: { [seat]: stats[seat] },
+    gameOver,
+    notices,
+  };
+}
+
+// HOST — buduje snapshot OSOBNO dla każdego zdalnego gracza (patrz
+// buildSnapshotFor) i oddaje mapę seat->stan do net.js, które faktycznie
+// wysyła przez WebSocket, JEDNĄ wiadomością dla wszystkich naraz (patrz
+// EngineNetAPI.sendSnapshot i protokół w server/src/index.js).
 function maybeBroadcastSnapshot(now) {
   if (!window.EngineNetAPI || !window.EngineNetAPI.sendSnapshot) return;
   if (now - lastSnapshotSentAt < NET_SNAPSHOT_INTERVAL_MS) return;
   lastSnapshotSentAt = now;
   snapshotTick++;
-  window.EngineNetAPI.sendSnapshot(snapshotTick, {
-    units, cities: CITIES, tradeRoutes, gold, goldRate, stats, gameOver,
-  });
+  const perSeat = {};
+  for (const seat of ACTIVE_PLAYERS) {
+    if (seat === OWNED_PLAYER) continue; // host nie wysyła stanu samemu sobie — ma go już lokalnie
+    perSeat[seat] = buildSnapshotFor(seat);
+  }
+  window.EngineNetAPI.sendSnapshot(snapshotTick, perSeat);
+}
+
+// Odtwarza u siebie powiadomienie, które host zaadresował do NASZEGO
+// seatu (patrz notifyOwner) — wołane NATYCHMIAST przy odbiorze KAŻDEGO
+// snapshotu (nie dopiero tego wybranego do interpolacji), żeby żadne
+// zdarzenie nigdy nie "zniknęło" pomiędzy buforowanymi klatkami.
+function drainSnapshotNotices(notices) {
+  for (const n of notices) {
+    if (n.alert) showAlert(n.alert);
+    if (n.ring) captureAlertEffects.push({ x: n.x, y: n.y, startTime: performance.now(), color: n.color });
+    if (n.log) logGameEvent(n.log, n.x, n.y, n.color || '#ffffff');
+  }
 }
 
 // CLIENT — pobiera interpolowany stan z net.js (bufor snapshotów, patrz

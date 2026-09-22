@@ -327,6 +327,11 @@ function onSnapshotFrame(raw) {
   try { state = JSON.parse(payload); } catch (e) { return; }
   snapshotBuffer.push({ tick, recvAt: performance.now(), state });
   if (snapshotBuffer.length > NET_SNAPSHOT_BUFFER_MAX) snapshotBuffer.shift();
+  // Powiadomienia (patrz notifyOwner/drainSnapshotNotices w index.html)
+  // odtwarzane NATYCHMIAST przy odbiorze KAŻDEGO snapshotu, niezależnie od
+  // interpolacji — inaczej zdarzenie z pominiętego (nie wybranego do
+  // interpolacji) snapshotu nigdy by się nie pokazało.
+  if (state.notices && state.notices.length > 0 && window.drainSnapshotNotices) window.drainSnapshotNotices(state.notices);
 }
 
 // Zwraca stan do narysowania W TEJ klatce: interpoluje pozycje/kąty
@@ -375,20 +380,22 @@ window.EngineNetAPI = {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ t: 'ORDER', seq: 0, order: { type, payload } }));
   },
-  // Wołane przez maybeBroadcastSnapshot (index.html, HOST). Jedna
-  // serializacja, jedna wiadomość WS do serwera niosąca kopie dla
-  // WSZYSTKICH zdalnych graczy naraz (patrz protokół "S|tick|seat:len:payload...") —
-  // serwer rozdziela bez parsowania treści. Boty nie mają socketu, więc
-  // są pomijane. Prywatność (osobny payload na gracza) to Krok 6 — na
-  // razie każdy zdalny gracz dostaje identyczną kopię.
-  sendSnapshot(tick, state) {
+  // Wołane przez maybeBroadcastSnapshot (index.html, HOST) z MAPĄ
+  // seat->stan JUŻ przefiltrowanym per gracza (patrz buildSnapshotFor,
+  // Krok 6 — każdy zdalny gracz dostaje WŁASNY payload, bez cudzych tras/
+  // kolejek/złota). Jedna wiadomość WS niosąca wszystkie payloady naraz
+  // (patrz protokół "S|tick|seat:len:payload...") — serwer rozdziela bez
+  // parsowania treści (patrz server/src/index.js).
+  sendSnapshot(tick, perSeat) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (ws.bufferedAmount > NET_SEND_BACKPRESSURE_BYTES) return; // pomiń tę turę — interpolacja klienta zniweluje
-    const remoteSeats = Object.keys(lobbyPlayers).filter((s) => s !== mySeat && !lobbyPlayers[s].isBot);
-    if (remoteSeats.length === 0) return;
-    const payload = JSON.stringify(state);
+    const seats = Object.keys(perSeat).filter((s) => !lobbyPlayers[s] || !lobbyPlayers[s].isBot);
+    if (seats.length === 0) return;
     let msg = `S|${tick}|`;
-    for (const seat of remoteSeats) msg += `${seat}:${payload.length}:${payload}`;
+    for (const seat of seats) {
+      const payload = JSON.stringify(perSeat[seat]);
+      msg += `${seat}:${payload.length}:${payload}`;
+    }
     ws.send(msg);
   },
   sampleRenderState,
